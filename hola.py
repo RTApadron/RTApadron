@@ -1,0 +1,1 @@
+print("Hola, Python 3.11 está funcionando en VS Code 🚀")
