@@ -1,37 +1,21 @@
-# ==== Python ====
-__pycache__/
-*.py[cod]
-*.pyo
-*.pyd
-*.so
-*.egg
-*.egg-info/
-.eggs/
-*.manifest
-*.spec
-
-# ==== Entornos virtuales ====
-venv/
-.env/
+﻿# entornos / caches
 .venv/
+venv/
+__pycache__/
+*.pyc
 
-# ==== Jupyter Notebooks ====
-.ipynb_checkpoints/
+# VS Code
+.vscode/*
+!.vscode/launch.json
 
-# ==== VS Code ====
-.vscode/
-.history/
+# Streamlit y salidas
+.streamlit/
+output/
+**/output/
 
-# ==== Logs / temporales ====
-*.log
-*.tmp
-*.swp
-*.bak
+# Artefactos locales (no versionar el ajuste)
+pvt_fit_config.json
 
-# ==== Archivos de sistema (Windows / Mac) ====
-Thumbs.db
-desktop.ini
+# SO
 .DS_Store
-
-# ==== OneDrive basura ====
-~$*
+Thumbs.db
