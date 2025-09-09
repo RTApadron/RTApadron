@@ -129,8 +129,31 @@ def draw_pb(ax, Pb_value, label="Pb"):
 # ----------------------------------
 # App
 # ----------------------------------
-st.set_page_config(page_title="Módulo 2 — PVT (v5)", layout="wide")
-st.title("ecoRTA Módulo 2 — PVT")
+from pathlib import Path
+from PIL import Image  # añade "pillow" a requirements si no lo tienes
+
+APP_DIR = Path(__file__).resolve().parent
+LOGO_PATH = APP_DIR / "assets" / "logo.jpg"
+
+# Opcional: usar el logo como icono (favicon) del navegador
+try:
+    page_icon_img = Image.open(LOGO_PATH)
+except Exception:
+    page_icon_img = None
+
+st.set_page_config(
+    page_title="Módulo 2 — PVT (v5)",
+    page_icon=page_icon_img,   # o deja None si no usas Pillow
+    layout="wide"
+)
+
+# Encabezado con logo + título
+col_logo, col_title = st.columns([1, 6])
+with col_logo:
+    if LOGO_PATH.exists():
+        st.image(str(LOGO_PATH), use_container_width=True)
+with col_title:
+    st.title("ecoRTA Módulo 2 — PVT")
 
 with st.sidebar:
     st.header("Parámetros del fluido")
