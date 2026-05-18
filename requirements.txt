@@ -4,3 +4,4 @@ xlsxwriter>=3.2.0
 streamlit>=1.36.0
 pillow>=10.0
 pydantic>=2.9.0
+plotly>=5.22

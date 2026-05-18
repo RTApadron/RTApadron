@@ -5,6 +5,7 @@ This UI is intentionally thin:
 - Executes the existing full workflow CLI.
 - Displays generated CSV/JSON/PNG artifacts.
 - Visualizes M1 well/history data, M2 PVT data, and M3 DCA outputs.
+- Allows interactive DCA fit-window selection from production history.
 
 No PVT, well-integration, or DCA calculation logic is duplicated here.
 """
@@ -21,6 +22,11 @@ from typing import Any
 
 import pandas as pd
 import streamlit as st
+
+try:
+    import plotly.graph_objects as go
+except ImportError:  # pragma: no cover
+    go = None
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -47,6 +53,12 @@ M2_PVT_COLUMNS = (
     "rho_o_lbft3",
     "pb_psia",
 )
+
+SESSION_USE_FIT_FROM = "use_fit_from_date"
+SESSION_USE_FIT_TO = "use_fit_to_date"
+SESSION_FIT_FROM_DATE = "fit_from_date_value"
+SESSION_FIT_TO_DATE = "fit_to_date_value"
+SESSION_PENDING_FIT_WINDOW = "pending_fit_window_selection"
 
 
 @dataclass(frozen=True)
@@ -84,6 +96,33 @@ def ensure_dirs() -> None:
     """Create runtime folders if they do not exist."""
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     UI_INPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def initialize_session_defaults() -> None:
+    """Initialize Streamlit session state for DCA controls.
+
+    Pending fit-window selections are applied here before sidebar widgets
+    are instantiated. Streamlit does not allow modifying widget-backed keys
+    after the widget has already been created in the same run.
+    """
+    pending_window = st.session_state.pop(SESSION_PENDING_FIT_WINDOW, None)
+
+    if pending_window is not None:
+        try:
+            start_date = date.fromisoformat(pending_window["start_date"])
+            end_date = date.fromisoformat(pending_window["end_date"])
+
+            st.session_state[SESSION_USE_FIT_FROM] = True
+            st.session_state[SESSION_USE_FIT_TO] = True
+            st.session_state[SESSION_FIT_FROM_DATE] = start_date
+            st.session_state[SESSION_FIT_TO_DATE] = end_date
+        except (KeyError, TypeError, ValueError):
+            pass
+
+    st.session_state.setdefault(SESSION_USE_FIT_FROM, True)
+    st.session_state.setdefault(SESSION_USE_FIT_TO, True)
+    st.session_state.setdefault(SESSION_FIT_FROM_DATE, date(2024, 7, 1))
+    st.session_state.setdefault(SESSION_FIT_TO_DATE, date(2025, 11, 30))
 
 
 def apply_light_css() -> None:
@@ -325,6 +364,158 @@ def render_time_series(
     chart_df = chart_df.set_index("date")
     st.line_chart(chart_df, y=selected_columns, height=360)
     st.caption(y_label)
+
+
+def parse_plotly_selected_dates(points: list[dict[str, Any]]) -> tuple[date, date] | None:
+    """Extract min/max dates from selected Plotly points."""
+    raw_x_values = [point.get("x") for point in points if point.get("x") is not None]
+    if not raw_x_values:
+        return None
+
+    parsed_dates = pd.to_datetime(raw_x_values, errors="coerce")
+    parsed_dates = parsed_dates[~pd.isna(parsed_dates)]
+
+    if len(parsed_dates) == 0:
+        return None
+
+    start_date = parsed_dates.min().date()
+    end_date = parsed_dates.max().date()
+
+    if start_date > end_date:
+        start_date, end_date = end_date, start_date
+
+    return start_date, end_date
+
+
+def update_fit_window_from_selection(start_date: date, end_date: date) -> None:
+    """Store selected fit window and rerun before updating sidebar widgets."""
+    current_start = st.session_state.get(SESSION_FIT_FROM_DATE)
+    current_end = st.session_state.get(SESSION_FIT_TO_DATE)
+
+    if current_start == start_date and current_end == end_date:
+        return
+
+    st.session_state[SESSION_PENDING_FIT_WINDOW] = {
+        "start_date": start_date.isoformat(),
+        "end_date": end_date.isoformat(),
+    }
+
+    st.rerun()
+
+
+def render_interactive_dca_fit_window_selector(enriched_df: pd.DataFrame) -> None:
+    """Render interactive DCA fit-window selector using Plotly selection events."""
+    st.subheader("Selección interactiva de ventana de ajuste DCA")
+
+    if go is None:
+        st.warning(
+            "Plotly no está instalado. Agrega `plotly>=5.22` a requirements.txt "
+            "y ejecuta `pip install plotly`."
+        )
+        return
+
+    required_columns = {"date", "qo_stb_d"}
+    missing_columns = required_columns.difference(enriched_df.columns)
+    if missing_columns:
+        st.info(
+            "No es posible construir el selector interactivo. "
+            f"Faltan columnas: {sorted(missing_columns)}"
+        )
+        return
+
+    plot_df = enriched_df[["date", "qo_stb_d"]].copy()
+    plot_df["date"] = pd.to_datetime(plot_df["date"], errors="coerce")
+    plot_df["qo_stb_d"] = pd.to_numeric(plot_df["qo_stb_d"], errors="coerce")
+    plot_df = plot_df.dropna(subset=["date", "qo_stb_d"]).sort_values("date")
+
+    if plot_df.empty:
+        st.info("No hay datos válidos de qo_stb_d para seleccionar ventana DCA.")
+        return
+
+    fit_from = st.session_state.get(SESSION_FIT_FROM_DATE)
+    fit_to = st.session_state.get(SESSION_FIT_TO_DATE)
+
+    fig = go.Figure()
+
+    fig.add_trace(
+        go.Scatter(
+            x=plot_df["date"],
+            y=plot_df["qo_stb_d"],
+            mode="markers+lines",
+            name="qo_stb_d",
+            marker={"size": 7},
+            customdata=plot_df["date"].dt.strftime("%Y-%m-%d"),
+            hovertemplate=(
+                "Fecha: %{customdata}<br>"
+                "qo: %{y:,.2f} STB/d"
+                "<extra></extra>"
+            ),
+        )
+    )
+
+    if isinstance(fit_from, date) and isinstance(fit_to, date):
+        fig.add_vrect(
+            x0=fit_from.isoformat(),
+            x1=fit_to.isoformat(),
+            fillcolor="LightSkyBlue",
+            opacity=0.22,
+            layer="below",
+            line_width=0,
+            annotation_text="Ventana actual",
+            annotation_position="top left",
+        )
+
+    fig.update_layout(
+        title="Arrastra una caja sobre los puntos que quieres usar para el ajuste",
+        xaxis_title="Fecha",
+        yaxis_title="Tasa de aceite, qo [STB/d]",
+        dragmode="select",
+        height=520,
+        margin={"l": 20, "r": 20, "t": 60, "b": 20},
+        legend={"orientation": "h"},
+    )
+
+    event = st.plotly_chart(
+        fig,
+        use_container_width=True,
+        on_select="rerun",
+        selection_mode=("box", "lasso"),
+        key="dca_fit_window_selector",
+        config={
+            "displaylogo": False,
+            "modeBarButtonsToAdd": ["select2d", "lasso2d"],
+        },
+    )
+
+    st.caption(
+        "Uso: selecciona puntos con click-and-drag. "
+        "La app tomará la fecha mínima y máxima seleccionada como "
+        "`fit_from_date` y `fit_to_date`."
+    )
+
+    selection = event.get("selection", {}) if isinstance(event, dict) else {}
+    points = selection.get("points", []) if isinstance(selection, dict) else []
+
+    if not points:
+        st.info(
+            "No hay selección activa. Puedes seguir usando las fechas manuales "
+            "en la barra lateral."
+        )
+        return
+
+    selected_window = parse_plotly_selected_dates(points)
+    if selected_window is None:
+        st.warning("No fue posible interpretar fechas en la selección.")
+        return
+
+    start_date, end_date = selected_window
+
+    st.success(
+        "Ventana seleccionada: "
+        f"{start_date.isoformat()} → {end_date.isoformat()}. "
+        "Actualizando controles laterales..."
+    )
+    update_fit_window_from_selection(start_date, end_date)
 
 
 def render_m1_summary(enriched_df: pd.DataFrame) -> None:
@@ -571,16 +762,28 @@ def render_sidebar_inputs() -> dict[str, Any]:
     st.sidebar.divider()
     st.sidebar.header("Ventana de ajuste DCA")
 
-    use_fit_from = st.sidebar.checkbox("Usar fit_from_date", value=True)
+    use_fit_from = st.sidebar.checkbox(
+        "Usar fit_from_date",
+        key=SESSION_USE_FIT_FROM,
+    )
     fit_from_date = (
-        st.sidebar.date_input("fit_from_date", value=date(2024, 7, 1))
+        st.sidebar.date_input(
+            "fit_from_date",
+            key=SESSION_FIT_FROM_DATE,
+        )
         if use_fit_from
         else None
     )
 
-    use_fit_to = st.sidebar.checkbox("Usar fit_to_date", value=True)
+    use_fit_to = st.sidebar.checkbox(
+        "Usar fit_to_date",
+        key=SESSION_USE_FIT_TO,
+    )
     fit_to_date = (
-        st.sidebar.date_input("fit_to_date", value=date(2025, 11, 30))
+        st.sidebar.date_input(
+            "fit_to_date",
+            key=SESSION_FIT_TO_DATE,
+        )
         if use_fit_to
         else None
     )
@@ -655,6 +858,7 @@ def render_artifacts(well_id: str) -> None:
             "M1 Pozo / Historia",
             "M2 PVT",
             "M3 DCA",
+            "Selección ventana DCA",
             "Gráficas DCA",
             "Descargas",
         ]
@@ -683,6 +887,15 @@ def render_artifacts(well_id: str) -> None:
         )
 
     with tabs[3]:
+        if enriched_df is None:
+            st.info(
+                "Ejecuta primero el workflow para generar la historia enriquecida "
+                "y habilitar la selección interactiva."
+            )
+        else:
+            render_interactive_dca_fit_window_selector(enriched_df)
+
+    with tabs[4]:
         col_fit, col_forecast = st.columns(2)
         with col_fit:
             render_png(
@@ -695,7 +908,7 @@ def render_artifacts(well_id: str) -> None:
                 "Forecast DCA",
             )
 
-    with tabs[4]:
+    with tabs[5]:
         st.subheader("Descargar artefactos")
         col_csv, col_json, col_png = st.columns(3)
 
@@ -734,6 +947,7 @@ def render_artifacts(well_id: str) -> None:
 def main() -> None:
     """Run the Streamlit app."""
     configure_page()
+    initialize_session_defaults()
     apply_light_css()
     ensure_dirs()
 
