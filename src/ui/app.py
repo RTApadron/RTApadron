@@ -71,7 +71,7 @@ def ensure_dirs() -> None:
 
 
 def apply_light_css() -> None:
-    """Apply small UI polish without coupling to Streamlit internals."""
+    """Apply small UI polish."""
     st.markdown(
         """
         <style>
@@ -117,14 +117,6 @@ def read_json(path: Path) -> dict[str, Any]:
         raise ValueError(msg)
 
     return data
-
-
-def get_nested_value(data: dict[str, Any], keys: tuple[str, ...]) -> Any:
-    """Return the first existing top-level value among candidate keys."""
-    for key in keys:
-        if key in data:
-            return data[key]
-    return None
 
 
 def as_float(value: Any, default: float = 0.0) -> float:
@@ -184,6 +176,7 @@ def build_full_workflow_command(
                 "forecast_start_rate debe ser mayor que cero."
             )
             raise ValueError(msg)
+
         cmd.extend(["--forecast-start-rate", str(forecast_start_rate)])
 
     if history_csv is not None:
@@ -272,71 +265,68 @@ def render_png(path: Path, title: str) -> None:
 
 
 def render_quick_dca_summary(artifacts: WorkflowArtifacts) -> None:
-    """Render high-level DCA metrics from the QC JSON report."""
-    if not artifacts.dca_qc_report_json.exists():
+    """Render high-level DCA metrics from fit results and QC report."""
+    if not artifacts.dca_fit_results_csv.exists():
         return
 
     try:
-        qc = read_json(artifacts.dca_qc_report_json)
+        fit_df = pd.read_csv(artifacts.dca_fit_results_csv)
     except Exception as exc:  # noqa: BLE001
         st.warning(f"No fue posible cargar el resumen rápido DCA: {exc}")
         return
 
-    eur_summary = qc.get("eur_summary", {})
-    forecast_start_rate = qc.get("forecast_start_rate", {})
+    if fit_df.empty:
+        return
 
-    if not isinstance(eur_summary, dict):
-        eur_summary = {}
+    required_columns = {
+        "model",
+        "eur_stb",
+        "forecast_qi_stb_d",
+        "forecast_start_rate_mode",
+        "rmse_stb_d",
+    }
+    missing_columns = required_columns.difference(fit_df.columns)
+    if missing_columns:
+        st.warning(
+            "No fue posible construir el resumen rápido DCA. "
+            f"Faltan columnas en fit_results: {sorted(missing_columns)}"
+        )
+        return
 
-    if not isinstance(forecast_start_rate, dict):
-        forecast_start_rate = {}
+    best_row = fit_df.sort_values("rmse_stb_d", ascending=True).iloc[0]
 
-    base_model = get_nested_value(
-        eur_summary,
-        ("base_model", "best_model", "selected_model", "model"),
-    )
-    base_eur_mstb = get_nested_value(
-        eur_summary,
-        ("base_eur_mstb", "eur_mstb", "eur_base_mstb", "base_eur"),
-    )
-
-    start_rate_mode = get_nested_value(
-        forecast_start_rate,
-        ("mode", "forecast_start_rate_mode", "source"),
-    )
-    start_rate_stb_d = get_nested_value(
-        forecast_start_rate,
-        ("rate_stb_d", "forecast_start_rate_stb_d", "rate", "value"),
-    )
-
-    models_with_similar_rmse = qc.get("models_with_similar_rmse", [])
-    similar_models_count = (
-        len(models_with_similar_rmse)
-        if isinstance(models_with_similar_rmse, list)
-        else 0
-    )
+    models_with_similar_rmse_count = 0
+    if artifacts.dca_qc_report_json.exists():
+        try:
+            qc = read_json(artifacts.dca_qc_report_json)
+            models_with_similar_rmse = qc.get("models_with_similar_rmse", [])
+            if isinstance(models_with_similar_rmse, list):
+                models_with_similar_rmse_count = len(models_with_similar_rmse)
+        except Exception:  # noqa: BLE001
+            models_with_similar_rmse_count = 0
 
     st.subheader("Resumen rápido DCA")
 
     col1, col2, col3, col4, col5 = st.columns(5)
 
     with col1:
-        st.metric("Modelo base", str(base_model or "N/D"))
+        st.metric("Modelo base", str(best_row["model"]))
 
     with col2:
-        st.metric("EUR base", f"{as_float(base_eur_mstb):,.3f} MSTB")
+        eur_mstb = as_float(best_row["eur_stb"]) / 1_000.0
+        st.metric("EUR base", f"{eur_mstb:,.3f} MSTB")
 
     with col3:
-        st.metric("Modo tasa inicial", str(start_rate_mode or "N/D"))
+        st.metric("Modo tasa inicial", str(best_row["forecast_start_rate_mode"]))
 
     with col4:
         st.metric(
             "Tasa inicial forecast",
-            f"{as_float(start_rate_stb_d):,.2f} STB/d",
+            f"{as_float(best_row['forecast_qi_stb_d']):,.2f} STB/d",
         )
 
     with col5:
-        st.metric("Modelos RMSE similar", str(similar_models_count))
+        st.metric("Modelos RMSE similar", str(models_with_similar_rmse_count))
 
 
 def render_sidebar_inputs() -> dict[str, Any]:
