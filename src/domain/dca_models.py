@@ -6,6 +6,7 @@ from dataclasses import asdict, dataclass
 from typing import Literal
 
 DCAModelName = Literal["exponential", "harmonic", "hyperbolic"]
+ForecastStartRateMode = Literal["fitted", "last-window-rate", "manual"]
 
 
 @dataclass(frozen=True)
@@ -16,6 +17,8 @@ class DCAFitResult:
     model: DCAModelName
     rate_column: str
     qi_stb_d: float
+    forecast_qi_stb_d: float
+    forecast_start_rate_mode: ForecastStartRateMode
     di_nominal_d: float
     b: float
     rmse_stb_d: float
@@ -39,6 +42,8 @@ class DCAForecastConfig:
     fit_from_date: str | None = None
     fit_to_date: str | None = None
     exclude_first_n: int = 0
+    forecast_start_rate_mode: ForecastStartRateMode = "fitted"
+    forecast_start_rate_stb_d: float | None = None
 
 
 @dataclass(frozen=True)

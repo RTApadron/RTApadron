@@ -45,6 +45,8 @@ def test_full_workflow_steps_generate_expected_outputs(tmp_path: Path) -> None:
         fit_from_date=None,
         fit_to_date=None,
         exclude_first_n=0,
+        forecast_start_rate_mode="fitted",
+        forecast_start_rate=None,
         make_plot=True,
     )
 
@@ -62,6 +64,8 @@ def test_full_workflow_steps_generate_expected_outputs(tmp_path: Path) -> None:
 
     fit_df = pd.read_csv(fit_path)
     assert set(fit_df["model"]) == {"exponential", "harmonic", "hyperbolic"}
+    assert "forecast_qi_stb_d" in fit_df.columns
+    assert "forecast_start_rate_mode" in fit_df.columns
 
     qc = json.loads(dca_qc_path.read_text(encoding="utf-8"))
     assert qc["module"] == "M3_DCA"
@@ -69,6 +73,8 @@ def test_full_workflow_steps_generate_expected_outputs(tmp_path: Path) -> None:
     assert "eur_comparison" in qc
     assert "eur_summary" in qc
     assert "models_with_similar_rmse" in qc
+    assert "forecast_start_rate" in qc
+    assert qc["forecast_start_rate"]["mode"] == "fitted"
 
 
 def test_full_workflow_dca_step_can_skip_plots(tmp_path: Path) -> None:
@@ -105,6 +111,8 @@ def test_full_workflow_dca_step_can_skip_plots(tmp_path: Path) -> None:
         fit_from_date=None,
         fit_to_date=None,
         exclude_first_n=0,
+        forecast_start_rate_mode="fitted",
+        forecast_start_rate=None,
         make_plot=False,
     )
 
@@ -113,6 +121,48 @@ def test_full_workflow_dca_step_can_skip_plots(tmp_path: Path) -> None:
     assert dca_qc_path.exists()
     assert rate_plot_path is None
     assert forecast_plot_path is None
+
+
+def test_full_workflow_dca_step_supports_last_window_rate_mode(
+    tmp_path: Path,
+) -> None:
+    history_path = tmp_path / "history_WELL-001.csv"
+    pvt_path = tmp_path / "pvt_config_WELL-001.json"
+    output_dir = tmp_path / "output"
+
+    _write_history(history_path)
+    _write_pvt_config(pvt_path)
+
+    enriched_path, _ = run_m1_m2_step(
+        well_id="WELL-001",
+        history_csv=history_path,
+        pvt_config_json=pvt_path,
+        output_dir=output_dir,
+        from_date=None,
+        to_date=None,
+        auto_estimate_missing_pwf=True,
+    )
+
+    fit_path, _, dca_qc_path, _, _ = run_m3_dca_step(
+        well_id="WELL-001",
+        history_enriched_csv=enriched_path,
+        output_dir=output_dir,
+        rate_column="qo_stb_d",
+        forecast_days=365,
+        abandonment_rate=50.0,
+        fit_from_date=None,
+        fit_to_date=None,
+        exclude_first_n=0,
+        forecast_start_rate_mode="last-window-rate",
+        forecast_start_rate=None,
+        make_plot=False,
+    )
+
+    fit_df = pd.read_csv(fit_path)
+    assert set(fit_df["forecast_start_rate_mode"]) == {"last-window-rate"}
+
+    qc = json.loads(dca_qc_path.read_text(encoding="utf-8"))
+    assert qc["forecast_start_rate"]["mode"] == "last-window-rate"
 
 
 def _write_history(path: Path) -> None:

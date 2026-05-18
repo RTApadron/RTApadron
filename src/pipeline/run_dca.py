@@ -52,6 +52,8 @@ def main() -> int:
             fit_from_date=args.fit_from_date,
             fit_to_date=args.fit_to_date,
             exclude_first_n=args.exclude_first_n,
+            forecast_start_rate_mode=args.forecast_start_rate_mode,
+            forecast_start_rate_stb_d=args.forecast_start_rate,
         )
 
         output = run_dca_analysis(
@@ -77,8 +79,10 @@ def main() -> int:
                 rate_column=args.rate_column,
             )
             generated_forecast_plot = plot_dca_forecast(
+                history,
                 output,
                 plot_path=forecast_plot_path,
+                rate_column=args.rate_column,
             )
 
     except Exception as exc:
@@ -228,11 +232,19 @@ def plot_dca_rate_fit(
 
 
 def plot_dca_forecast(
+    history_df: pd.DataFrame,
     output: DCAOutput,
     *,
     plot_path: str | Path,
+    rate_column: str,
 ) -> Path:
-    """Genera gráfica de forecast DCA: tasa y acumulado por modelo."""
+    """Genera gráfica de forecast DCA incluyendo historia previa.
+
+    Incluye:
+    - historia de producción previa al inicio del DCA/forecast;
+    - línea vertical punteada entre historia y predicción;
+    - acumulado y EUR en MMSTB.
+    """
     forecast = pd.DataFrame(output.forecast_rows)
     if forecast.empty:
         msg = "No hay filas de forecast para graficar."
@@ -244,41 +256,109 @@ def plot_dca_forecast(
         msg = f"Forecast incompleto para graficar: faltan {sorted(missing)}"
         raise ValueError(msg)
 
+    history = _prepare_plot_history(history_df, rate_column=rate_column)
+    if history.empty:
+        msg = "No hay historia válida para incluir en la gráfica de forecast."
+        raise ValueError(msg)
+
+    fit_window = output.qc_report.get("fit_window", {})
+    fit_start_date = _resolve_fit_start_date(history, fit_window)
+    full_start = pd.Timestamp(history["date"].min())
+
+    history["days_since_start"] = (
+        history["date"] - full_start
+    ).dt.total_seconds() / 86400.0
+
+    pre_history = history[history["date"] < fit_start_date].copy()
+    if pre_history.empty:
+        pre_history = history.iloc[[0]].copy()
+
+    pre_days = pre_history["days_since_start"].to_numpy(dtype=float)
+    pre_rates = pre_history[rate_column].to_numpy(dtype=float)
+    pre_cum_stb = _cumulative_from_days_and_rates(pre_days, pre_rates)
+
+    forecast_start_day = float(
+        (fit_start_date - full_start).total_seconds() / 86400.0
+    )
+    history_cum_at_start_stb = (
+        float(pre_cum_stb[-1]) if len(pre_cum_stb) > 0 else 0.0
+    )
+
     out_path = Path(plot_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     best_model = str(output.qc_report.get("best_model_by_rmse", "unknown"))
     eur_summary = output.qc_report.get("eur_summary", {})
 
-    fig, axes = plt.subplots(2, 1, figsize=(10, 8), sharex=True)
+    fig, axes = plt.subplots(2, 1, figsize=(11, 8), sharex=True)
+
+    axes[0].plot(
+        pre_days,
+        pre_rates,
+        marker="o",
+        linewidth=1.5,
+        label="Historia previa",
+    )
 
     for model, group in forecast.groupby("model"):
         group = group.sort_values("days")
+        shifted_days = forecast_start_day + group["days"].to_numpy(dtype=float)
         axes[0].plot(
-            group["days"],
+            shifted_days,
             group["qo_forecast_stb_d"],
             label=str(model),
         )
+
+    axes[1].plot(
+        pre_days,
+        pre_cum_stb / 1_000_000.0,
+        linewidth=1.8,
+        label="Historia previa",
+    )
+
+    for model, group in forecast.groupby("model"):
+        group = group.sort_values("days")
+        shifted_days = forecast_start_day + group["days"].to_numpy(dtype=float)
+        cum_mmstb = (
+            history_cum_at_start_stb + group["cumulative_oil_stb"].to_numpy(dtype=float)
+        ) / 1_000_000.0
         axes[1].plot(
-            group["days"],
-            group["cumulative_oil_stb"],
+            shifted_days,
+            cum_mmstb,
             label=str(model),
         )
+
+    for ax in axes:
+        ax.axvline(
+            x=forecast_start_day,
+            linestyle="--",
+            linewidth=1.2,
+            alpha=0.85,
+        )
+
+    axes[0].text(
+        forecast_start_day,
+        axes[0].get_ylim()[1] * 0.98,
+        "Inicio DCA / predicción",
+        fontsize=8,
+        ha="left",
+        va="top",
+    )
 
     axes[0].set_title(
         "DCA / Arps - Pronóstico de tasa y EUR\n"
         f"Mejor modelo por RMSE: {best_model}"
     )
-    axes[0].set_ylabel("Tasa pronosticada [STB/d]")
+    axes[0].set_ylabel("Tasa [STB/d]")
     axes[0].grid(True, alpha=0.3)
     axes[0].legend(fontsize=8)
 
-    axes[1].set_xlabel("Tiempo desde inicio del forecast [días]")
-    axes[1].set_ylabel("Aceite acumulado [STB]")
+    axes[1].set_xlabel("Tiempo desde inicio de historia [días]")
+    axes[1].set_ylabel("Aceite acumulado [MMSTB]")
     axes[1].grid(True, alpha=0.3)
     axes[1].legend(fontsize=8)
 
-    text = _format_eur_summary_text(eur_summary)
+    text = _format_eur_summary_text_mmstb(eur_summary)
     if text:
         axes[1].text(
             0.01,
@@ -296,7 +376,7 @@ def plot_dca_forecast(
     return out_path
 
 
-def _format_eur_summary_text(summary: object) -> str:
+def _format_eur_summary_text_mmstb(summary: object) -> str:
     if not isinstance(summary, dict):
         return ""
 
@@ -311,9 +391,9 @@ def _format_eur_summary_text(summary: object) -> str:
         return ""
 
     return (
-        f"Base: {base_model} = {float(base_eur):,.0f} STB\n"
-        f"Bajo: {low_model} = {float(low_eur):,.0f} STB\n"
-        f"Alto: {high_model} = {float(high_eur):,.0f} STB"
+        f"Base: {base_model} = {float(base_eur) / 1_000_000.0:.3f} MMSTB\n"
+        f"Bajo: {low_model} = {float(low_eur) / 1_000_000.0:.3f} MMSTB\n"
+        f"Alto: {high_model} = {float(high_eur) / 1_000_000.0:.3f} MMSTB"
     )
 
 
@@ -332,6 +412,35 @@ def _prepare_plot_history(history_df: pd.DataFrame, *, rate_column: str) -> pd.D
     df = df.sort_values("date").reset_index(drop=True)
 
     return df[["date", rate_column]].copy()
+
+
+def _resolve_fit_start_date(
+    history: pd.DataFrame,
+    fit_window: dict[str, object],
+) -> pd.Timestamp:
+    """Resuelve la fecha de inicio del DCA/forecast."""
+    fit_date_min = fit_window.get("fit_date_min")
+    if isinstance(fit_date_min, str) and fit_date_min:
+        return pd.Timestamp(fit_date_min)
+
+    return pd.Timestamp(history["date"].min())
+
+
+def _cumulative_from_days_and_rates(
+    days: np.ndarray,
+    rates: np.ndarray,
+) -> np.ndarray:
+    """Calcula acumulado por trapecios para una historia irregular."""
+    days = np.asarray(days, dtype=float)
+    rates = np.asarray(rates, dtype=float)
+
+    cumulative = np.zeros_like(days, dtype=float)
+    if len(days) <= 1:
+        return cumulative
+
+    increments = 0.5 * (rates[1:] + rates[:-1]) * np.diff(days)
+    cumulative[1:] = np.cumsum(increments)
+    return cumulative
 
 
 def _parse_args() -> argparse.Namespace:
@@ -384,6 +493,21 @@ def _parse_args() -> argparse.Namespace:
         default=0,
         type=int,
         help="Excluye los primeros N puntos después de filtrar por fecha.",
+    )
+    parser.add_argument(
+        "--forecast-start-rate-mode",
+        default="fitted",
+        choices=["fitted", "last-window-rate", "manual"],
+        help=(
+            "Modo de tasa inicial para forecast: fitted, last-window-rate o manual. "
+            "Por defecto: fitted."
+        ),
+    )
+    parser.add_argument(
+        "--forecast-start-rate",
+        default=None,
+        type=float,
+        help="Tasa inicial manual STB/d si --forecast-start-rate-mode manual.",
     )
     parser.add_argument(
         "--plot-file",

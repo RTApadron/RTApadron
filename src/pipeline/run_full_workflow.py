@@ -60,6 +60,8 @@ def main() -> int:
             fit_from_date=args.fit_from_date,
             fit_to_date=args.fit_to_date,
             exclude_first_n=args.exclude_first_n,
+            forecast_start_rate_mode=args.forecast_start_rate_mode,
+            forecast_start_rate=args.forecast_start_rate,
             make_plot=not args.no_plot,
         )
 
@@ -141,6 +143,8 @@ def run_m3_dca_step(
     fit_from_date: str | None,
     fit_to_date: str | None,
     exclude_first_n: int,
+    forecast_start_rate_mode: str,
+    forecast_start_rate: float | None,
     make_plot: bool,
 ) -> tuple[Path, Path, Path, Path | None, Path | None]:
     """Ejecuta Módulo 3 DCA sobre historia enriquecida."""
@@ -157,6 +161,8 @@ def run_m3_dca_step(
         fit_from_date=fit_from_date,
         fit_to_date=fit_to_date,
         exclude_first_n=exclude_first_n,
+        forecast_start_rate_mode=forecast_start_rate_mode,  # type: ignore[arg-type]
+        forecast_start_rate_stb_d=forecast_start_rate,
     )
 
     dca_output = run_dca_analysis(
@@ -185,8 +191,10 @@ def run_m3_dca_step(
             rate_column=rate_column,
         )
         plot_dca_forecast(
+            history_enriched,
             dca_output,
             plot_path=forecast_plot_path,
+            rate_column=rate_column,
         )
 
     return fit_path, forecast_path, qc_path, rate_plot_path, forecast_plot_path
@@ -269,6 +277,21 @@ def _parse_args() -> argparse.Namespace:
         default=0,
         type=int,
         help="Excluye los primeros N puntos después del filtro de fecha DCA.",
+    )
+    parser.add_argument(
+        "--forecast-start-rate-mode",
+        default="fitted",
+        choices=["fitted", "last-window-rate", "manual"],
+        help=(
+            "Modo de tasa inicial para forecast: fitted, last-window-rate o manual. "
+            "Por defecto: fitted."
+        ),
+    )
+    parser.add_argument(
+        "--forecast-start-rate",
+        default=None,
+        type=float,
+        help="Tasa inicial manual STB/d si --forecast-start-rate-mode manual.",
     )
     parser.add_argument(
         "--no-plot",

@@ -7,6 +7,7 @@ Implementa una versión conservadora del Módulo 3:
 - selección de ventana de ajuste
 - pronóstico por integración numérica diaria
 - QC comparativo de EUR por modelo
+- tasa inicial configurable para forecast
 """
 
 from __future__ import annotations
@@ -40,6 +41,7 @@ def run_dca_analysis(
 ) -> DCAOutput:
     """Ejecuta ajuste DCA sobre una historia enriquecida M1-M2."""
     cfg = config or DCAForecastConfig()
+
     clean = prepare_rate_history(
         history_df,
         rate_column=cfg.rate_column,
@@ -63,6 +65,7 @@ def run_dca_analysis(
             rate_column=cfg.rate_column,
             forecast_days=cfg.forecast_days,
             abandonment_rate_stb_d=cfg.abandonment_rate_stb_d,
+            config=cfg,
         )
         fit_results.append(fit)
 
@@ -152,6 +155,7 @@ def fit_arps_model(
     rate_column: str,
     forecast_days: int,
     abandonment_rate_stb_d: float | None,
+    config: DCAForecastConfig,
 ) -> DCAFitResult:
     """Ajusta un modelo Arps específico."""
     t = clean_df["days"].to_numpy(dtype=float)
@@ -171,14 +175,21 @@ def fit_arps_model(
     rmse = _rmse(q, q_hat)
     r2 = _r2(q, q_hat)
 
+    forecast_qi = _resolve_forecast_qi(
+        clean_df,
+        fit_qi=qi,
+        rate_column=rate_column,
+        config=config,
+    )
+
     forecast_days_array = _forecast_days_array(
         forecast_days=forecast_days,
-        qi=qi,
+        qi=forecast_qi,
         di=di,
         b=b,
         abandonment_rate_stb_d=abandonment_rate_stb_d,
     )
-    q_forecast = arps_rate(forecast_days_array, qi=qi, di=di, b=b)
+    q_forecast = arps_rate(forecast_days_array, qi=forecast_qi, di=di, b=b)
     eur = _trapezoid_cumulative(forecast_days_array, q_forecast)
 
     return DCAFitResult(
@@ -186,6 +197,8 @@ def fit_arps_model(
         model=model,
         rate_column=rate_column,
         qi_stb_d=float(qi),
+        forecast_qi_stb_d=float(forecast_qi),
+        forecast_start_rate_mode=config.forecast_start_rate_mode,
         di_nominal_d=float(di),
         b=float(b),
         rmse_stb_d=float(rmse),
@@ -231,14 +244,14 @@ def build_forecast_rows(
     """Construye filas diarias de pronóstico para exportar."""
     days = _forecast_days_array(
         forecast_days=forecast_days,
-        qi=fit.qi_stb_d,
+        qi=fit.forecast_qi_stb_d,
         di=fit.di_nominal_d,
         b=fit.b,
         abandonment_rate_stb_d=abandonment_rate_stb_d,
     )
     rates = arps_rate(
         days,
-        qi=fit.qi_stb_d,
+        qi=fit.forecast_qi_stb_d,
         di=fit.di_nominal_d,
         b=fit.b,
     )
@@ -252,6 +265,8 @@ def build_forecast_rows(
                 "model": fit.model,
                 "date": (start_date + pd.Timedelta(days=float(day))).date().isoformat(),
                 "days": float(day),
+                "forecast_qi_stb_d": float(fit.forecast_qi_stb_d),
+                "forecast_start_rate_mode": fit.forecast_start_rate_mode,
                 "qo_forecast_stb_d": float(rate),
                 "cumulative_oil_stb": float(cum),
             }
@@ -287,6 +302,11 @@ def build_dca_qc_report(
         },
         "forecast_days_requested": int(config.forecast_days),
         "abandonment_rate_stb_d": config.abandonment_rate_stb_d,
+        "forecast_start_rate": {
+            "mode": config.forecast_start_rate_mode,
+            "manual_rate_stb_d": config.forecast_start_rate_stb_d,
+            "last_window_rate_stb_d": float(clean_df[config.rate_column].iloc[-1]),
+        },
         "models": [fit.model for fit in fit_results],
         "best_model_by_rmse": best.model,
         "best_model_rmse_stb_d": float(best.rmse_stb_d),
@@ -308,7 +328,7 @@ def _build_eur_comparison(
         final_rate = float(
             arps_rate(
                 np.array([float(fit.forecast_days)]),
-                qi=fit.qi_stb_d,
+                qi=fit.forecast_qi_stb_d,
                 di=fit.di_nominal_d,
                 b=fit.b,
             )[0]
@@ -329,6 +349,9 @@ def _build_eur_comparison(
                 "eur_stb": float(fit.eur_stb),
                 "forecast_end_day": int(fit.forecast_days),
                 "forecast_end_rate_stb_d": final_rate,
+                "fit_qi_stb_d": float(fit.qi_stb_d),
+                "forecast_qi_stb_d": float(fit.forecast_qi_stb_d),
+                "forecast_start_rate_mode": fit.forecast_start_rate_mode,
                 "rmse_stb_d": float(fit.rmse_stb_d),
                 "r2": float(fit.r2),
                 "b": float(fit.b),
@@ -377,6 +400,55 @@ def _build_eur_summary(
             if not bool(row["reached_abandonment_rate"])
         ],
     }
+
+
+def _resolve_forecast_qi(
+    clean_df: pd.DataFrame,
+    *,
+    fit_qi: float,
+    rate_column: str,
+    config: DCAForecastConfig,
+) -> float:
+    """Resuelve la tasa inicial que se usará en el forecast.
+
+    fitted:
+        Usa qi ajustado por regresión.
+
+    last-window-rate:
+        Usa la última tasa real de la ventana de ajuste.
+
+    manual:
+        Usa config.forecast_start_rate_stb_d.
+    """
+    mode = config.forecast_start_rate_mode
+
+    if mode == "fitted":
+        return float(fit_qi)
+
+    if mode == "last-window-rate":
+        value = float(clean_df[rate_column].iloc[-1])
+        if value <= 0:
+            msg = "La última tasa de la ventana debe ser positiva."
+            raise ValueError(msg)
+        return value
+
+    if mode == "manual":
+        if config.forecast_start_rate_stb_d is None:
+            msg = (
+                "forecast_start_rate_stb_d es requerido cuando "
+                "forecast_start_rate_mode='manual'."
+            )
+            raise ValueError(msg)
+
+        value = float(config.forecast_start_rate_stb_d)
+        if value <= 0:
+            msg = "forecast_start_rate_stb_d debe ser positivo."
+            raise ValueError(msg)
+
+        return value
+
+    msg = f"Modo forecast_start_rate_mode no soportado: {mode}"
+    raise ValueError(msg)
 
 
 def _reached_abandonment(
@@ -571,7 +643,7 @@ def _build_dca_warnings(
             final_rate = float(
                 arps_rate(
                     np.array([float(fit.forecast_days)]),
-                    qi=fit.qi_stb_d,
+                    qi=fit.forecast_qi_stb_d,
                     di=fit.di_nominal_d,
                     b=fit.b,
                 )[0]
