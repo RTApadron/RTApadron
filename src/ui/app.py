@@ -6,6 +6,7 @@ This UI is intentionally thin:
 - Displays generated CSV/JSON/PNG artifacts.
 - Visualizes M1 well/history data, M2 PVT data, and M3 DCA outputs.
 - Allows interactive DCA fit-window selection from production history.
+- Allows interactive forecast-anchor selection from production history.
 
 No PVT, well-integration, or DCA calculation logic is duplicated here.
 """
@@ -60,6 +61,10 @@ SESSION_FIT_FROM_DATE = "fit_from_date_value"
 SESSION_FIT_TO_DATE = "fit_to_date_value"
 SESSION_PENDING_FIT_WINDOW = "pending_fit_window_selection"
 
+SESSION_FORECAST_START_RATE_MODE = "forecast_start_rate_mode_value"
+SESSION_FORECAST_START_RATE = "forecast_start_rate_value"
+SESSION_PENDING_FORECAST_ANCHOR = "pending_forecast_anchor_selection"
+
 
 @dataclass(frozen=True)
 class WorkflowArtifacts:
@@ -99,12 +104,7 @@ def ensure_dirs() -> None:
 
 
 def initialize_session_defaults() -> None:
-    """Initialize Streamlit session state for DCA controls.
-
-    Pending fit-window selections are applied here before sidebar widgets
-    are instantiated. Streamlit does not allow modifying widget-backed keys
-    after the widget has already been created in the same run.
-    """
+    """Initialize Streamlit session state before widgets are instantiated."""
     pending_window = st.session_state.pop(SESSION_PENDING_FIT_WINDOW, None)
 
     if pending_window is not None:
@@ -119,10 +119,25 @@ def initialize_session_defaults() -> None:
         except (KeyError, TypeError, ValueError):
             pass
 
+    pending_anchor = st.session_state.pop(SESSION_PENDING_FORECAST_ANCHOR, None)
+
+    if pending_anchor is not None:
+        try:
+            anchor_rate = float(pending_anchor["rate_stb_d"])
+            st.session_state[SESSION_FORECAST_START_RATE_MODE] = "manual"
+            st.session_state[SESSION_FORECAST_START_RATE] = anchor_rate
+        except (KeyError, TypeError, ValueError):
+            pass
+
     st.session_state.setdefault(SESSION_USE_FIT_FROM, True)
     st.session_state.setdefault(SESSION_USE_FIT_TO, True)
     st.session_state.setdefault(SESSION_FIT_FROM_DATE, date(2024, 7, 1))
     st.session_state.setdefault(SESSION_FIT_TO_DATE, date(2025, 11, 30))
+    st.session_state.setdefault(
+        SESSION_FORECAST_START_RATE_MODE,
+        "last-window-rate",
+    )
+    st.session_state.setdefault(SESSION_FORECAST_START_RATE, 100.0)
 
 
 def apply_light_css() -> None:
@@ -366,6 +381,24 @@ def render_time_series(
     st.caption(y_label)
 
 
+def extract_plotly_selection_points(event: Any) -> list[dict[str, Any]]:
+    """Extract selected points from a Streamlit Plotly selection event."""
+    if isinstance(event, dict):
+        selection = event.get("selection", {})
+    else:
+        selection = getattr(event, "selection", {})
+
+    if isinstance(selection, dict):
+        points = selection.get("points", [])
+    else:
+        points = getattr(selection, "points", [])
+
+    if points is None:
+        return []
+
+    return list(points)
+
+
 def parse_plotly_selected_dates(points: list[dict[str, Any]]) -> tuple[date, date] | None:
     """Extract min/max dates from selected Plotly points."""
     raw_x_values = [point.get("x") for point in points if point.get("x") is not None]
@@ -387,6 +420,31 @@ def parse_plotly_selected_dates(points: list[dict[str, Any]]) -> tuple[date, dat
     return start_date, end_date
 
 
+def parse_forecast_anchor_point(
+    points: list[dict[str, Any]],
+) -> tuple[date, float] | None:
+    """Return the latest selected point as forecast anchor."""
+    parsed_points: list[tuple[pd.Timestamp, float]] = []
+
+    for point in points:
+        raw_date = point.get("x")
+        raw_rate = point.get("y")
+
+        parsed_date = pd.to_datetime(raw_date, errors="coerce")
+        rate = as_float(raw_rate, default=-1.0)
+
+        if pd.isna(parsed_date) or rate <= 0:
+            continue
+
+        parsed_points.append((parsed_date, rate))
+
+    if not parsed_points:
+        return None
+
+    anchor_timestamp, anchor_rate = max(parsed_points, key=lambda item: item[0])
+    return anchor_timestamp.date(), anchor_rate
+
+
 def update_fit_window_from_selection(start_date: date, end_date: date) -> None:
     """Store selected fit window and rerun before updating sidebar widgets."""
     current_start = st.session_state.get(SESSION_FIT_FROM_DATE)
@@ -403,6 +461,48 @@ def update_fit_window_from_selection(start_date: date, end_date: date) -> None:
     st.rerun()
 
 
+def update_forecast_anchor_from_selection(
+    anchor_date: date,
+    anchor_rate_stb_d: float,
+) -> None:
+    """Store selected forecast anchor and rerun before updating sidebar widgets."""
+    current_mode = st.session_state.get(SESSION_FORECAST_START_RATE_MODE)
+    current_rate = as_float(st.session_state.get(SESSION_FORECAST_START_RATE))
+
+    if current_mode == "manual" and abs(current_rate - anchor_rate_stb_d) < 1e-9:
+        return
+
+    st.session_state[SESSION_PENDING_FORECAST_ANCHOR] = {
+        "date": anchor_date.isoformat(),
+        "rate_stb_d": float(anchor_rate_stb_d),
+    }
+
+    st.rerun()
+
+
+def build_qo_plot_dataframe(enriched_df: pd.DataFrame) -> pd.DataFrame | None:
+    """Build a clean dataframe with date and qo for interactive DCA plots."""
+    required_columns = {"date", "qo_stb_d"}
+    missing_columns = required_columns.difference(enriched_df.columns)
+    if missing_columns:
+        st.info(
+            "No es posible construir la gráfica interactiva. "
+            f"Faltan columnas: {sorted(missing_columns)}"
+        )
+        return None
+
+    plot_df = enriched_df[["date", "qo_stb_d"]].copy()
+    plot_df["date"] = pd.to_datetime(plot_df["date"], errors="coerce")
+    plot_df["qo_stb_d"] = pd.to_numeric(plot_df["qo_stb_d"], errors="coerce")
+    plot_df = plot_df.dropna(subset=["date", "qo_stb_d"]).sort_values("date")
+
+    if plot_df.empty:
+        st.info("No hay datos válidos de qo_stb_d para construir la gráfica.")
+        return None
+
+    return plot_df
+
+
 def render_interactive_dca_fit_window_selector(enriched_df: pd.DataFrame) -> None:
     """Render interactive DCA fit-window selector using Plotly selection events."""
     st.subheader("Selección interactiva de ventana de ajuste DCA")
@@ -414,22 +514,8 @@ def render_interactive_dca_fit_window_selector(enriched_df: pd.DataFrame) -> Non
         )
         return
 
-    required_columns = {"date", "qo_stb_d"}
-    missing_columns = required_columns.difference(enriched_df.columns)
-    if missing_columns:
-        st.info(
-            "No es posible construir el selector interactivo. "
-            f"Faltan columnas: {sorted(missing_columns)}"
-        )
-        return
-
-    plot_df = enriched_df[["date", "qo_stb_d"]].copy()
-    plot_df["date"] = pd.to_datetime(plot_df["date"], errors="coerce")
-    plot_df["qo_stb_d"] = pd.to_numeric(plot_df["qo_stb_d"], errors="coerce")
-    plot_df = plot_df.dropna(subset=["date", "qo_stb_d"]).sort_values("date")
-
-    if plot_df.empty:
-        st.info("No hay datos válidos de qo_stb_d para seleccionar ventana DCA.")
+    plot_df = build_qo_plot_dataframe(enriched_df)
+    if plot_df is None:
         return
 
     fit_from = st.session_state.get(SESSION_FIT_FROM_DATE)
@@ -493,8 +579,7 @@ def render_interactive_dca_fit_window_selector(enriched_df: pd.DataFrame) -> Non
         "`fit_from_date` y `fit_to_date`."
     )
 
-    selection = event.get("selection", {}) if isinstance(event, dict) else {}
-    points = selection.get("points", []) if isinstance(selection, dict) else []
+    points = extract_plotly_selection_points(event)
 
     if not points:
         st.info(
@@ -516,6 +601,104 @@ def render_interactive_dca_fit_window_selector(enriched_df: pd.DataFrame) -> Non
         "Actualizando controles laterales..."
     )
     update_fit_window_from_selection(start_date, end_date)
+
+
+def render_interactive_forecast_anchor_selector(enriched_df: pd.DataFrame) -> None:
+    """Render interactive forecast-anchor selector using Plotly selection events."""
+    st.subheader("Selección interactiva de punto de amarre del forecast")
+
+    if go is None:
+        st.warning(
+            "Plotly no está instalado. Agrega `plotly>=5.22` a requirements.txt "
+            "y ejecuta `pip install plotly`."
+        )
+        return
+
+    plot_df = build_qo_plot_dataframe(enriched_df)
+    if plot_df is None:
+        return
+
+    current_mode = st.session_state.get(SESSION_FORECAST_START_RATE_MODE)
+    current_rate = as_float(st.session_state.get(SESSION_FORECAST_START_RATE))
+
+    fig = go.Figure()
+
+    fig.add_trace(
+        go.Scatter(
+            x=plot_df["date"],
+            y=plot_df["qo_stb_d"],
+            mode="markers+lines",
+            name="qo_stb_d",
+            marker={"size": 8},
+            customdata=plot_df["date"].dt.strftime("%Y-%m-%d"),
+            hovertemplate=(
+                "Fecha: %{customdata}<br>"
+                "qo: %{y:,.2f} STB/d"
+                "<extra></extra>"
+            ),
+        )
+    )
+
+    if current_mode == "manual" and current_rate > 0:
+        fig.add_hline(
+            y=current_rate,
+            line_dash="dash",
+            annotation_text=f"Amarre actual: {current_rate:,.2f} STB/d",
+            annotation_position="top left",
+        )
+
+    fig.update_layout(
+        title=(
+            "Selecciona un punto de qo para usarlo como tasa inicial del forecast"
+        ),
+        xaxis_title="Fecha",
+        yaxis_title="Tasa de aceite, qo [STB/d]",
+        dragmode="select",
+        height=520,
+        margin={"l": 20, "r": 20, "t": 60, "b": 20},
+        legend={"orientation": "h"},
+    )
+
+    event = st.plotly_chart(
+        fig,
+        use_container_width=True,
+        on_select="rerun",
+        selection_mode=("points", "box", "lasso"),
+        key="forecast_anchor_selector",
+        config={
+            "displaylogo": False,
+            "modeBarButtonsToAdd": ["select2d", "lasso2d"],
+        },
+    )
+
+    st.caption(
+        "Uso: haz click sobre un punto o selecciónalo con una caja pequeña. "
+        "Si seleccionas varios puntos, la app usa el punto más reciente. "
+        "Luego debes ejecutar nuevamente el workflow."
+    )
+
+    points = extract_plotly_selection_points(event)
+
+    if not points:
+        st.info(
+            "No hay punto seleccionado. Puedes seguir usando "
+            "`fitted`, `last-window-rate` o `manual` en la barra lateral."
+        )
+        return
+
+    anchor = parse_forecast_anchor_point(points)
+    if anchor is None:
+        st.warning("No fue posible interpretar el punto de amarre seleccionado.")
+        return
+
+    anchor_date, anchor_rate = anchor
+
+    st.success(
+        "Punto de amarre seleccionado: "
+        f"{anchor_date.isoformat()} | qo = {anchor_rate:,.2f} STB/d. "
+        "Actualizando modo de forecast a manual..."
+    )
+    update_forecast_anchor_from_selection(anchor_date, anchor_rate)
 
 
 def render_m1_summary(enriched_df: pd.DataFrame) -> None:
@@ -648,7 +831,10 @@ def render_m2_summary(enriched_df: pd.DataFrame) -> None:
         enriched_df,
         title="Propiedades PVT calculadas",
         columns=M2_PVT_COLUMNS,
-        y_label="Unidades según contrato de datos: Bo rb/STB, μo cP, densidad lb/ft³, Pb psia.",
+        y_label=(
+            "Unidades según contrato de datos: Bo rb/STB, μo cP, "
+            "densidad lb/ft³, Pb psia."
+        ),
     )
 
     meta_columns = [
@@ -799,6 +985,21 @@ def render_sidebar_inputs() -> dict[str, Any]:
     st.sidebar.divider()
     st.sidebar.header("Forecast")
 
+    forecast_start_rate_mode = st.sidebar.selectbox(
+        "forecast_start_rate_mode",
+        options=FORECAST_START_RATE_MODES,
+        key=SESSION_FORECAST_START_RATE_MODE,
+    )
+
+    forecast_start_rate = None
+    if forecast_start_rate_mode == "manual":
+        forecast_start_rate = st.sidebar.number_input(
+            "forecast_start_rate",
+            min_value=0.000001,
+            step=1.0,
+            key=SESSION_FORECAST_START_RATE,
+        )
+
     forecast_days = st.sidebar.number_input(
         "forecast_days",
         min_value=1,
@@ -814,21 +1015,6 @@ def render_sidebar_inputs() -> dict[str, Any]:
         step=1.0,
         help="Tasa económica o técnica de abandono.",
     )
-
-    forecast_start_rate_mode = st.sidebar.selectbox(
-        "forecast_start_rate_mode",
-        options=FORECAST_START_RATE_MODES,
-        index=1,
-    )
-
-    forecast_start_rate = None
-    if forecast_start_rate_mode == "manual":
-        forecast_start_rate = st.sidebar.number_input(
-            "forecast_start_rate",
-            min_value=0.000001,
-            value=100.0,
-            step=1.0,
-        )
 
     return {
         "history_upload": history_upload,
@@ -859,6 +1045,7 @@ def render_artifacts(well_id: str) -> None:
             "M2 PVT",
             "M3 DCA",
             "Selección ventana DCA",
+            "Selección amarre forecast",
             "Gráficas DCA",
             "Descargas",
         ]
@@ -896,6 +1083,15 @@ def render_artifacts(well_id: str) -> None:
             render_interactive_dca_fit_window_selector(enriched_df)
 
     with tabs[4]:
+        if enriched_df is None:
+            st.info(
+                "Ejecuta primero el workflow para generar la historia enriquecida "
+                "y habilitar la selección del punto de amarre."
+            )
+        else:
+            render_interactive_forecast_anchor_selector(enriched_df)
+
+    with tabs[5]:
         col_fit, col_forecast = st.columns(2)
         with col_fit:
             render_png(
@@ -908,7 +1104,7 @@ def render_artifacts(well_id: str) -> None:
                 "Forecast DCA",
             )
 
-    with tabs[5]:
+    with tabs[6]:
         st.subheader("Descargar artefactos")
         col_csv, col_json, col_png = st.columns(3)
 
