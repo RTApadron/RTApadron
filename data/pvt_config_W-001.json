@@ -1,0 +1,15 @@
+{
+  "well_id": "W-001",
+  "api": 30.0,
+  "gamma_g": 0.75,
+  "temp_f": 180.0,
+  "rsb_scf_stb": 300.0,
+  "pb_psia": 1200.0,
+  "bo_rb_stb": 1.25,
+  "rs_scf_stb": 300.0,
+  "mu_o_cp": 2.5,
+  "rho_o_lbft3": 51.5,
+  "oil_corr": "existing_m2_placeholder",
+  "pvt_model_version": "m2-adapter-0.1",
+  "calibrate": false
+}
