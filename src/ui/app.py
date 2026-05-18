@@ -1,9 +1,10 @@
-"""Streamlit UI for ecoRTA DCA workflow.
+"""Streamlit UI for ecoRTA M1-M2-M3 workflow.
 
 This UI is intentionally thin:
 - Collects user inputs.
 - Executes the existing full workflow CLI.
 - Displays generated CSV/JSON/PNG artifacts.
+- Visualizes M1 well/history data, M2 PVT data, and M3 DCA outputs.
 
 No PVT, well-integration, or DCA calculation logic is duplicated here.
 """
@@ -32,6 +33,21 @@ FORECAST_START_RATE_MODES = (
     "manual",
 )
 
+M1_RATE_COLUMNS = ("qo_stb_d", "qg_mscf_d", "qw_stb_d")
+M1_PRESSURE_COLUMNS = (
+    "whp_psia",
+    "pwf_used_psia",
+    "pwf_measured_psia",
+    "pwf_estimated_psia",
+)
+M2_PVT_COLUMNS = (
+    "bo",
+    "rs",
+    "mu_o_cp",
+    "rho_o_lbft3",
+    "pb_psia",
+)
+
 
 @dataclass(frozen=True)
 class WorkflowArtifacts:
@@ -58,7 +74,7 @@ class WorkflowArtifacts:
 def configure_page() -> None:
     """Configure Streamlit page defaults."""
     st.set_page_config(
-        page_title="ecoRTA | DCA",
+        page_title="ecoRTA | M1-M2-M3",
         page_icon="📉",
         layout="wide",
     )
@@ -119,6 +135,24 @@ def read_json(path: Path) -> dict[str, Any]:
     return data
 
 
+def read_csv_safe(path: Path) -> pd.DataFrame | None:
+    """Read CSV safely and normalize date column when available."""
+    if not path.exists():
+        return None
+
+    try:
+        df = pd.read_csv(path)
+    except Exception as exc:  # noqa: BLE001
+        st.error(f"No fue posible leer `{path.name}`: {exc}")
+        return None
+
+    if "date" in df.columns:
+        df["date"] = pd.to_datetime(df["date"], errors="coerce")
+        df = df.sort_values("date")
+
+    return df
+
+
 def as_float(value: Any, default: float = 0.0) -> float:
     """Convert a value to float safely."""
     try:
@@ -127,6 +161,11 @@ def as_float(value: Any, default: float = 0.0) -> float:
         return float(value)
     except (TypeError, ValueError):
         return default
+
+
+def existing_columns(df: pd.DataFrame, columns: tuple[str, ...]) -> list[str]:
+    """Return columns that exist in a dataframe."""
+    return [column for column in columns if column in df.columns]
 
 
 def build_full_workflow_command(
@@ -223,14 +262,9 @@ def render_dataframe_from_csv(path: Path, title: str) -> None:
     """Render a CSV artifact as a dataframe."""
     st.subheader(title)
 
-    if not path.exists():
+    df = read_csv_safe(path)
+    if df is None:
         st.info(f"No se encontró `{path.name}`.")
-        return
-
-    try:
-        df = pd.read_csv(path)
-    except Exception as exc:  # noqa: BLE001
-        st.error(f"No fue posible leer `{path.name}`: {exc}")
         return
 
     st.dataframe(df, use_container_width=True, hide_index=True)
@@ -264,18 +298,206 @@ def render_png(path: Path, title: str) -> None:
     st.image(str(path), use_container_width=True)
 
 
+def render_time_series(
+    df: pd.DataFrame,
+    *,
+    title: str,
+    columns: tuple[str, ...],
+    y_label: str,
+) -> None:
+    """Render a Streamlit time-series chart for selected existing columns."""
+    st.subheader(title)
+
+    if "date" not in df.columns:
+        st.info("No existe columna `date` para graficar serie de tiempo.")
+        return
+
+    selected_columns = existing_columns(df, columns)
+    if not selected_columns:
+        st.info(f"No hay columnas disponibles para graficar: {list(columns)}")
+        return
+
+    chart_df = df[["date", *selected_columns]].dropna(subset=["date"])
+    if chart_df.empty:
+        st.info("No hay datos válidos para graficar.")
+        return
+
+    chart_df = chart_df.set_index("date")
+    st.line_chart(chart_df, y=selected_columns, height=360)
+    st.caption(y_label)
+
+
+def render_m1_summary(enriched_df: pd.DataFrame) -> None:
+    """Render M1 well/history visualization."""
+    st.header("Módulo 1 | Pozo e historia de producción")
+
+    col1, col2, col3, col4 = st.columns(4)
+
+    with col1:
+        st.metric("Registros", f"{len(enriched_df):,}")
+
+    with col2:
+        if "date" in enriched_df.columns and enriched_df["date"].notna().any():
+            st.metric(
+                "Fecha inicial",
+                enriched_df["date"].min().date().isoformat(),
+            )
+        else:
+            st.metric("Fecha inicial", "N/D")
+
+    with col3:
+        if "date" in enriched_df.columns and enriched_df["date"].notna().any():
+            st.metric(
+                "Fecha final",
+                enriched_df["date"].max().date().isoformat(),
+            )
+        else:
+            st.metric("Fecha final", "N/D")
+
+    with col4:
+        if "pwf_source" in enriched_df.columns:
+            measured_count = int((enriched_df["pwf_source"] == "measured").sum())
+            estimated_count = int((enriched_df["pwf_source"] == "estimated").sum())
+            st.metric("Pwf medida / estimada", f"{measured_count} / {estimated_count}")
+        else:
+            st.metric("Pwf medida / estimada", "N/D")
+
+    render_time_series(
+        enriched_df,
+        title="Caudales de producción",
+        columns=M1_RATE_COLUMNS,
+        y_label="Aceite/agua en STB/d. Gas en MSCF/d si la columna existe.",
+    )
+
+    render_time_series(
+        enriched_df,
+        title="Presiones de cabeza y fondo",
+        columns=M1_PRESSURE_COLUMNS,
+        y_label="Presiones en psia.",
+    )
+
+    if "pwf_source" in enriched_df.columns:
+        st.subheader("Distribución de fuente Pwf")
+        source_counts = (
+            enriched_df["pwf_source"]
+            .fillna("unknown")
+            .astype(str)
+            .value_counts()
+            .rename_axis("pwf_source")
+            .reset_index(name="count")
+        )
+        st.dataframe(source_counts, use_container_width=True, hide_index=True)
+
+    st.subheader("Tabla M1-M2 enriquecida")
+    priority_columns = [
+        column
+        for column in (
+            "well_id",
+            "date",
+            "qo_stb_d",
+            "qg_mscf_d",
+            "qw_stb_d",
+            "whp_psia",
+            "t_wh_f",
+            "pwf_measured_psia",
+            "pwf_estimated_psia",
+            "pwf_used_psia",
+            "pwf_source",
+        )
+        if column in enriched_df.columns
+    ]
+
+    if priority_columns:
+        st.dataframe(
+            enriched_df[priority_columns],
+            use_container_width=True,
+            hide_index=True,
+        )
+    else:
+        st.dataframe(enriched_df, use_container_width=True, hide_index=True)
+
+
+def render_m2_summary(enriched_df: pd.DataFrame) -> None:
+    """Render M2 PVT visualization."""
+    st.header("Módulo 2 | Propiedades PVT por fecha")
+
+    pvt_columns = existing_columns(enriched_df, M2_PVT_COLUMNS)
+
+    col1, col2, col3, col4 = st.columns(4)
+
+    with col1:
+        if "bo" in enriched_df.columns:
+            st.metric("Bo promedio", f"{as_float(enriched_df['bo'].mean()):,.4f} rb/STB")
+        else:
+            st.metric("Bo promedio", "N/D")
+
+    with col2:
+        if "rs" in enriched_df.columns:
+            st.metric("Rs promedio", f"{as_float(enriched_df['rs'].mean()):,.2f}")
+        else:
+            st.metric("Rs promedio", "N/D")
+
+    with col3:
+        if "mu_o_cp" in enriched_df.columns:
+            st.metric(
+                "μo promedio",
+                f"{as_float(enriched_df['mu_o_cp'].mean()):,.3f} cP",
+            )
+        else:
+            st.metric("μo promedio", "N/D")
+
+    with col4:
+        if "calibrated_flag" in enriched_df.columns:
+            calibrated_count = int(enriched_df["calibrated_flag"].fillna(False).sum())
+            st.metric("Filas calibradas", f"{calibrated_count:,}")
+        else:
+            st.metric("Filas calibradas", "N/D")
+
+    render_time_series(
+        enriched_df,
+        title="Propiedades PVT calculadas",
+        columns=M2_PVT_COLUMNS,
+        y_label="Unidades según contrato de datos: Bo rb/STB, μo cP, densidad lb/ft³, Pb psia.",
+    )
+
+    meta_columns = [
+        column
+        for column in (
+            "well_id",
+            "date",
+            "bo",
+            "rs",
+            "mu_o_cp",
+            "rho_o_lbft3",
+            "pb_psia",
+            "pvt_model_version",
+            "oil_corr",
+            "calibrated_flag",
+        )
+        if column in enriched_df.columns
+    ]
+
+    st.subheader("Tabla PVT integrada")
+    if meta_columns:
+        st.dataframe(
+            enriched_df[meta_columns],
+            use_container_width=True,
+            hide_index=True,
+        )
+    elif pvt_columns:
+        st.dataframe(
+            enriched_df[pvt_columns],
+            use_container_width=True,
+            hide_index=True,
+        )
+    else:
+        st.info("No se encontraron columnas PVT en la historia enriquecida.")
+
+
 def render_quick_dca_summary(artifacts: WorkflowArtifacts) -> None:
     """Render high-level DCA metrics from fit results and QC report."""
-    if not artifacts.dca_fit_results_csv.exists():
-        return
-
-    try:
-        fit_df = pd.read_csv(artifacts.dca_fit_results_csv)
-    except Exception as exc:  # noqa: BLE001
-        st.warning(f"No fue posible cargar el resumen rápido DCA: {exc}")
-        return
-
-    if fit_df.empty:
+    fit_df = read_csv_safe(artifacts.dca_fit_results_csv)
+    if fit_df is None or fit_df.empty:
         return
 
     required_columns = {
@@ -424,19 +646,33 @@ def render_sidebar_inputs() -> dict[str, Any]:
 def render_artifacts(well_id: str) -> None:
     """Render generated workflow artifacts."""
     artifacts = WorkflowArtifacts.for_well(well_id)
+    enriched_df = read_csv_safe(artifacts.enriched_history_csv)
 
     render_quick_dca_summary(artifacts)
 
     tabs = st.tabs(
         [
-            "Resumen DCA",
-            "Historia enriquecida",
-            "Gráficas",
+            "M1 Pozo / Historia",
+            "M2 PVT",
+            "M3 DCA",
+            "Gráficas DCA",
             "Descargas",
         ]
     )
 
     with tabs[0]:
+        if enriched_df is None:
+            st.info(f"No se encontró `{artifacts.enriched_history_csv.name}`.")
+        else:
+            render_m1_summary(enriched_df)
+
+    with tabs[1]:
+        if enriched_df is None:
+            st.info(f"No se encontró `{artifacts.enriched_history_csv.name}`.")
+        else:
+            render_m2_summary(enriched_df)
+
+    with tabs[2]:
         render_dataframe_from_csv(
             artifacts.dca_fit_results_csv,
             "fit_results",
@@ -446,13 +682,7 @@ def render_artifacts(well_id: str) -> None:
             "dca_qc_report",
         )
 
-    with tabs[1]:
-        render_dataframe_from_csv(
-            artifacts.enriched_history_csv,
-            "history_enriched",
-        )
-
-    with tabs[2]:
+    with tabs[3]:
         col_fit, col_forecast = st.columns(2)
         with col_fit:
             render_png(
@@ -465,7 +695,7 @@ def render_artifacts(well_id: str) -> None:
                 "Forecast DCA",
             )
 
-    with tabs[3]:
+    with tabs[4]:
         st.subheader("Descargar artefactos")
         col_csv, col_json, col_png = st.columns(3)
 
@@ -507,10 +737,11 @@ def main() -> None:
     apply_light_css()
     ensure_dirs()
 
-    st.title("ecoRTA | Interfaz DCA")
+    st.title("ecoRTA | Workflow M1-M2-M3")
     st.caption(
-        "Workflow integrado M1-M2-M3: historia de pozo, propiedades PVT "
-        "y curvas de declinación Arps."
+        "Módulo 1: historia de pozo y Pwf. "
+        "Módulo 2: propiedades PVT. "
+        "Módulo 3: curvas de declinación Arps."
     )
 
     inputs = render_sidebar_inputs()
