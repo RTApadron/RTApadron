@@ -19,11 +19,7 @@ except ModuleNotFoundError:  # Compatibilidad con ejecuciones antiguas
 
 @dataclass(frozen=True)
 class PwfEstimationDefaults:
-    """Parámetros por defecto para el estimador Pwf v1.
-
-    Estos valores son un fallback conservador. En iteraciones posteriores deben
-    venir desde Módulo 1: well static, survey, estado mecánico y lift.
-    """
+    """Parámetros por defecto para el estimador Pwf v1."""
 
     api: float = 30.0
     whp_psia: float = 100.0
@@ -31,6 +27,21 @@ class PwfEstimationDefaults:
     tubing_id_in: float = 2.375
     length_ft: float | None = None
     cf: float = 0.02
+
+
+TRACE_COLUMNS = [
+    "pwf_estimation_method",
+    "pwf_estimation_whp_used_psia",
+    "pwf_estimation_api_used",
+    "pwf_estimation_tvd_used_ft",
+    "pwf_estimation_tubing_id_used_in",
+    "pwf_estimation_length_used_ft",
+    "pwf_estimation_used_default_whp",
+    "pwf_estimation_used_default_api",
+    "pwf_estimation_used_default_tvd",
+    "pwf_estimation_used_default_tubing_id",
+    "pwf_estimation_used_default_length",
+]
 
 
 def estimate_missing_pwf_v1(
@@ -44,22 +55,14 @@ def estimate_missing_pwf_v1(
     - Si pwf_measured_psia es válida, no se toca la fila.
     - Si pwf_estimated_psia ya existe y es válida, no se toca la fila.
     - Si faltan ambas, se llama estimate_pwf_v1().
-    - Se agrega pwf_estimation_method para trazabilidad.
-
-    Args:
-        history_df: Historia normalizada del pozo.
-        defaults: Parámetros fallback para el estimador v1.
-
-    Returns:
-        DataFrame con pwf_estimated_psia completada cuando aplique.
+    - Se agregan columnas de trazabilidad de parámetros usados.
     """
     _validate_required_columns(history_df)
 
     cfg = defaults or PwfEstimationDefaults()
     out = history_df.copy()
 
-    if "pwf_estimation_method" not in out.columns:
-        out["pwf_estimation_method"] = pd.NA
+    _ensure_trace_columns(out)
 
     out["pwf_measured_psia"] = pd.to_numeric(
         out["pwf_measured_psia"],
@@ -81,22 +84,50 @@ def estimate_missing_pwf_v1(
     for idx in out.index[needs_estimation]:
         row = out.loc[idx]
 
+        whp_used, whp_default = _value_or_default(
+            row.get("whp_psia"),
+            default=cfg.whp_psia,
+        )
+        api_used, api_default = _value_or_default(
+            row.get("api"),
+            default=cfg.api,
+        )
+        tvd_used, tvd_default = _value_or_default(
+            row.get("tvd_perf_ft"),
+            default=cfg.tvd_perf_ft,
+        )
+        tubing_id_used, tubing_default = _value_or_default(
+            row.get("tubing_id_in"),
+            default=cfg.tubing_id_in,
+        )
+        length_used, length_default = _optional_value_or_default(
+            row.get("length_ft"),
+            default=cfg.length_ft,
+        )
+
         inputs = PwfInputs(
             qo_stb_d=_safe_float(row.get("qo_stb_d"), default=0.0),
             qw_stb_d=_safe_float(row.get("qw_stb_d"), default=0.0),
-            api=_safe_float(row.get("api"), default=cfg.api),
-            whp_psia=_safe_float(row.get("whp_psia"), default=cfg.whp_psia),
-            tvd_perf_ft=_safe_float(row.get("tvd_perf_ft"), default=cfg.tvd_perf_ft),
-            tubing_id_in=_safe_float(
-                row.get("tubing_id_in"),
-                default=cfg.tubing_id_in,
-            ),
-            length_ft=_safe_optional_float(row.get("length_ft"), default=cfg.length_ft),
+            api=api_used,
+            whp_psia=whp_used,
+            tvd_perf_ft=tvd_used,
+            tubing_id_in=tubing_id_used,
+            length_ft=length_used,
             Cf=cfg.cf,
         )
 
         out.loc[idx, "pwf_estimated_psia"] = float(estimate_pwf_v1(inputs))
         out.loc[idx, "pwf_estimation_method"] = "estimate_pwf_v1"
+        out.loc[idx, "pwf_estimation_whp_used_psia"] = whp_used
+        out.loc[idx, "pwf_estimation_api_used"] = api_used
+        out.loc[idx, "pwf_estimation_tvd_used_ft"] = tvd_used
+        out.loc[idx, "pwf_estimation_tubing_id_used_in"] = tubing_id_used
+        out.loc[idx, "pwf_estimation_length_used_ft"] = length_used
+        out.loc[idx, "pwf_estimation_used_default_whp"] = whp_default
+        out.loc[idx, "pwf_estimation_used_default_api"] = api_default
+        out.loc[idx, "pwf_estimation_used_default_tvd"] = tvd_default
+        out.loc[idx, "pwf_estimation_used_default_tubing_id"] = tubing_default
+        out.loc[idx, "pwf_estimation_used_default_length"] = length_default
 
     existing_estimated = ~measured_valid & estimated_valid
     out.loc[
@@ -105,6 +136,12 @@ def estimate_missing_pwf_v1(
     ] = "provided_in_history"
 
     return out
+
+
+def _ensure_trace_columns(df: pd.DataFrame) -> None:
+    for column in TRACE_COLUMNS:
+        if column not in df.columns:
+            df[column] = pd.NA
 
 
 def _validate_required_columns(df: pd.DataFrame) -> None:
@@ -121,15 +158,26 @@ def _validate_required_columns(df: pd.DataFrame) -> None:
         raise ValueError(msg)
 
 
+def _value_or_default(value: object, *, default: float) -> tuple[float, bool]:
+    parsed = pd.to_numeric(value, errors="coerce")
+    if pd.isna(parsed):
+        return float(default), True
+    return float(parsed), False
+
+
+def _optional_value_or_default(
+    value: object,
+    *,
+    default: float | None,
+) -> tuple[float | None, bool]:
+    parsed = pd.to_numeric(value, errors="coerce")
+    if pd.isna(parsed):
+        return default, default is not None
+    return float(parsed), False
+
+
 def _safe_float(value: object, *, default: float) -> float:
     parsed = pd.to_numeric(value, errors="coerce")
     if pd.isna(parsed):
         return float(default)
-    return float(parsed)
-
-
-def _safe_optional_float(value: object, *, default: float | None) -> float | None:
-    parsed = pd.to_numeric(value, errors="coerce")
-    if pd.isna(parsed):
-        return default
     return float(parsed)

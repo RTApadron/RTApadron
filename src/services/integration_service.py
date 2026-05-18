@@ -1,8 +1,11 @@
 """Servicio de integración M1 + M2.
 
-Recibe historia normalizada, completa Pwf cuando sea necesario, aplica regla de
-Pwf usada y une propiedades PVT. Este servicio queda listo para ser consumido
-por CLI, tests o Streamlit.
+Este servicio recibe historia normalizada del Módulo 1, completa Pwf cuando
+faltan mediciones/estimaciones, aplica la regla de Pwf usada y une propiedades
+PVT del Módulo 2.
+
+La salida queda lista para DCA/RTA y mantiene trazabilidad de datos medidos,
+estimados y calculados.
 """
 
 from __future__ import annotations
@@ -22,6 +25,20 @@ from src.adapters.pwf_estimator_adapter import (
 )
 from src.domain.models import PVTConfig
 
+PWF_TRACE_COLUMNS = [
+    "pwf_estimation_method",
+    "pwf_estimation_whp_used_psia",
+    "pwf_estimation_api_used",
+    "pwf_estimation_tvd_used_ft",
+    "pwf_estimation_tubing_id_used_in",
+    "pwf_estimation_length_used_ft",
+    "pwf_estimation_used_default_whp",
+    "pwf_estimation_used_default_api",
+    "pwf_estimation_used_default_tvd",
+    "pwf_estimation_used_default_tubing_id",
+    "pwf_estimation_used_default_length",
+]
+
 ENRICHED_COLUMNS = [
     "well_id",
     "date",
@@ -34,7 +51,7 @@ ENRICHED_COLUMNS = [
     "pwf_estimated_psia",
     "pwf_used_psia",
     "pwf_source",
-    "pwf_estimation_method",
+    *PWF_TRACE_COLUMNS,
     "bo",
     "rs",
     "mu_o_cp",
@@ -48,7 +65,7 @@ ENRICHED_COLUMNS = [
 
 @dataclass(frozen=True)
 class IntegrationOutput:
-    """Resultado del servicio de integración."""
+    """Resultado del servicio de integración M1 + M2."""
 
     enriched: pd.DataFrame
     qc_report: dict[str, Any]
@@ -61,7 +78,18 @@ def integrate_history_with_pvt(
     auto_estimate_missing_pwf: bool = True,
     pwf_defaults: PwfEstimationDefaults | None = None,
 ) -> IntegrationOutput:
-    """Integra historia M1 con propiedades PVT M2."""
+    """Integra historia de producción/presión con propiedades PVT.
+
+    Args:
+        history_df: Historia normalizada del pozo.
+        pvt_cfg: Configuración PVT del pozo.
+        auto_estimate_missing_pwf: Si es True, estima Pwf cuando no existe
+            medición ni estimación previa.
+        pwf_defaults: Parámetros fallback para el estimador Pwf v1.
+
+    Returns:
+        IntegrationOutput con tabla enriquecida y reporte QC.
+    """
     _validate_history(history_df)
 
     history = history_df.copy()
@@ -115,8 +143,12 @@ def build_qc_report(enriched: pd.DataFrame) -> dict[str, Any]:
         "date_max": _safe_date_max(enriched),
         "wells": sorted(enriched["well_id"].dropna().astype(str).unique().tolist()),
         "pwf_source_counts": pwf_source_counts,
+        "pwf_estimation_trace": _build_pwf_trace_summary(enriched),
+        "warnings": _build_warnings(enriched),
         "missing_pvt_by_column": missing_pvt_by_column,
-        "has_required_columns": all(column in enriched.columns for column in ENRICHED_COLUMNS),
+        "has_required_columns": all(
+            column in enriched.columns for column in ENRICHED_COLUMNS
+        ),
     }
 
 
@@ -141,6 +173,89 @@ def write_outputs(
         json.dump(output.qc_report, file, indent=2, ensure_ascii=False)
 
     return enriched_path, qc_path
+
+
+def _build_pwf_trace_summary(enriched: pd.DataFrame) -> dict[str, Any]:
+    estimated_v1 = (
+        enriched["pwf_source"].astype("string") == "estimated_v1"
+        if "pwf_source" in enriched.columns
+        else pd.Series(False, index=enriched.index)
+    )
+
+    return {
+        "estimated_v1_rows": int(estimated_v1.sum()),
+        "used_default_whp_rows": _count_true(
+            enriched,
+            "pwf_estimation_used_default_whp",
+        ),
+        "used_default_api_rows": _count_true(
+            enriched,
+            "pwf_estimation_used_default_api",
+        ),
+        "used_default_tvd_rows": _count_true(
+            enriched,
+            "pwf_estimation_used_default_tvd",
+        ),
+        "used_default_tubing_id_rows": _count_true(
+            enriched,
+            "pwf_estimation_used_default_tubing_id",
+        ),
+        "used_default_length_rows": _count_true(
+            enriched,
+            "pwf_estimation_used_default_length",
+        ),
+    }
+
+
+def _build_warnings(enriched: pd.DataFrame) -> list[str]:
+    warnings: list[str] = []
+
+    estimated_v1_rows = int(
+        (enriched["pwf_source"].astype("string") == "estimated_v1").sum()
+        if "pwf_source" in enriched.columns
+        else 0
+    )
+
+    if estimated_v1_rows:
+        warnings.append(
+            f"{estimated_v1_rows} filas estimaron Pwf con estimate_pwf_v1; "
+            "validar contra mediciones de fondo o modelo hidráulico calibrado."
+        )
+
+    default_checks = [
+        (
+            "pwf_estimation_used_default_whp",
+            "whp_psia",
+            "presión de cabeza",
+        ),
+        ("pwf_estimation_used_default_api", "api", "API"),
+        ("pwf_estimation_used_default_tvd", "tvd_perf_ft", "TVD frente a perforados"),
+        (
+            "pwf_estimation_used_default_tubing_id",
+            "tubing_id_in",
+            "ID de tubing",
+        ),
+        ("pwf_estimation_used_default_length", "length_ft", "longitud de flujo"),
+    ]
+
+    for column, field_name, label in default_checks:
+        rows = _count_true(enriched, column)
+        if rows:
+            warnings.append(
+                f"{rows} filas estimaron Pwf usando valor por defecto para "
+                f"{label} ({field_name})."
+            )
+
+    return warnings
+
+
+def _count_true(df: pd.DataFrame, column: str) -> int:
+    """Cuenta valores verdaderos evitando FutureWarning de fillna en object dtype."""
+    if column not in df.columns:
+        return 0
+
+    values = df[column].map(lambda value: bool(value) if pd.notna(value) else False)
+    return int(values.sum())
 
 
 def _validate_history(history_df: pd.DataFrame) -> None:

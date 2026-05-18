@@ -74,6 +74,92 @@ def test_estimated_pwf_is_used_when_measured_is_missing(tmp_path: Path) -> None:
     assert row["pwf_source"] == "estimated_from_history"
 
 
+def test_auto_pwf_estimation_tracks_default_inputs(tmp_path: Path) -> None:
+    history_path = tmp_path / "history.csv"
+    pvt_path = tmp_path / "pvt.json"
+
+    pd.DataFrame(
+        [
+            {
+                "well_id": "WELL-001",
+                "date": "2024-01-03",
+                "qo_stb_d": 100,
+                "qg_mscf_d": 50,
+                "qw_stb_d": 10,
+                "whp_psia": None,
+                "t_wh_f": 120,
+                "pwf_measured_psia": None,
+                "pwf_estimated_psia": None,
+            }
+        ]
+    ).to_csv(history_path, index=False)
+
+    _write_pvt_config(pvt_path)
+
+    history = load_history_csv(history_path, well_id="WELL-001")
+    cfg = load_pvt_config(pvt_path)
+
+    output = integrate_history_with_pvt(history, cfg)
+    row = output.enriched.iloc[0]
+
+    assert row["pwf_source"] == "estimated_v1"
+    assert row["pwf_estimated_psia"] > 0
+    assert row["pwf_used_psia"] == row["pwf_estimated_psia"]
+    assert row["pwf_estimation_whp_used_psia"] == 100.0
+    assert bool(row["pwf_estimation_used_default_whp"]) is True
+    assert output.qc_report["pwf_estimation_trace"]["used_default_whp_rows"] == 1
+    assert any("presión de cabeza" in item for item in output.qc_report["warnings"])
+
+
+def test_auto_pwf_estimation_tracks_real_inputs(tmp_path: Path) -> None:
+    history_path = tmp_path / "history.csv"
+    pvt_path = tmp_path / "pvt.json"
+
+    pd.DataFrame(
+        [
+            {
+                "well_id": "WELL-001",
+                "date": "2024-01-03",
+                "qo_stb_d": 100,
+                "qg_mscf_d": 50,
+                "qw_stb_d": 10,
+                "whp_psia": 350,
+                "t_wh_f": 120,
+                "pwf_measured_psia": None,
+                "pwf_estimated_psia": None,
+                "api": 31,
+                "tvd_perf_ft": 6500,
+                "tubing_id_in": 2.875,
+                "length_ft": 6600,
+            }
+        ]
+    ).to_csv(history_path, index=False)
+
+    _write_pvt_config(pvt_path)
+
+    history = load_history_csv(history_path, well_id="WELL-001")
+    cfg = load_pvt_config(pvt_path)
+
+    output = integrate_history_with_pvt(history, cfg)
+    row = output.enriched.iloc[0]
+
+    assert row["pwf_source"] == "estimated_v1"
+    assert row["pwf_estimated_psia"] > 0
+    assert row["pwf_used_psia"] == row["pwf_estimated_psia"]
+
+    assert row["pwf_estimation_whp_used_psia"] == 350.0
+    assert row["pwf_estimation_api_used"] == 31.0
+    assert row["pwf_estimation_tvd_used_ft"] == 6500.0
+    assert row["pwf_estimation_tubing_id_used_in"] == 2.875
+    assert row["pwf_estimation_length_used_ft"] == 6600.0
+
+    assert bool(row["pwf_estimation_used_default_whp"]) is False
+    assert bool(row["pwf_estimation_used_default_api"]) is False
+    assert bool(row["pwf_estimation_used_default_tvd"]) is False
+    assert bool(row["pwf_estimation_used_default_tubing_id"]) is False
+    assert bool(row["pwf_estimation_used_default_length"]) is False
+
+
 def test_auto_pwf_estimation_runs_when_measured_and_estimated_are_missing(
     tmp_path: Path,
 ) -> None:

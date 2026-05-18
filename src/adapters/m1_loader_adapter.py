@@ -1,8 +1,4 @@
-"""Adaptador conservador para Módulo 1: historia de pozo y Pwf.
-
-No reemplaza src/well_mod/run_estimator.py. Este adaptador normaliza CSVs y crea
-las columnas mínimas requeridas por el contrato común M1-M2.
-"""
+"""Adaptador conservador para Módulo 1: historia de pozo y Pwf."""
 
 from __future__ import annotations
 
@@ -28,19 +24,26 @@ OPTIONAL_M1_COLUMNS = [
     "tubing_id_in",
     "length_ft",
     "pwf_estimation_method",
+    "pwf_estimation_whp_used_psia",
+    "pwf_estimation_api_used",
+    "pwf_estimation_tvd_used_ft",
+    "pwf_estimation_tubing_id_used_in",
+    "pwf_estimation_length_used_ft",
+    "pwf_estimation_used_default_whp",
+    "pwf_estimation_used_default_api",
+    "pwf_estimation_used_default_tvd",
+    "pwf_estimation_used_default_tubing_id",
+    "pwf_estimation_used_default_length",
 ]
 
 COLUMN_ALIASES = {
-    # Identificación
     "well": "well_id",
     "well_name": "well_id",
     "pozo": "well_id",
     "nombre_pozo": "well_id",
-    # Fecha
     "fecha": "date",
     "timestamp": "date",
     "datetime": "date",
-    # Caudal de aceite
     "qo": "qo_stb_d",
     "q_o": "qo_stb_d",
     "q_oil": "qo_stb_d",
@@ -48,7 +51,6 @@ COLUMN_ALIASES = {
     "oil_stb_d": "qo_stb_d",
     "qo_bopd": "qo_stb_d",
     "bopd": "qo_stb_d",
-    # Caudal de gas
     "qg": "qg_mscf_d",
     "q_g": "qg_mscf_d",
     "q_gas": "qg_mscf_d",
@@ -56,7 +58,6 @@ COLUMN_ALIASES = {
     "gas_mscf_d": "qg_mscf_d",
     "qg_mscfd": "qg_mscf_d",
     "mscfd": "qg_mscf_d",
-    # Caudal de agua
     "qw": "qw_stb_d",
     "q_w": "qw_stb_d",
     "q_water": "qw_stb_d",
@@ -64,7 +65,6 @@ COLUMN_ALIASES = {
     "water_stb_d": "qw_stb_d",
     "qw_bwpd": "qw_stb_d",
     "bwpd": "qw_stb_d",
-    # Presión de cabeza
     "whp": "whp_psia",
     "thp": "whp_psia",
     "wellhead_pressure": "whp_psia",
@@ -72,14 +72,12 @@ COLUMN_ALIASES = {
     "whp_psig": "whp_psia",
     "presion_cabeza": "whp_psia",
     "presion_cabeza_psia": "whp_psia",
-    # Temperatura en cabeza
     "temp_wh": "t_wh_f",
     "temperature_wh": "t_wh_f",
     "twh": "t_wh_f",
     "t_wh": "t_wh_f",
     "t_wh_deg_f": "t_wh_f",
     "temperatura_cabeza": "t_wh_f",
-    # Pwf medida
     "pwf": "pwf_measured_psia",
     "pwf_psia": "pwf_measured_psia",
     "pwf_psi": "pwf_measured_psia",
@@ -89,7 +87,6 @@ COLUMN_ALIASES = {
     "bottomhole_pressure_psia": "pwf_measured_psia",
     "presion_fondo": "pwf_measured_psia",
     "presion_fondo_psia": "pwf_measured_psia",
-    # Pwf estimada
     "pwf_estimated": "pwf_estimated_psia",
     "pwf_estimated_psi": "pwf_estimated_psia",
     "pwf_calculated": "pwf_estimated_psia",
@@ -209,7 +206,6 @@ def apply_pwf_rule(df: pd.DataFrame) -> pd.DataFrame:
         use_estimated,
         "pwf_estimated_psia",
     ]
-
     out.loc[use_estimated, "pwf_source"] = "estimated_from_history"
 
     if "pwf_estimation_method" in out.columns:
@@ -219,7 +215,6 @@ def apply_pwf_rule(df: pd.DataFrame) -> pd.DataFrame:
         out.loc[estimated_v1, "pwf_source"] = "estimated_v1"
 
     out["pwf_used_psia"] = pd.to_numeric(out["pwf_used_psia"], errors="coerce")
-
     return out
 
 
