@@ -7,6 +7,7 @@ This UI is intentionally thin:
 - Visualizes M1 well/history data, M2 PVT data, and M3 DCA outputs.
 - Allows interactive DCA fit-window selection from production history.
 - Allows interactive forecast-anchor selection from production history.
+- Allows editable M1 history and Pwf override controls.
 
 No PVT, well-integration, or DCA calculation logic is duplicated here.
 """
@@ -26,8 +27,10 @@ import streamlit as st
 
 try:
     import plotly.graph_objects as go
+    from plotly.subplots import make_subplots
 except ImportError:  # pragma: no cover
     go = None
+    make_subplots = None
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -40,12 +43,19 @@ FORECAST_START_RATE_MODES = (
     "manual",
 )
 
+PWF_OVERRIDE_MODES = (
+    "prefer_measured_else_estimated",
+    "estimated_only",
+    "manual_override",
+)
+
 M1_RATE_COLUMNS = ("qo_stb_d", "qg_mscf_d", "qw_stb_d")
 M1_PRESSURE_COLUMNS = (
     "whp_psia",
     "pwf_used_psia",
     "pwf_measured_psia",
     "pwf_estimated_psia",
+    "pwf_manual_psia",
 )
 M2_PVT_COLUMNS = (
     "bo",
@@ -64,6 +74,9 @@ SESSION_PENDING_FIT_WINDOW = "pending_fit_window_selection"
 SESSION_FORECAST_START_RATE_MODE = "forecast_start_rate_mode_value"
 SESSION_FORECAST_START_RATE = "forecast_start_rate_value"
 SESSION_PENDING_FORECAST_ANCHOR = "pending_forecast_anchor_selection"
+
+SESSION_PWF_OVERRIDE_MODE = "pwf_override_mode_value"
+SESSION_EDITED_HISTORY_PATH = "edited_history_csv_path"
 
 
 @dataclass(frozen=True)
@@ -138,6 +151,10 @@ def initialize_session_defaults() -> None:
         "last-window-rate",
     )
     st.session_state.setdefault(SESSION_FORECAST_START_RATE, 100.0)
+    st.session_state.setdefault(
+        SESSION_PWF_OVERRIDE_MODE,
+        "prefer_measured_else_estimated",
+    )
 
 
 def apply_light_css() -> None:
@@ -175,6 +192,19 @@ def save_uploaded_file(uploaded_file: Any, target_name: str) -> Path | None:
     target_path = UI_INPUT_DIR / target_name
     target_path.write_bytes(uploaded_file.getbuffer())
     return target_path
+
+
+def get_active_edited_history_path() -> Path | None:
+    """Return edited history path stored in session, if it exists."""
+    raw_path = st.session_state.get(SESSION_EDITED_HISTORY_PATH)
+    if not raw_path:
+        return None
+
+    path = Path(str(raw_path))
+    if not path.exists():
+        return None
+
+    return path
 
 
 def read_json(path: Path) -> dict[str, Any]:
@@ -379,6 +409,87 @@ def render_time_series(
     chart_df = chart_df.set_index("date")
     st.line_chart(chart_df, y=selected_columns, height=360)
     st.caption(y_label)
+
+
+def render_m1_production_plot(enriched_df: pd.DataFrame) -> None:
+    """Render production rates with requested colors and secondary gas axis."""
+    st.subheader("Producción por fase")
+
+    if go is None or make_subplots is None:
+        st.warning("Plotly no está disponible. No se puede graficar con eje secundario.")
+        return
+
+    if "date" not in enriched_df.columns:
+        st.info("No existe columna `date` para graficar producción.")
+        return
+
+    available = existing_columns(enriched_df, M1_RATE_COLUMNS)
+    if not available:
+        st.info("No hay columnas de caudal disponibles para graficar.")
+        return
+
+    plot_df = enriched_df[["date", *available]].copy()
+    plot_df["date"] = pd.to_datetime(plot_df["date"], errors="coerce")
+    for column in available:
+        plot_df[column] = pd.to_numeric(plot_df[column], errors="coerce")
+    plot_df = plot_df.dropna(subset=["date"]).sort_values("date")
+
+    if plot_df.empty:
+        st.info("No hay datos válidos de producción para graficar.")
+        return
+
+    fig = make_subplots(specs=[[{"secondary_y": True}]])
+
+    if "qo_stb_d" in plot_df.columns:
+        fig.add_trace(
+            go.Scatter(
+                x=plot_df["date"],
+                y=plot_df["qo_stb_d"],
+                mode="markers+lines",
+                name="Qo [STB/d]",
+                line={"color": "green"},
+                marker={"color": "green"},
+            ),
+            secondary_y=False,
+        )
+
+    if "qw_stb_d" in plot_df.columns:
+        fig.add_trace(
+            go.Scatter(
+                x=plot_df["date"],
+                y=plot_df["qw_stb_d"],
+                mode="markers+lines",
+                name="Qw [STB/d]",
+                line={"color": "blue"},
+                marker={"color": "blue"},
+            ),
+            secondary_y=False,
+        )
+
+    if "qg_mscf_d" in plot_df.columns:
+        fig.add_trace(
+            go.Scatter(
+                x=plot_df["date"],
+                y=plot_df["qg_mscf_d"],
+                mode="markers+lines",
+                name="Qg [MSCF/d]",
+                line={"color": "red"},
+                marker={"color": "red"},
+            ),
+            secondary_y=True,
+        )
+
+    fig.update_layout(
+        title="Qo, Qw y Qg vs fecha",
+        xaxis_title="Fecha",
+        height=460,
+        margin={"l": 20, "r": 20, "t": 60, "b": 20},
+        legend={"orientation": "h"},
+    )
+    fig.update_yaxes(title_text="Qo / Qw [STB/d]", secondary_y=False)
+    fig.update_yaxes(title_text="Qg [MSCF/d]", secondary_y=True)
+
+    st.plotly_chart(fig, use_container_width=True)
 
 
 def extract_plotly_selection_points(event: Any) -> list[dict[str, Any]]:
@@ -648,9 +759,7 @@ def render_interactive_forecast_anchor_selector(enriched_df: pd.DataFrame) -> No
         )
 
     fig.update_layout(
-        title=(
-            "Selecciona un punto de qo para usarlo como tasa inicial del forecast"
-        ),
+        title="Selecciona un punto de qo para usarlo como tasa inicial del forecast",
         xaxis_title="Fecha",
         yaxis_title="Tasa de aceite, qo [STB/d]",
         dragmode="select",
@@ -701,7 +810,270 @@ def render_interactive_forecast_anchor_selector(enriched_df: pd.DataFrame) -> No
     update_forecast_anchor_from_selection(anchor_date, anchor_rate)
 
 
-def render_m1_summary(enriched_df: pd.DataFrame) -> None:
+def ensure_m1_editable_columns(df: pd.DataFrame, well_id: str) -> pd.DataFrame:
+    """Ensure editable M1 columns exist."""
+    editable_df = df.copy()
+
+    if "well_id" not in editable_df.columns:
+        editable_df["well_id"] = well_id
+
+    if "date" not in editable_df.columns:
+        editable_df["date"] = pd.NaT
+
+    for column in (
+        "qo_stb_d",
+        "qg_mscf_d",
+        "qw_stb_d",
+        "whp_psia",
+        "t_wh_f",
+        "pwf_measured_psia",
+        "pwf_estimated_psia",
+        "pwf_manual_psia",
+        "pwf_used_psia",
+        "pwf_source",
+    ):
+        if column not in editable_df.columns:
+            editable_df[column] = pd.NA
+
+    if "pwf_measured_original_psia" not in editable_df.columns:
+        editable_df["pwf_measured_original_psia"] = editable_df["pwf_measured_psia"]
+
+    return editable_df
+
+
+def apply_pwf_override_strategy(
+    df: pd.DataFrame,
+    mode: str,
+) -> pd.DataFrame:
+    """Apply selected Pwf strategy while preserving traceability."""
+    if mode not in PWF_OVERRIDE_MODES:
+        msg = f"Estrategia Pwf no soportada: {mode}"
+        raise ValueError(msg)
+
+    result = df.copy()
+
+    for column in (
+        "pwf_measured_psia",
+        "pwf_estimated_psia",
+        "pwf_manual_psia",
+        "pwf_used_psia",
+    ):
+        if column in result.columns:
+            result[column] = pd.to_numeric(result[column], errors="coerce")
+
+    if "pwf_measured_original_psia" not in result.columns:
+        result["pwf_measured_original_psia"] = result.get("pwf_measured_psia", pd.NA)
+
+    measured = result["pwf_measured_psia"]
+    estimated = result["pwf_estimated_psia"]
+    manual = result["pwf_manual_psia"]
+
+    if mode == "prefer_measured_else_estimated":
+        measured_valid = measured.notna() & (measured > 0)
+        estimated_valid = estimated.notna() & (estimated > 0)
+
+        result["pwf_used_psia"] = pd.NA
+        result.loc[measured_valid, "pwf_used_psia"] = measured.loc[measured_valid]
+        result.loc[
+            ~measured_valid & estimated_valid,
+            "pwf_used_psia",
+        ] = estimated.loc[~measured_valid & estimated_valid]
+
+        result["pwf_source"] = "missing"
+        result.loc[measured_valid, "pwf_source"] = "measured"
+        result.loc[
+            ~measured_valid & estimated_valid,
+            "pwf_source",
+        ] = "estimated"
+
+    elif mode == "estimated_only":
+        estimated_valid = estimated.notna() & (estimated > 0)
+
+        result["pwf_measured_psia"] = pd.NA
+        result["pwf_used_psia"] = pd.NA
+        result.loc[estimated_valid, "pwf_used_psia"] = estimated.loc[estimated_valid]
+        result["pwf_source"] = "estimated_requested"
+        result.loc[~estimated_valid, "pwf_source"] = "missing"
+
+    elif mode == "manual_override":
+        manual_valid = manual.notna() & (manual > 0)
+        measured_valid = measured.notna() & (measured > 0)
+        estimated_valid = estimated.notna() & (estimated > 0)
+
+        result["pwf_used_psia"] = pd.NA
+        result["pwf_source"] = "missing"
+
+        result.loc[manual_valid, "pwf_used_psia"] = manual.loc[manual_valid]
+        result.loc[manual_valid, "pwf_measured_psia"] = manual.loc[manual_valid]
+        result.loc[manual_valid, "pwf_source"] = "manual"
+
+        fallback_measured = ~manual_valid & measured_valid
+        result.loc[fallback_measured, "pwf_used_psia"] = measured.loc[fallback_measured]
+        result.loc[fallback_measured, "pwf_source"] = "measured"
+
+        fallback_estimated = ~manual_valid & ~measured_valid & estimated_valid
+        result.loc[fallback_estimated, "pwf_used_psia"] = estimated.loc[
+            fallback_estimated
+        ]
+        result.loc[fallback_estimated, "pwf_source"] = "estimated"
+
+    return result
+
+
+def save_edited_history(
+    edited_df: pd.DataFrame,
+    well_id: str,
+    pwf_mode: str,
+) -> Path:
+    """Persist edited history to be consumed by the workflow."""
+    prepared_df = ensure_m1_editable_columns(edited_df, well_id)
+    prepared_df = apply_pwf_override_strategy(prepared_df, pwf_mode)
+
+    if "date" in prepared_df.columns:
+        prepared_df["date"] = pd.to_datetime(prepared_df["date"], errors="coerce")
+        prepared_df["date"] = prepared_df["date"].dt.strftime("%Y-%m-%d")
+
+    target_path = UI_INPUT_DIR / f"{well_id}_history_edited.csv"
+    prepared_df.to_csv(target_path, index=False)
+    return target_path
+
+
+def render_m1_editable_history_panel(
+    enriched_df: pd.DataFrame,
+    well_id: str,
+) -> None:
+    """Render editable M1 table and Pwf override controls."""
+    st.subheader("Edición manual de historia y control de Pwf")
+
+    st.caption(
+        "Esta edición no sobrescribe los datos crudos del repositorio. "
+        "Guarda una copia en `data/ui_uploads` y el workflow la usa como "
+        "`--history-csv` en la siguiente ejecución."
+    )
+
+    pwf_mode = st.selectbox(
+        "Estrategia de Pwf para guardar historia editada",
+        options=PWF_OVERRIDE_MODES,
+        key=SESSION_PWF_OVERRIDE_MODE,
+        help=(
+            "prefer_measured_else_estimated: usa Pwf medida si existe; si no, estimada. "
+            "estimated_only: fuerza uso de Pwf estimada. "
+            "manual_override: usa pwf_manual_psia donde exista y conserva trazabilidad."
+        ),
+    )
+
+    editable_df = ensure_m1_editable_columns(enriched_df, well_id)
+
+    editor_columns = [
+        column
+        for column in (
+            "well_id",
+            "date",
+            "qo_stb_d",
+            "qg_mscf_d",
+            "qw_stb_d",
+            "whp_psia",
+            "t_wh_f",
+            "pwf_measured_psia",
+            "pwf_estimated_psia",
+            "pwf_manual_psia",
+            "pwf_used_psia",
+            "pwf_source",
+        )
+        if column in editable_df.columns
+    ]
+
+    edited_df = st.data_editor(
+        editable_df[editor_columns],
+        use_container_width=True,
+        hide_index=True,
+        num_rows="dynamic",
+        key="m1_history_data_editor",
+        column_config={
+            "date": st.column_config.DateColumn("date"),
+            "qo_stb_d": st.column_config.NumberColumn("qo_stb_d", format="%.3f"),
+            "qg_mscf_d": st.column_config.NumberColumn("qg_mscf_d", format="%.3f"),
+            "qw_stb_d": st.column_config.NumberColumn("qw_stb_d", format="%.3f"),
+            "whp_psia": st.column_config.NumberColumn("whp_psia", format="%.3f"),
+            "t_wh_f": st.column_config.NumberColumn("t_wh_f", format="%.3f"),
+            "pwf_measured_psia": st.column_config.NumberColumn(
+                "pwf_measured_psia",
+                format="%.3f",
+            ),
+            "pwf_estimated_psia": st.column_config.NumberColumn(
+                "pwf_estimated_psia",
+                format="%.3f",
+            ),
+            "pwf_manual_psia": st.column_config.NumberColumn(
+                "pwf_manual_psia",
+                format="%.3f",
+            ),
+            "pwf_used_psia": st.column_config.NumberColumn(
+                "pwf_used_psia",
+                format="%.3f",
+                disabled=True,
+            ),
+            "pwf_source": st.column_config.TextColumn(
+                "pwf_source",
+                disabled=True,
+            ),
+        },
+    )
+
+    preview_df = apply_pwf_override_strategy(
+        ensure_m1_editable_columns(edited_df, well_id),
+        pwf_mode,
+    )
+
+    st.subheader("Vista previa Pwf usada")
+    preview_columns = [
+        column
+        for column in (
+            "well_id",
+            "date",
+            "pwf_measured_psia",
+            "pwf_estimated_psia",
+            "pwf_manual_psia",
+            "pwf_used_psia",
+            "pwf_source",
+        )
+        if column in preview_df.columns
+    ]
+    st.dataframe(preview_df[preview_columns], use_container_width=True, hide_index=True)
+
+    col_save, col_clear = st.columns(2)
+
+    with col_save:
+        if st.button(
+            "Guardar historia editada para workflow",
+            type="primary",
+            use_container_width=True,
+        ):
+            try:
+                saved_path = save_edited_history(edited_df, well_id, pwf_mode)
+            except Exception as exc:  # noqa: BLE001
+                st.error(f"No fue posible guardar la historia editada: {exc}")
+                return
+
+            st.session_state[SESSION_EDITED_HISTORY_PATH] = str(saved_path)
+            st.success(f"Historia editada guardada: `{saved_path}`")
+            st.rerun()
+
+    with col_clear:
+        if st.button(
+            "Descartar historia editada activa",
+            use_container_width=True,
+        ):
+            st.session_state.pop(SESSION_EDITED_HISTORY_PATH, None)
+            st.success("Historia editada descartada para futuras ejecuciones.")
+            st.rerun()
+
+    active_path = get_active_edited_history_path()
+    if active_path is not None:
+        st.info(f"Historia editada activa para el workflow: `{active_path}`")
+
+
+def render_m1_summary(enriched_df: pd.DataFrame, well_id: str) -> None:
     """Render M1 well/history visualization."""
     st.header("Módulo 1 | Pozo e historia de producción")
 
@@ -732,16 +1104,15 @@ def render_m1_summary(enriched_df: pd.DataFrame) -> None:
         if "pwf_source" in enriched_df.columns:
             measured_count = int((enriched_df["pwf_source"] == "measured").sum())
             estimated_count = int((enriched_df["pwf_source"] == "estimated").sum())
-            st.metric("Pwf medida / estimada", f"{measured_count} / {estimated_count}")
+            manual_count = int((enriched_df["pwf_source"] == "manual").sum())
+            st.metric(
+                "Pwf med / est / man",
+                f"{measured_count} / {estimated_count} / {manual_count}",
+            )
         else:
-            st.metric("Pwf medida / estimada", "N/D")
+            st.metric("Pwf med / est / man", "N/D")
 
-    render_time_series(
-        enriched_df,
-        title="Caudales de producción",
-        columns=M1_RATE_COLUMNS,
-        y_label="Aceite/agua en STB/d. Gas en MSCF/d si la columna existe.",
-    )
+    render_m1_production_plot(enriched_df)
 
     render_time_series(
         enriched_df,
@@ -762,6 +1133,8 @@ def render_m1_summary(enriched_df: pd.DataFrame) -> None:
         )
         st.dataframe(source_counts, use_container_width=True, hide_index=True)
 
+    render_m1_editable_history_panel(enriched_df, well_id)
+
     st.subheader("Tabla M1-M2 enriquecida")
     priority_columns = [
         column
@@ -775,6 +1148,7 @@ def render_m1_summary(enriched_df: pd.DataFrame) -> None:
             "t_wh_f",
             "pwf_measured_psia",
             "pwf_estimated_psia",
+            "pwf_manual_psia",
             "pwf_used_psia",
             "pwf_source",
         )
@@ -793,7 +1167,13 @@ def render_m1_summary(enriched_df: pd.DataFrame) -> None:
 
 def render_m2_summary(enriched_df: pd.DataFrame) -> None:
     """Render M2 PVT visualization."""
-    st.header("Módulo 2 | Propiedades PVT por fecha")
+    st.header("Módulo 2 | Propiedades PVT integradas a historia")
+
+    st.warning(
+        "Nota física: esta tabla muestra PVT evaluado por fecha porque cada fila "
+        "usa una Pwf/temperatura histórica. El modelo PVT base debe definirse "
+        "en función de presión, temperatura y correlaciones, no del tiempo."
+    )
 
     pvt_columns = existing_columns(enriched_df, M2_PVT_COLUMNS)
 
@@ -829,11 +1209,11 @@ def render_m2_summary(enriched_df: pd.DataFrame) -> None:
 
     render_time_series(
         enriched_df,
-        title="Propiedades PVT calculadas",
+        title="PVT evaluado por punto histórico",
         columns=M2_PVT_COLUMNS,
         y_label=(
-            "Unidades según contrato de datos: Bo rb/STB, μo cP, "
-            "densidad lb/ft³, Pb psia."
+            "Estas propiedades corresponden a cada condición histórica de P/T. "
+            "No representan una dependencia física directa con el tiempo."
         ),
     )
 
@@ -842,6 +1222,8 @@ def render_m2_summary(enriched_df: pd.DataFrame) -> None:
         for column in (
             "well_id",
             "date",
+            "pwf_used_psia",
+            "t_wh_f",
             "bo",
             "rs",
             "mu_o_cp",
@@ -942,6 +1324,10 @@ def render_sidebar_inputs() -> dict[str, Any]:
         type=["json"],
         help="Configuración PVT del pozo o escenario.",
     )
+
+    active_edited_path = get_active_edited_history_path()
+    if active_edited_path is not None:
+        st.sidebar.success(f"Usando historia editada: {active_edited_path.name}")
 
     well_id = st.sidebar.text_input("well_id", value="W001").strip()
 
@@ -1055,7 +1441,7 @@ def render_artifacts(well_id: str) -> None:
         if enriched_df is None:
             st.info(f"No se encontró `{artifacts.enriched_history_csv.name}`.")
         else:
-            render_m1_summary(enriched_df)
+            render_m1_summary(enriched_df, well_id)
 
     with tabs[1]:
         if enriched_df is None:
@@ -1120,6 +1506,14 @@ def render_artifacts(well_id: str) -> None:
                 "text/csv",
             )
 
+            edited_path = get_active_edited_history_path()
+            if edited_path is not None:
+                render_download_button(
+                    edited_path,
+                    "Descargar historia editada CSV",
+                    "text/csv",
+                )
+
         with col_json:
             render_download_button(
                 artifacts.dca_qc_report_json,
@@ -1165,14 +1559,21 @@ def main() -> None:
         "generados. No duplica lógica de integración, PVT ni DCA."
     )
 
-    history_csv_path = save_uploaded_file(
+    uploaded_history_csv_path = save_uploaded_file(
         inputs["history_upload"],
         f"{inputs['well_id']}_history_upload.csv",
     )
+    edited_history_csv_path = get_active_edited_history_path()
+
+    history_csv_path = edited_history_csv_path or uploaded_history_csv_path
+
     pvt_config_json_path = save_uploaded_file(
         inputs["pvt_config_upload"],
         f"{inputs['well_id']}_pvt_config_upload.json",
     )
+
+    if history_csv_path is not None:
+        st.caption(f"Historia usada por el workflow: `{history_csv_path}`")
 
     try:
         cmd = build_full_workflow_command(
