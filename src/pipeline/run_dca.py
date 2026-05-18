@@ -1,17 +1,4 @@
-"""Pipeline CLI para Módulo 3 - DCA / Arps.
-
-Uso corto:
-    python -m src.pipeline.run_dca --well-id W001
-
-Uso completo:
-    python -m src.pipeline.run_dca \
-        --well-id W001 \
-        --input-csv output/W001_history_enriched.csv \
-        --rate-column qo_stb_d \
-        --forecast-days 3650 \
-        --fit-from-date 2024-07-01 \
-        --fit-to-date 2025-11-30
-"""
+"""Pipeline CLI para Módulo 3 - DCA / Arps."""
 
 from __future__ import annotations
 
@@ -40,8 +27,13 @@ def main() -> int:
 
     input_csv = _resolve_input_csv(args.input_csv, well_id=args.well_id)
     output_dir = args.output_dir
-    plot_path = _resolve_plot_path(
+    rate_plot_path = _resolve_rate_plot_path(
         args.plot_file,
+        well_id=args.well_id,
+        output_dir=output_dir,
+    )
+    forecast_plot_path = _resolve_forecast_plot_path(
+        args.forecast_plot_file,
         well_id=args.well_id,
         output_dir=output_dir,
     )
@@ -74,13 +66,19 @@ def main() -> int:
             output_dir=output_dir,
         )
 
-        generated_plot_path: Path | None = None
+        generated_rate_plot: Path | None = None
+        generated_forecast_plot: Path | None = None
+
         if not args.no_plot:
-            generated_plot_path = plot_dca_rate_fit(
+            generated_rate_plot = plot_dca_rate_fit(
                 history,
                 output,
-                plot_path=plot_path,
+                plot_path=rate_plot_path,
                 rate_column=args.rate_column,
+            )
+            generated_forecast_plot = plot_dca_forecast(
+                output,
+                plot_path=forecast_plot_path,
             )
 
     except Exception as exc:
@@ -92,8 +90,10 @@ def main() -> int:
     print(f"[OK] Resultados de ajuste: {fit_path}")
     print(f"[OK] Pronóstico DCA: {forecast_path}")
     print(f"[OK] Reporte QC DCA: {qc_path}")
-    if generated_plot_path is not None:
-        print(f"[OK] Curva automática DCA: {generated_plot_path}")
+    if generated_rate_plot is not None:
+        print(f"[OK] Curva automática DCA: {generated_rate_plot}")
+    if generated_forecast_plot is not None:
+        print(f"[OK] Gráfica forecast DCA: {generated_forecast_plot}")
     print(f"[OK] Modelos ajustados: {len(output.fit_results)}")
     print(f"[OK] Mejor modelo por RMSE: {output.qc_report['best_model_by_rmse']}")
     return 0
@@ -135,10 +135,7 @@ def plot_dca_rate_fit(
     plot_path: str | Path,
     rate_column: str,
 ) -> Path:
-    """Genera gráfica automática de historia real vs curvas ajustadas.
-
-    Usa la misma ventana de ajuste reportada en output.qc_report["fit_window"].
-    """
+    """Genera gráfica automática de historia real vs curvas ajustadas."""
     fit_window = output.qc_report.get("fit_window", {})
 
     clean = prepare_rate_history(
@@ -230,6 +227,96 @@ def plot_dca_rate_fit(
     return out_path
 
 
+def plot_dca_forecast(
+    output: DCAOutput,
+    *,
+    plot_path: str | Path,
+) -> Path:
+    """Genera gráfica de forecast DCA: tasa y acumulado por modelo."""
+    forecast = pd.DataFrame(output.forecast_rows)
+    if forecast.empty:
+        msg = "No hay filas de forecast para graficar."
+        raise ValueError(msg)
+
+    required = {"model", "days", "qo_forecast_stb_d", "cumulative_oil_stb"}
+    missing = required.difference(forecast.columns)
+    if missing:
+        msg = f"Forecast incompleto para graficar: faltan {sorted(missing)}"
+        raise ValueError(msg)
+
+    out_path = Path(plot_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    best_model = str(output.qc_report.get("best_model_by_rmse", "unknown"))
+    eur_summary = output.qc_report.get("eur_summary", {})
+
+    fig, axes = plt.subplots(2, 1, figsize=(10, 8), sharex=True)
+
+    for model, group in forecast.groupby("model"):
+        group = group.sort_values("days")
+        axes[0].plot(
+            group["days"],
+            group["qo_forecast_stb_d"],
+            label=str(model),
+        )
+        axes[1].plot(
+            group["days"],
+            group["cumulative_oil_stb"],
+            label=str(model),
+        )
+
+    axes[0].set_title(
+        "DCA / Arps - Pronóstico de tasa y EUR\n"
+        f"Mejor modelo por RMSE: {best_model}"
+    )
+    axes[0].set_ylabel("Tasa pronosticada [STB/d]")
+    axes[0].grid(True, alpha=0.3)
+    axes[0].legend(fontsize=8)
+
+    axes[1].set_xlabel("Tiempo desde inicio del forecast [días]")
+    axes[1].set_ylabel("Aceite acumulado [STB]")
+    axes[1].grid(True, alpha=0.3)
+    axes[1].legend(fontsize=8)
+
+    text = _format_eur_summary_text(eur_summary)
+    if text:
+        axes[1].text(
+            0.01,
+            0.02,
+            text,
+            transform=axes[1].transAxes,
+            fontsize=8,
+            verticalalignment="bottom",
+        )
+
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+    return out_path
+
+
+def _format_eur_summary_text(summary: object) -> str:
+    if not isinstance(summary, dict):
+        return ""
+
+    base_model = summary.get("base_case_model_by_rmse")
+    base_eur = summary.get("base_case_eur_stb")
+    low_model = summary.get("low_case_model_by_eur")
+    low_eur = summary.get("low_case_eur_stb")
+    high_model = summary.get("high_case_model_by_eur")
+    high_eur = summary.get("high_case_eur_stb")
+
+    if base_model is None or base_eur is None:
+        return ""
+
+    return (
+        f"Base: {base_model} = {float(base_eur):,.0f} STB\n"
+        f"Bajo: {low_model} = {float(low_eur):,.0f} STB\n"
+        f"Alto: {high_model} = {float(high_eur):,.0f} STB"
+    )
+
+
 def _prepare_plot_history(history_df: pd.DataFrame, *, rate_column: str) -> pd.DataFrame:
     """Prepara historia completa solo para graficar."""
     if "date" not in history_df.columns or rate_column not in history_df.columns:
@@ -305,9 +392,18 @@ def _parse_args() -> argparse.Namespace:
         help="Ruta opcional del PNG. Por defecto: output/<well_id>_dca_rate_fit.png",
     )
     parser.add_argument(
+        "--forecast-plot-file",
+        default=None,
+        type=Path,
+        help=(
+            "Ruta opcional del PNG de forecast. "
+            "Por defecto: output/<well_id>_dca_forecast_plot.png"
+        ),
+    )
+    parser.add_argument(
         "--no-plot",
         action="store_true",
-        help="No generar gráfica automática.",
+        help="No generar gráficas automáticas.",
     )
 
     return parser.parse_args()
@@ -320,7 +416,7 @@ def _resolve_input_csv(path: Path | None, *, well_id: str) -> Path:
     return DEFAULT_OUTPUT_DIR / f"{well_id}_history_enriched.csv"
 
 
-def _resolve_plot_path(
+def _resolve_rate_plot_path(
     path: Path | None,
     *,
     well_id: str,
@@ -330,6 +426,18 @@ def _resolve_plot_path(
         return path
 
     return output_dir / f"{well_id}_dca_rate_fit.png"
+
+
+def _resolve_forecast_plot_path(
+    path: Path | None,
+    *,
+    well_id: str,
+    output_dir: Path,
+) -> Path:
+    if path is not None:
+        return path
+
+    return output_dir / f"{well_id}_dca_forecast_plot.png"
 
 
 if __name__ == "__main__":

@@ -1,11 +1,12 @@
 """Servicio DCA / Arps.
 
-Implementa una primera versión conservadora del Módulo 3:
+Implementa una versión conservadora del Módulo 3:
 - ajuste exponencial
 - ajuste armónico
 - ajuste hiperbólico
 - selección de ventana de ajuste
 - pronóstico por integración numérica diaria
+- QC comparativo de EUR por modelo
 """
 
 from __future__ import annotations
@@ -16,7 +17,12 @@ from typing import Iterable
 import numpy as np
 import pandas as pd
 
-from src.domain.dca_models import DCAFitResult, DCAForecastConfig, DCAOutput, DCAModelName
+from src.domain.dca_models import (
+    DCAFitResult,
+    DCAForecastConfig,
+    DCAOutput,
+    DCAModelName,
+)
 
 SUPPORTED_MODELS: tuple[DCAModelName, ...] = (
     "exponential",
@@ -263,6 +269,8 @@ def build_dca_qc_report(
 ) -> dict[str, object]:
     """Genera reporte QC para DCA."""
     best = min(fit_results, key=lambda item: item.rmse_stb_d)
+    eur_comparison = _build_eur_comparison(fit_results, config)
+    eur_summary = _build_eur_summary(fit_results, eur_comparison, best)
 
     return {
         "created_at_utc": datetime.utcnow().isoformat(timespec="seconds") + "Z",
@@ -283,8 +291,118 @@ def build_dca_qc_report(
         "best_model_by_rmse": best.model,
         "best_model_rmse_stb_d": float(best.rmse_stb_d),
         "best_model_r2": float(best.r2),
-        "warnings": _build_dca_warnings(clean_df, fit_results, config),
+        "models_with_similar_rmse": _models_with_similar_rmse(fit_results),
+        "eur_comparison": eur_comparison,
+        "eur_summary": eur_summary,
+        "warnings": _build_dca_warnings(fit_results, config),
     }
+
+
+def _build_eur_comparison(
+    fit_results: list[DCAFitResult],
+    config: DCAForecastConfig,
+) -> list[dict[str, object]]:
+    comparison: list[dict[str, object]] = []
+
+    for fit in fit_results:
+        final_rate = float(
+            arps_rate(
+                np.array([float(fit.forecast_days)]),
+                qi=fit.qi_stb_d,
+                di=fit.di_nominal_d,
+                b=fit.b,
+            )[0]
+        )
+        reached_abandonment = _reached_abandonment(
+            final_rate,
+            config.abandonment_rate_stb_d,
+        )
+        cutoff_reason = (
+            "abandonment_rate"
+            if reached_abandonment
+            else "forecast_days_limit"
+        )
+
+        comparison.append(
+            {
+                "model": fit.model,
+                "eur_stb": float(fit.eur_stb),
+                "forecast_end_day": int(fit.forecast_days),
+                "forecast_end_rate_stb_d": final_rate,
+                "rmse_stb_d": float(fit.rmse_stb_d),
+                "r2": float(fit.r2),
+                "b": float(fit.b),
+                "cutoff_reason": cutoff_reason,
+                "reached_abandonment_rate": reached_abandonment,
+                "is_best_rmse": False,
+            }
+        )
+
+    best = min(fit_results, key=lambda item: item.rmse_stb_d)
+    for row in comparison:
+        row["is_best_rmse"] = row["model"] == best.model
+
+    return comparison
+
+
+def _build_eur_summary(
+    fit_results: list[DCAFitResult],
+    eur_comparison: list[dict[str, object]],
+    best: DCAFitResult,
+) -> dict[str, object]:
+    eur_values = [fit.eur_stb for fit in fit_results]
+    low = min(fit_results, key=lambda item: item.eur_stb)
+    high = max(fit_results, key=lambda item: item.eur_stb)
+
+    comparable_rows = [
+        row for row in eur_comparison if bool(row["reached_abandonment_rate"])
+    ]
+
+    return {
+        "base_case_model_by_rmse": best.model,
+        "base_case_eur_stb": float(best.eur_stb),
+        "low_case_model_by_eur": low.model,
+        "low_case_eur_stb": float(low.eur_stb),
+        "high_case_model_by_eur": high.model,
+        "high_case_eur_stb": float(high.eur_stb),
+        "eur_min_stb": float(min(eur_values)),
+        "eur_max_stb": float(max(eur_values)),
+        "eur_range_stb": float(max(eur_values) - min(eur_values)),
+        "comparable_models_reaching_abandonment": [
+            str(row["model"]) for row in comparable_rows
+        ],
+        "non_comparable_models_not_reaching_abandonment": [
+            str(row["model"])
+            for row in eur_comparison
+            if not bool(row["reached_abandonment_rate"])
+        ],
+    }
+
+
+def _reached_abandonment(
+    final_rate: float,
+    abandonment_rate_stb_d: float | None,
+) -> bool:
+    if abandonment_rate_stb_d is None:
+        return False
+
+    tolerance = max(1e-6, 0.001 * abandonment_rate_stb_d)
+    return final_rate <= abandonment_rate_stb_d + tolerance
+
+
+def _models_with_similar_rmse(
+    fit_results: list[DCAFitResult],
+    *,
+    tolerance_fraction: float = 0.02,
+) -> list[str]:
+    best_rmse = min(fit.rmse_stb_d for fit in fit_results)
+    threshold = best_rmse * (1.0 + tolerance_fraction)
+
+    return [
+        fit.model
+        for fit in fit_results
+        if fit.rmse_stb_d <= threshold
+    ]
 
 
 def _fit_exponential(t: np.ndarray, q: np.ndarray) -> tuple[float, float, float]:
@@ -417,13 +535,12 @@ def _r2(actual: np.ndarray, predicted: np.ndarray) -> float:
 
 
 def _build_dca_warnings(
-    clean_df: pd.DataFrame,
     fit_results: list[DCAFitResult],
     config: DCAForecastConfig,
 ) -> list[str]:
     warnings: list[str] = []
 
-    if len(clean_df) < 8:
+    if any(fit.n_points < 8 for fit in fit_results):
         warnings.append(
             "Historia corta para DCA; los ajustes pueden ser sensibles al ruido."
         )
@@ -440,5 +557,30 @@ def _build_dca_warnings(
             "Uno o más modelos tienen R² bajo y deben revisarse visualmente: "
             + ", ".join(poor_fits)
         )
+
+    similar_rmse = _models_with_similar_rmse(fit_results)
+    if len(similar_rmse) > 1:
+        warnings.append(
+            "Varios modelos tienen RMSE similar; considerar el resultado como "
+            "rango de EUR y no como solución única: "
+            + ", ".join(similar_rmse)
+        )
+
+    if config.abandonment_rate_stb_d is not None:
+        for fit in fit_results:
+            final_rate = float(
+                arps_rate(
+                    np.array([float(fit.forecast_days)]),
+                    qi=fit.qi_stb_d,
+                    di=fit.di_nominal_d,
+                    b=fit.b,
+                )[0]
+            )
+            if not _reached_abandonment(final_rate, config.abandonment_rate_stb_d):
+                warnings.append(
+                    f"El modelo {fit.model} no alcanzó la tasa de abandono "
+                    f"{config.abandonment_rate_stb_d:g} STB/d dentro de "
+                    f"forecast_days; su EUR queda limitado por tiempo."
+                )
 
     return warnings
