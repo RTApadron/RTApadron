@@ -91,6 +91,70 @@ def test_dca_rejects_missing_rate_column() -> None:
         raise AssertionError("Se esperaba ValueError por columna faltante.")
 
 
+def test_dca_supports_fit_window_filters() -> None:
+    history = _synthetic_decline_history()
+
+    output = run_dca_analysis(
+        history,
+        well_id="WELL-001",
+        config=DCAForecastConfig(
+            forecast_days=365,
+            rate_column="qo_stb_d",
+            fit_from_date="2024-03-01",
+            fit_to_date="2024-10-01",
+            exclude_first_n=1,
+        ),
+    )
+
+    window = output.qc_report["fit_window"]
+
+    assert output.qc_report["input_rows_used"] < len(history)
+    assert window["fit_from_date_requested"] == "2024-03-01"
+    assert window["fit_to_date_requested"] == "2024-10-01"
+    assert window["exclude_first_n"] == 1
+    assert window["fit_date_min"] >= "2024-03-01"
+    assert window["fit_date_max"] <= "2024-10-01"
+
+
+def test_dca_rejects_negative_exclude_first_n() -> None:
+    history = _synthetic_decline_history()
+
+    try:
+        run_dca_analysis(
+            history,
+            well_id="WELL-001",
+            config=DCAForecastConfig(
+                forecast_days=365,
+                rate_column="qo_stb_d",
+                exclude_first_n=-1,
+            ),
+        )
+    except ValueError as exc:
+        assert "exclude_first_n no puede ser negativo" in str(exc)
+    else:
+        raise AssertionError("Se esperaba ValueError por exclude_first_n negativo.")
+
+
+def test_dca_rejects_window_with_too_few_points() -> None:
+    history = _synthetic_decline_history()
+
+    try:
+        run_dca_analysis(
+            history,
+            well_id="WELL-001",
+            config=DCAForecastConfig(
+                forecast_days=365,
+                rate_column="qo_stb_d",
+                fit_from_date="2025-01-01",
+                fit_to_date="2025-01-15",
+            ),
+        )
+    except ValueError as exc:
+        assert "DCA requiere al menos 3 puntos" in str(exc)
+    else:
+        raise AssertionError("Se esperaba ValueError por ventana con pocos puntos.")
+
+
 def _synthetic_decline_history() -> pd.DataFrame:
     dates = pd.date_range("2024-01-01", periods=12, freq="30D")
     rates = [

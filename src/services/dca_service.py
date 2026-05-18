@@ -4,10 +4,8 @@ Implementa una primera versión conservadora del Módulo 3:
 - ajuste exponencial
 - ajuste armónico
 - ajuste hiperbólico
+- selección de ventana de ajuste
 - pronóstico por integración numérica diaria
-
-No usa scipy para evitar nuevas dependencias. El ajuste hiperbólico y armónico
-se hace por búsqueda en grilla sobre Di y b.
 """
 
 from __future__ import annotations
@@ -34,21 +32,14 @@ def run_dca_analysis(
     config: DCAForecastConfig | None = None,
     models: Iterable[DCAModelName] = SUPPORTED_MODELS,
 ) -> DCAOutput:
-    """Ejecuta ajuste DCA sobre una historia enriquecida M1-M2.
-
-    Args:
-        history_df: DataFrame con al menos date y rate_column.
-        well_id: Identificador canónico del pozo.
-        config: Configuración de pronóstico.
-        models: Modelos Arps a ajustar.
-
-    Returns:
-        DCAOutput con resultados, pronóstico y QC.
-    """
+    """Ejecuta ajuste DCA sobre una historia enriquecida M1-M2."""
     cfg = config or DCAForecastConfig()
     clean = prepare_rate_history(
         history_df,
         rate_column=cfg.rate_column,
+        fit_from_date=cfg.fit_from_date,
+        fit_to_date=cfg.fit_to_date,
+        exclude_first_n=cfg.exclude_first_n,
     )
 
     fit_results: list[DCAFitResult] = []
@@ -96,12 +87,19 @@ def prepare_rate_history(
     history_df: pd.DataFrame,
     *,
     rate_column: str,
+    fit_from_date: str | None = None,
+    fit_to_date: str | None = None,
+    exclude_first_n: int = 0,
 ) -> pd.DataFrame:
-    """Limpia y prepara historia para ajuste DCA."""
+    """Limpia, filtra y prepara historia para ajuste DCA."""
     required = {"date", rate_column}
     missing = required.difference(history_df.columns)
     if missing:
         msg = f"Faltan columnas para DCA: {sorted(missing)}"
+        raise ValueError(msg)
+
+    if exclude_first_n < 0:
+        msg = "exclude_first_n no puede ser negativo."
         raise ValueError(msg)
 
     df = history_df.copy()
@@ -111,11 +109,21 @@ def prepare_rate_history(
     df = df[df["date"].notna()].copy()
     df = df[df[rate_column].notna()].copy()
     df = df[df[rate_column] > 0].copy()
+    df = df.sort_values("date").reset_index(drop=True)
+
+    if fit_from_date is not None:
+        df = df[df["date"] >= pd.Timestamp(fit_from_date)].copy()
+
+    if fit_to_date is not None:
+        df = df[df["date"] <= pd.Timestamp(fit_to_date)].copy()
+
+    if exclude_first_n:
+        df = df.iloc[exclude_first_n:].copy()
 
     if len(df) < 3:
         msg = (
             "DCA requiere al menos 3 puntos con fecha válida y tasa positiva "
-            f"en {rate_column}."
+            f"en {rate_column} después de aplicar filtros."
         )
         raise ValueError(msg)
 
@@ -262,8 +270,13 @@ def build_dca_qc_report(
         "well_id": well_id,
         "rate_column": config.rate_column,
         "input_rows_used": int(len(clean_df)),
-        "date_min": str(pd.Timestamp(clean_df["date"].min()).date()),
-        "date_max": str(pd.Timestamp(clean_df["date"].max()).date()),
+        "fit_window": {
+            "fit_from_date_requested": config.fit_from_date,
+            "fit_to_date_requested": config.fit_to_date,
+            "exclude_first_n": int(config.exclude_first_n),
+            "fit_date_min": str(pd.Timestamp(clean_df["date"].min()).date()),
+            "fit_date_max": str(pd.Timestamp(clean_df["date"].max()).date()),
+        },
         "forecast_days_requested": int(config.forecast_days),
         "abandonment_rate_stb_d": config.abandonment_rate_stb_d,
         "models": [fit.model for fit in fit_results],
@@ -387,6 +400,7 @@ def _trapezoid_cumulative(days: np.ndarray, rates: np.ndarray) -> float:
         return 0.0
 
     return float(np.trapezoid(rates, days))
+
 
 def _rmse(actual: np.ndarray, predicted: np.ndarray) -> float:
     return float(np.sqrt(np.mean((actual - predicted) ** 2)))

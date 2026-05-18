@@ -31,11 +31,14 @@ class DCAFitResult:
 
 @dataclass(frozen=True)
 class DCAForecastConfig:
-    """Configuración de pronóstico DCA."""
+    """Configuración de ajuste y pronóstico DCA."""
 
     forecast_days: int = 3650
     abandonment_rate_stb_d: float | None = None
     rate_column: str = "qo_stb_d"
+    fit_from_date: str | None = None
+    fit_to_date: str | None = None
+    exclude_first_n: int = 0
 
 
 @dataclass(frozen=True)

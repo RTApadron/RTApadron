@@ -1,14 +1,16 @@
 """Pipeline CLI para Módulo 3 - DCA / Arps.
 
 Uso corto:
-    python -m src.pipeline.run_dca --well-id W-001
+    python -m src.pipeline.run_dca --well-id W001
 
 Uso completo:
     python -m src.pipeline.run_dca \
-        --well-id W-001 \
-        --input-csv output/W-001_history_enriched.csv \
+        --well-id W001 \
+        --input-csv output/W001_history_enriched.csv \
         --rate-column qo_stb_d \
-        --forecast-days 3650
+        --forecast-days 3650 \
+        --fit-from-date 2024-07-01 \
+        --fit-to-date 2025-11-30
 """
 
 from __future__ import annotations
@@ -21,6 +23,7 @@ from pathlib import Path
 import matplotlib
 
 matplotlib.use("Agg")
+
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -32,6 +35,7 @@ DEFAULT_OUTPUT_DIR = Path("output")
 
 
 def main() -> int:
+    """Ejecuta DCA desde línea de comandos."""
     args = _parse_args()
 
     input_csv = _resolve_input_csv(args.input_csv, well_id=args.well_id)
@@ -53,6 +57,9 @@ def main() -> int:
             forecast_days=args.forecast_days,
             abandonment_rate_stb_d=args.abandonment_rate,
             rate_column=args.rate_column,
+            fit_from_date=args.fit_from_date,
+            fit_to_date=args.fit_to_date,
+            exclude_first_n=args.exclude_first_n,
         )
 
         output = run_dca_analysis(
@@ -130,23 +137,19 @@ def plot_dca_rate_fit(
 ) -> Path:
     """Genera gráfica automática de historia real vs curvas ajustadas.
 
-    La figura muestra:
-    - puntos reales de la historia
-    - curvas ajustadas para exponential, harmonic e hyperbolic
-    - eje X en días desde inicio
-    - eje Y en tasa
-
-    Args:
-        history_df: Historia enriquecida M1-M2.
-        output: Resultado del servicio DCA.
-        plot_path: Ruta destino del PNG.
-        rate_column: Columna de tasa usada en el ajuste.
-
-    Returns:
-        Ruta del archivo PNG generado.
+    Usa la misma ventana de ajuste reportada en output.qc_report["fit_window"].
     """
-    clean = prepare_rate_history(history_df, rate_column=rate_column)
+    fit_window = output.qc_report.get("fit_window", {})
 
+    clean = prepare_rate_history(
+        history_df,
+        rate_column=rate_column,
+        fit_from_date=fit_window.get("fit_from_date_requested"),
+        fit_to_date=fit_window.get("fit_to_date_requested"),
+        exclude_first_n=int(fit_window.get("exclude_first_n", 0)),
+    )
+
+    all_history = _prepare_plot_history(history_df, rate_column=rate_column)
     out_path = Path(plot_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -154,23 +157,49 @@ def plot_dca_rate_fit(
 
     fig, ax = plt.subplots(figsize=(10, 6))
 
+    if not all_history.empty:
+        full_start = pd.Timestamp(all_history["date"].min())
+        all_days = (all_history["date"] - full_start).dt.total_seconds() / 86400.0
+
+        ax.plot(
+            all_days,
+            all_history[rate_column],
+            marker="o",
+            linestyle="",
+            alpha=0.25,
+            label="Historia completa",
+        )
+
+        fit_days_for_plot = (
+            clean["date"] - full_start
+        ).dt.total_seconds() / 86400.0
+    else:
+        fit_days_for_plot = clean["days"]
+
     ax.plot(
-        clean["days"],
+        fit_days_for_plot,
         clean[rate_column],
         marker="o",
         linestyle="",
-        label="Historia real",
+        label="Ventana de ajuste",
     )
 
-    days_dense = np.linspace(
+    days_dense_fit = np.linspace(
         float(clean["days"].min()),
         float(clean["days"].max()),
         300,
     )
 
+    if not all_history.empty:
+        days_dense_plot = (
+            pd.Timestamp(clean["date"].min()) - full_start
+        ).days + days_dense_fit
+    else:
+        days_dense_plot = days_dense_fit
+
     for fit in output.fit_results:
         rates_fit = arps_rate(
-            days_dense,
+            days_dense_fit,
             qi=fit.qi_stb_d,
             di=fit.di_nominal_d,
             b=fit.b,
@@ -183,13 +212,13 @@ def plot_dca_rate_fit(
             f"RMSE={fit.rmse_stb_d:.2f}, "
             f"R²={fit.r2:.3f}"
         )
-        ax.plot(days_dense, rates_fit, label=label)
+        ax.plot(days_dense_plot, rates_fit, label=label)
 
     ax.set_title(
         "DCA / Arps - Ajuste automático de tasa\n"
         f"Mejor modelo por RMSE: {best_model}"
     )
-    ax.set_xlabel("Tiempo desde inicio [días]")
+    ax.set_xlabel("Tiempo desde inicio de historia [días]")
     ax.set_ylabel(f"Tasa {rate_column} [STB/d]")
     ax.grid(True, alpha=0.3)
     ax.legend(fontsize=8)
@@ -199,6 +228,23 @@ def plot_dca_rate_fit(
     plt.close(fig)
 
     return out_path
+
+
+def _prepare_plot_history(history_df: pd.DataFrame, *, rate_column: str) -> pd.DataFrame:
+    """Prepara historia completa solo para graficar."""
+    if "date" not in history_df.columns or rate_column not in history_df.columns:
+        return pd.DataFrame()
+
+    df = history_df.copy()
+    df["date"] = pd.to_datetime(df["date"], errors="coerce")
+    df[rate_column] = pd.to_numeric(df[rate_column], errors="coerce")
+
+    df = df[df["date"].notna()].copy()
+    df = df[df[rate_column].notna()].copy()
+    df = df[df[rate_column] > 0].copy()
+    df = df.sort_values("date").reset_index(drop=True)
+
+    return df[["date", rate_column]].copy()
 
 
 def _parse_args() -> argparse.Namespace:
@@ -235,6 +281,22 @@ def _parse_args() -> argparse.Namespace:
         default=None,
         type=float,
         help="Tasa de abandono STB/d. Si se omite, integra hasta forecast-days.",
+    )
+    parser.add_argument(
+        "--fit-from-date",
+        default=None,
+        help="Fecha inicial de ajuste DCA, formato YYYY-MM-DD.",
+    )
+    parser.add_argument(
+        "--fit-to-date",
+        default=None,
+        help="Fecha final de ajuste DCA, formato YYYY-MM-DD.",
+    )
+    parser.add_argument(
+        "--exclude-first-n",
+        default=0,
+        type=int,
+        help="Excluye los primeros N puntos después de filtrar por fecha.",
     )
     parser.add_argument(
         "--plot-file",
