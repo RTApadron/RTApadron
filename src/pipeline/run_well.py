@@ -1,14 +1,13 @@
-# src/pipeline/run_well.py
 """Pipeline CLI para integrar Módulo 1 y Módulo 2.
+
+Uso corto:
+    python -m src.pipeline.run_well --well-id W-001
 
 Uso completo:
     python -m src.pipeline.run_well \
         --well-id W-001 \
         --history-csv data/history.csv \
         --pvt-config-json data/pvt_config_W-001.json
-
-Uso corto:
-    python -m src.pipeline.run_well --well-id W-001
 """
 
 from __future__ import annotations
@@ -20,7 +19,6 @@ from pathlib import Path
 from src.adapters.m1_loader_adapter import load_history_csv
 from src.adapters.m2_pvt_adapter import load_pvt_config
 from src.services.integration_service import integrate_history_with_pvt, write_outputs
-
 
 DEFAULT_HISTORY_CSV = Path("data/history.csv")
 DEFAULT_OUTPUT_DIR = Path("output")
@@ -53,7 +51,11 @@ def main() -> int:
             )
             raise ValueError(msg)
 
-        output = integrate_history_with_pvt(history, pvt_cfg)
+        output = integrate_history_with_pvt(
+            history,
+            pvt_cfg,
+            auto_estimate_missing_pwf=not args.no_auto_pwf_estimation,
+        )
 
         enriched_path, qc_path = write_outputs(
             output,
@@ -68,6 +70,7 @@ def main() -> int:
     print("[OK] Integración M1 + M2 completada.")
     print(f"[OK] Historia usada: {history_csv}")
     print(f"[OK] Configuración PVT usada: {pvt_config_json}")
+    print(f"[OK] Estimación automática Pwf: {not args.no_auto_pwf_estimation}")
     print(f"[OK] Historia enriquecida: {enriched_path}")
     print(f"[OK] Reporte QC: {qc_path}")
     print(f"[OK] Filas integradas: {len(output.enriched)}")
@@ -95,6 +98,11 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--from-date", default=None)
     parser.add_argument("--to-date", default=None)
     parser.add_argument("--output-dir", default=DEFAULT_OUTPUT_DIR, type=Path)
+    parser.add_argument(
+        "--no-auto-pwf-estimation",
+        action="store_true",
+        help="No estimar Pwf automáticamente cuando falte medida y estimada.",
+    )
 
     return parser.parse_args()
 

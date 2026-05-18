@@ -1,7 +1,8 @@
 """Servicio de integración M1 + M2.
 
-Recibe historia normalizada, aplica regla de Pwf y une propiedades PVT.
-Este servicio queda listo para ser consumido por CLI, tests o Streamlit.
+Recibe historia normalizada, completa Pwf cuando sea necesario, aplica regla de
+Pwf usada y une propiedades PVT. Este servicio queda listo para ser consumido
+por CLI, tests o Streamlit.
 """
 
 from __future__ import annotations
@@ -15,8 +16,11 @@ import pandas as pd
 
 from src.adapters.m1_loader_adapter import apply_pwf_rule
 from src.adapters.m2_pvt_adapter import build_pvt_table
+from src.adapters.pwf_estimator_adapter import (
+    PwfEstimationDefaults,
+    estimate_missing_pwf_v1,
+)
 from src.domain.models import PVTConfig
-
 
 ENRICHED_COLUMNS = [
     "well_id",
@@ -30,6 +34,7 @@ ENRICHED_COLUMNS = [
     "pwf_estimated_psia",
     "pwf_used_psia",
     "pwf_source",
+    "pwf_estimation_method",
     "bo",
     "rs",
     "mu_o_cp",
@@ -52,12 +57,19 @@ class IntegrationOutput:
 def integrate_history_with_pvt(
     history_df: pd.DataFrame,
     pvt_cfg: PVTConfig,
+    *,
+    auto_estimate_missing_pwf: bool = True,
+    pwf_defaults: PwfEstimationDefaults | None = None,
 ) -> IntegrationOutput:
     """Integra historia M1 con propiedades PVT M2."""
-
     _validate_history(history_df)
 
-    history = apply_pwf_rule(history_df)
+    history = history_df.copy()
+
+    if auto_estimate_missing_pwf:
+        history = estimate_missing_pwf_v1(history, defaults=pwf_defaults)
+
+    history = apply_pwf_rule(history)
     pvt = build_pvt_table(history, pvt_cfg)
 
     enriched = history.merge(
@@ -75,13 +87,14 @@ def integrate_history_with_pvt(
     enriched = enriched.sort_values(["well_id", "date"]).reset_index(drop=True)
 
     report = build_qc_report(enriched)
+
     return IntegrationOutput(enriched=enriched, qc_report=report)
 
 
 def build_qc_report(enriched: pd.DataFrame) -> dict[str, Any]:
     """Genera reporte QC simple y serializable."""
-
     total_rows = int(len(enriched))
+
     pwf_source_counts = (
         enriched["pwf_source"].fillna("missing").value_counts().to_dict()
         if "pwf_source" in enriched.columns
@@ -114,6 +127,7 @@ def write_outputs(
     output_dir: str | Path = "output",
 ) -> tuple[Path, Path]:
     """Escribe CSV enriquecido y reporte QC JSON."""
+    import json
 
     out_dir = Path(output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -122,8 +136,6 @@ def write_outputs(
     qc_path = out_dir / f"{well_id}_qc_report.json"
 
     output.enriched.to_csv(enriched_path, index=False)
-
-    import json
 
     with qc_path.open("w", encoding="utf-8") as file:
         json.dump(output.qc_report, file, indent=2, ensure_ascii=False)
@@ -144,6 +156,7 @@ def _validate_history(history_df: pd.DataFrame) -> None:
         "pwf_estimated_psia",
     }
     missing = required.difference(history_df.columns)
+
     if missing:
         msg = f"La historia no cumple contrato M1. Faltan columnas: {sorted(missing)}"
         raise ValueError(msg)
@@ -156,6 +169,7 @@ def _validate_history(history_df: pd.DataFrame) -> None:
 def _safe_date_min(df: pd.DataFrame) -> str | None:
     if "date" not in df.columns or df.empty:
         return None
+
     value = pd.to_datetime(df["date"], errors="coerce").min()
     return None if pd.isna(value) else str(value.date())
 
@@ -163,5 +177,6 @@ def _safe_date_min(df: pd.DataFrame) -> str | None:
 def _safe_date_max(df: pd.DataFrame) -> str | None:
     if "date" not in df.columns or df.empty:
         return None
+
     value = pd.to_datetime(df["date"], errors="coerce").max()
     return None if pd.isna(value) else str(value.date())

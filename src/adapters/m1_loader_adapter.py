@@ -1,7 +1,7 @@
 """Adaptador conservador para Módulo 1: historia de pozo y Pwf.
 
-No reemplaza src/well_mod/run_estimator.py. Este adaptador normaliza CSVs y
-crea las columnas mínimas requeridas por el contrato común M1-M2.
+No reemplaza src/well_mod/run_estimator.py. Este adaptador normaliza CSVs y crea
+las columnas mínimas requeridas por el contrato común M1-M2.
 """
 
 from __future__ import annotations
@@ -9,7 +9,6 @@ from __future__ import annotations
 from pathlib import Path
 
 import pandas as pd
-
 
 CANONICAL_COLUMNS = [
     "well_id",
@@ -23,6 +22,13 @@ CANONICAL_COLUMNS = [
     "pwf_estimated_psia",
 ]
 
+OPTIONAL_M1_COLUMNS = [
+    "api",
+    "tvd_perf_ft",
+    "tubing_id_in",
+    "length_ft",
+    "pwf_estimation_method",
+]
 
 COLUMN_ALIASES = {
     # Identificación
@@ -79,7 +85,6 @@ COLUMN_ALIASES = {
     "pwf_psi": "pwf_measured_psia",
     "pwf_measured": "pwf_measured_psia",
     "pwf_measured_psi": "pwf_measured_psia",
-    "pwf_measured_psia": "pwf_measured_psia",
     "bottomhole_pressure": "pwf_measured_psia",
     "bottomhole_pressure_psia": "pwf_measured_psia",
     "presion_fondo": "pwf_measured_psia",
@@ -87,7 +92,6 @@ COLUMN_ALIASES = {
     # Pwf estimada
     "pwf_estimated": "pwf_estimated_psia",
     "pwf_estimated_psi": "pwf_estimated_psia",
-    "pwf_estimated_psia": "pwf_estimated_psia",
     "pwf_calculated": "pwf_estimated_psia",
     "pwf_calculated_psia": "pwf_estimated_psia",
     "pwf_estimada": "pwf_estimated_psia",
@@ -102,24 +106,15 @@ def load_history_csv(
     from_date: str | None = None,
     to_date: str | None = None,
 ) -> pd.DataFrame:
-    """Carga y normaliza historia de producción/presión desde CSV.
-
-    Args:
-        path: Ruta del CSV de historia.
-        well_id: Filtro opcional por pozo.
-        from_date: Fecha inicial opcional en formato YYYY-MM-DD.
-        to_date: Fecha final opcional en formato YYYY-MM-DD.
-
-    Returns:
-        DataFrame con columnas canónicas mínimas.
-    """
-
+    """Carga y normaliza historia de producción/presión desde CSV."""
     csv_path = Path(path)
+
     if not csv_path.exists():
         msg = f"No existe el archivo de historia: {csv_path}"
         raise FileNotFoundError(msg)
 
     df = pd.read_csv(csv_path)
+
     if df.empty:
         msg = f"El archivo de historia está vacío: {csv_path}"
         raise ValueError(msg)
@@ -165,45 +160,71 @@ def load_history_csv(
         "t_wh_f",
         "pwf_measured_psia",
         "pwf_estimated_psia",
+        "api",
+        "tvd_perf_ft",
+        "tubing_id_in",
+        "length_ft",
     ]
     for column in numeric_columns:
-        df[column] = pd.to_numeric(df[column], errors="coerce")
+        if column in df.columns:
+            df[column] = pd.to_numeric(df[column], errors="coerce")
+
+    output_columns = CANONICAL_COLUMNS + [
+        column for column in OPTIONAL_M1_COLUMNS if column in df.columns
+    ]
 
     df = df.sort_values(["well_id", "date"]).reset_index(drop=True)
-    return df[CANONICAL_COLUMNS]
+    return df[output_columns]
 
 
 def apply_pwf_rule(df: pd.DataFrame) -> pd.DataFrame:
     """Aplica regla base: Pwf medida válida tiene prioridad sobre estimada."""
-
     required = {"pwf_measured_psia", "pwf_estimated_psia"}
     missing = required.difference(df.columns)
+
     if missing:
         msg = f"Faltan columnas para aplicar regla Pwf: {sorted(missing)}"
         raise ValueError(msg)
 
     out = df.copy()
 
-    measured_valid = out["pwf_measured_psia"].notna() & (out["pwf_measured_psia"] > 0)
-    estimated_valid = out["pwf_estimated_psia"].notna() & (out["pwf_estimated_psia"] > 0)
+    measured_valid = out["pwf_measured_psia"].notna() & (
+        out["pwf_measured_psia"] > 0
+    )
+    estimated_valid = out["pwf_estimated_psia"].notna() & (
+        out["pwf_estimated_psia"] > 0
+    )
 
     out["pwf_used_psia"] = pd.NA
     out["pwf_source"] = "missing"
 
-    out.loc[measured_valid, "pwf_used_psia"] = out.loc[measured_valid, "pwf_measured_psia"]
+    out.loc[measured_valid, "pwf_used_psia"] = out.loc[
+        measured_valid,
+        "pwf_measured_psia",
+    ]
     out.loc[measured_valid, "pwf_source"] = "measured"
 
     use_estimated = ~measured_valid & estimated_valid
-    out.loc[use_estimated, "pwf_used_psia"] = out.loc[use_estimated, "pwf_estimated_psia"]
-    out.loc[use_estimated, "pwf_source"] = "estimated"
+    out.loc[use_estimated, "pwf_used_psia"] = out.loc[
+        use_estimated,
+        "pwf_estimated_psia",
+    ]
+
+    out.loc[use_estimated, "pwf_source"] = "estimated_from_history"
+
+    if "pwf_estimation_method" in out.columns:
+        estimated_v1 = use_estimated & (
+            out["pwf_estimation_method"].astype("string") == "estimate_pwf_v1"
+        )
+        out.loc[estimated_v1, "pwf_source"] = "estimated_v1"
 
     out["pwf_used_psia"] = pd.to_numeric(out["pwf_used_psia"], errors="coerce")
+
     return out
 
 
 def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
     """Normaliza nombres de columnas y aplica alias conocidos."""
-
     renamed: dict[str, str] = {}
 
     for column in df.columns:
@@ -217,4 +238,5 @@ def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
 
     out = df.rename(columns=renamed)
     out = out.loc[:, ~out.columns.duplicated()].copy()
+
     return out
