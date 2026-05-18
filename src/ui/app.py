@@ -1,11 +1,11 @@
-"""Streamlit UI for ecoRTA workflows.
+"""Streamlit UI for ecoRTA DCA workflow.
 
 This UI is intentionally thin:
-- It collects user inputs.
-- It executes the existing CLI pipeline.
-- It displays generated CSV/JSON/PNG artifacts.
+- Collects user inputs.
+- Executes the existing full workflow CLI.
+- Displays generated CSV/JSON/PNG artifacts.
 
-No DCA, PVT, or well-integration logic is duplicated here.
+No PVT, well-integration, or DCA calculation logic is duplicated here.
 """
 
 from __future__ import annotations
@@ -65,13 +65,40 @@ def configure_page() -> None:
 
 
 def ensure_dirs() -> None:
-    """Create required runtime folders."""
+    """Create runtime folders if they do not exist."""
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     UI_INPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 
+def apply_light_css() -> None:
+    """Apply small UI polish without coupling to Streamlit internals."""
+    st.markdown(
+        """
+        <style>
+        div.stButton > button:first-child {
+            border-radius: 0.55rem;
+            font-weight: 600;
+        }
+
+        div[data-testid="stMetric"] {
+            background-color: #f8fafc;
+            border: 1px solid #e5e7eb;
+            padding: 0.75rem;
+            border-radius: 0.75rem;
+        }
+
+        .small-muted {
+            color: #6b7280;
+            font-size: 0.9rem;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def save_uploaded_file(uploaded_file: Any, target_name: str) -> Path | None:
-    """Persist an uploaded Streamlit file and return its path."""
+    """Persist an uploaded Streamlit file and return its local path."""
     if uploaded_file is None:
         return None
 
@@ -81,7 +108,7 @@ def save_uploaded_file(uploaded_file: Any, target_name: str) -> Path | None:
 
 
 def read_json(path: Path) -> dict[str, Any]:
-    """Read a JSON file safely."""
+    """Read a JSON object from disk."""
     with path.open("r", encoding="utf-8") as file:
         data = json.load(file)
 
@@ -90,6 +117,24 @@ def read_json(path: Path) -> dict[str, Any]:
         raise ValueError(msg)
 
     return data
+
+
+def get_nested_value(data: dict[str, Any], keys: tuple[str, ...]) -> Any:
+    """Return the first existing top-level value among candidate keys."""
+    for key in keys:
+        if key in data:
+            return data[key]
+    return None
+
+
+def as_float(value: Any, default: float = 0.0) -> float:
+    """Convert a value to float safely."""
+    try:
+        if value is None:
+            return default
+        return float(value)
+    except (TypeError, ValueError):
+        return default
 
 
 def build_full_workflow_command(
@@ -106,6 +151,10 @@ def build_full_workflow_command(
     pvt_config_json: Path | None,
 ) -> list[str]:
     """Build the existing CLI command for the full M1-M2-M3 workflow."""
+    if forecast_start_rate_mode not in FORECAST_START_RATE_MODES:
+        msg = f"Modo de tasa inicial de forecast no soportado: {forecast_start_rate_mode}"
+        raise ValueError(msg)
+
     cmd = [
         sys.executable,
         "-m",
@@ -137,8 +186,6 @@ def build_full_workflow_command(
             raise ValueError(msg)
         cmd.extend(["--forecast-start-rate", str(forecast_start_rate)])
 
-    # These flags assume run_full_workflow.py already supports uploaded input paths.
-    # If your current CLI uses different names, only adjust these two flag names.
     if history_csv is not None:
         cmd.extend(["--history-csv", str(history_csv)])
 
@@ -149,7 +196,7 @@ def build_full_workflow_command(
 
 
 def run_command(cmd: list[str]) -> subprocess.CompletedProcess[str]:
-    """Run the workflow command from project root."""
+    """Run the workflow command from the project root."""
     return subprocess.run(
         cmd,
         cwd=PROJECT_ROOT,
@@ -160,12 +207,12 @@ def run_command(cmd: list[str]) -> subprocess.CompletedProcess[str]:
 
 
 def show_command(cmd: list[str]) -> None:
-    """Render command in a readable form."""
+    """Render command in a readable shell-like form."""
     st.code(" ".join(cmd), language="bash")
 
 
 def render_download_button(path: Path, label: str, mime: str) -> None:
-    """Render a download button if a file exists."""
+    """Render a download button if the file exists."""
     if not path.exists():
         st.caption(f"No disponible todavía: `{path.name}`")
         return
@@ -222,6 +269,74 @@ def render_png(path: Path, title: str) -> None:
         return
 
     st.image(str(path), use_container_width=True)
+
+
+def render_quick_dca_summary(artifacts: WorkflowArtifacts) -> None:
+    """Render high-level DCA metrics from the QC JSON report."""
+    if not artifacts.dca_qc_report_json.exists():
+        return
+
+    try:
+        qc = read_json(artifacts.dca_qc_report_json)
+    except Exception as exc:  # noqa: BLE001
+        st.warning(f"No fue posible cargar el resumen rápido DCA: {exc}")
+        return
+
+    eur_summary = qc.get("eur_summary", {})
+    forecast_start_rate = qc.get("forecast_start_rate", {})
+
+    if not isinstance(eur_summary, dict):
+        eur_summary = {}
+
+    if not isinstance(forecast_start_rate, dict):
+        forecast_start_rate = {}
+
+    base_model = get_nested_value(
+        eur_summary,
+        ("base_model", "best_model", "selected_model", "model"),
+    )
+    base_eur_mstb = get_nested_value(
+        eur_summary,
+        ("base_eur_mstb", "eur_mstb", "eur_base_mstb", "base_eur"),
+    )
+
+    start_rate_mode = get_nested_value(
+        forecast_start_rate,
+        ("mode", "forecast_start_rate_mode", "source"),
+    )
+    start_rate_stb_d = get_nested_value(
+        forecast_start_rate,
+        ("rate_stb_d", "forecast_start_rate_stb_d", "rate", "value"),
+    )
+
+    models_with_similar_rmse = qc.get("models_with_similar_rmse", [])
+    similar_models_count = (
+        len(models_with_similar_rmse)
+        if isinstance(models_with_similar_rmse, list)
+        else 0
+    )
+
+    st.subheader("Resumen rápido DCA")
+
+    col1, col2, col3, col4, col5 = st.columns(5)
+
+    with col1:
+        st.metric("Modelo base", str(base_model or "N/D"))
+
+    with col2:
+        st.metric("EUR base", f"{as_float(base_eur_mstb):,.3f} MSTB")
+
+    with col3:
+        st.metric("Modo tasa inicial", str(start_rate_mode or "N/D"))
+
+    with col4:
+        st.metric(
+            "Tasa inicial forecast",
+            f"{as_float(start_rate_stb_d):,.2f} STB/d",
+        )
+
+    with col5:
+        st.metric("Modelos RMSE similar", str(similar_models_count))
 
 
 def render_sidebar_inputs() -> dict[str, Any]:
@@ -320,6 +435,8 @@ def render_artifacts(well_id: str) -> None:
     """Render generated workflow artifacts."""
     artifacts = WorkflowArtifacts.for_well(well_id)
 
+    render_quick_dca_summary(artifacts)
+
     tabs = st.tabs(
         [
             "Resumen DCA",
@@ -397,11 +514,13 @@ def render_artifacts(well_id: str) -> None:
 def main() -> None:
     """Run the Streamlit app."""
     configure_page()
+    apply_light_css()
     ensure_dirs()
 
     st.title("ecoRTA | Interfaz DCA")
     st.caption(
-        "Workflow integrado M1-M2-M3: historia de pozo, PVT y declinación Arps."
+        "Workflow integrado M1-M2-M3: historia de pozo, propiedades PVT "
+        "y curvas de declinación Arps."
     )
 
     inputs = render_sidebar_inputs()
@@ -411,8 +530,8 @@ def main() -> None:
         return
 
     st.info(
-        "La UI ejecuta el pipeline existente y muestra los artefactos generados. "
-        "No duplica lógica de integración, PVT ni DCA."
+        "La interfaz ejecuta el pipeline existente y muestra los artefactos "
+        "generados. No duplica lógica de integración, PVT ni DCA."
     )
 
     history_csv_path = save_uploaded_file(
@@ -451,7 +570,7 @@ def main() -> None:
     )
 
     if run_clicked:
-        with st.spinner("Ejecutando workflow..."):
+        with st.spinner("Ejecutando workflow M1-M2-M3..."):
             result = run_command(cmd)
 
         if result.returncode != 0:
