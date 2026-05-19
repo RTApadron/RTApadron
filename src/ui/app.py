@@ -32,6 +32,11 @@ from src.rta.models import (
     default_rta_config,
     default_rta_match_config,
 )
+from src.rta.point_selection import (
+    apply_rta_point_selection,
+    merge_existing_selection,
+    read_selection_csv,
+)
 OUTPUT_DIR = PROJECT_ROOT / "output"
 UI_INPUT_DIR = PROJECT_ROOT / "data" / "ui_uploads"
 
@@ -71,6 +76,7 @@ SESSION_EDITED_HISTORY_PATH = "edited_history_csv_path"
 SESSION_PVT_CONFIG_PATH = "pvt_config_ui_path"
 SESSION_RTA_CONFIG_PATH = "rta_config_ui_path"
 SESSION_RTA_MATCH_CONFIG_PATH = "rta_match_config_ui_path"
+SESSION_RTA_POINT_SELECTION_PATH = "rta_point_selection_ui_path"
 SESSION_RTA_MATCH_ANCHOR_X = "rta_match_anchor_x"
 SESSION_RTA_MATCH_ANCHOR_Y = "rta_match_anchor_y"
 
@@ -252,6 +258,22 @@ def get_active_rta_match_config_path() -> Path | None:
 
     path = Path(str(raw_path))
     return path if path.exists() else None
+
+
+def get_rta_point_selection_path(well_id: str) -> Path:
+    """Return the default UI point-selection CSV path for RTA matching."""
+    return UI_INPUT_DIR / f"{well_id}_rta_point_selection_ui.csv"
+
+
+def get_active_rta_point_selection_path(well_id: str) -> Path | None:
+    raw_path = st.session_state.get(SESSION_RTA_POINT_SELECTION_PATH)
+    if raw_path:
+        path = Path(str(raw_path))
+        if path.exists():
+            return path
+
+    default_path = get_rta_point_selection_path(well_id)
+    return default_path if default_path.exists() else None
 
 
 def read_json(path: Path) -> dict[str, Any]:
@@ -1886,6 +1908,7 @@ def build_rta_match_command(
     well_id: str,
     diagnostics_csv: Path,
     rta_match_config_json: Path | None,
+    rta_point_selection_csv: Path | None = None,
 ) -> list[str]:
     """Build CLI command for M4 manual type-curve overlay preparation."""
     cmd = [
@@ -1902,6 +1925,9 @@ def build_rta_match_command(
 
     if rta_match_config_json is not None:
         cmd.extend(["--rta-match-config-json", str(rta_match_config_json)])
+
+    if rta_point_selection_csv is not None:
+        cmd.extend(["--rta-point-selection-csv", str(rta_point_selection_csv)])
 
     return cmd
 
@@ -2315,7 +2341,254 @@ def render_rta_qc_alerts(qc_path: Path) -> None:
 
 
 
-def render_m4_diagnostics_outputs(artifacts: WorkflowArtifacts) -> None:
+
+def load_rta_point_selection_for_ui(
+    diagnostics_df: pd.DataFrame,
+    well_id: str,
+) -> pd.DataFrame:
+    """Load or initialize editable RTA point selection for the current diagnostics."""
+    selection_path = get_active_rta_point_selection_path(well_id)
+    existing_selection = None
+
+    if selection_path is not None:
+        try:
+            existing_selection = read_selection_csv(selection_path)
+        except Exception as exc:  # noqa: BLE001
+            st.warning(f"No fue posible leer selección RTA `{selection_path.name}`: {exc}")
+
+    return merge_existing_selection(diagnostics_df, existing_selection)
+
+
+def apply_quick_rta_selection_action(
+    selection_df: pd.DataFrame,
+    action: str,
+) -> pd.DataFrame:
+    """Apply quick include/exclude actions to an editable RTA selection table."""
+    result = selection_df.copy()
+
+    if "use_for_rta" not in result.columns:
+        result["use_for_rta"] = True
+    if "exclusion_reason" not in result.columns:
+        result["exclusion_reason"] = ""
+
+    if action == "restore_all":
+        result["use_for_rta"] = True
+        result["exclusion_reason"] = ""
+        return result
+
+    if action == "exclude_invalid_drawdown" and "valid_drawdown" in result.columns:
+        invalid = result["valid_drawdown"].astype(str).str.lower().isin({"false", "0", "no"})
+        result.loc[invalid, "use_for_rta"] = False
+        result.loc[invalid, "exclusion_reason"] = "invalid_drawdown"
+
+    elif action == "exclude_non_positive_qo" and "qo_stb_d" in result.columns:
+        qo = pd.to_numeric(result["qo_stb_d"], errors="coerce")
+        invalid = qo.notna() & (qo <= 0)
+        result.loc[invalid, "use_for_rta"] = False
+        result.loc[invalid, "exclusion_reason"] = "non_positive_qo"
+
+    elif action == "exclude_missing_pwf" and "pwf_used_psia" in result.columns:
+        missing = pd.to_numeric(result["pwf_used_psia"], errors="coerce").isna()
+        result.loc[missing, "use_for_rta"] = False
+        result.loc[missing, "exclusion_reason"] = "missing_pwf_used_psia"
+
+    elif action == "exclude_near_duplicate_tmb":
+        required = {"material_balance_time_days", "normalized_rate_stb_d_psi"}
+        if required.issubset(result.columns):
+            working = result.copy()
+            working["material_balance_time_days"] = pd.to_numeric(
+                working["material_balance_time_days"],
+                errors="coerce",
+            )
+            working["normalized_rate_stb_d_psi"] = pd.to_numeric(
+                working["normalized_rate_stb_d_psi"],
+                errors="coerce",
+            )
+            valid = (
+                (working["material_balance_time_days"] > 0)
+                & (working["normalized_rate_stb_d_psi"] > 0)
+            )
+            working = working[valid].copy()
+            working["tmb_log10_bucket"] = working["material_balance_time_days"].map(
+                lambda value: round(math.log10(float(value)), 3)
+            )
+
+            ids_to_exclude: set[int] = set()
+            for _, group in working.groupby("tmb_log10_bucket", dropna=True):
+                if len(group) < 2:
+                    continue
+                y_min = float(group["normalized_rate_stb_d_psi"].min())
+                y_max = float(group["normalized_rate_stb_d_psi"].max())
+                if y_min <= 0 or (y_max / y_min) < 1.05:
+                    continue
+
+                # Conservative default: keep the latest point in the near-duplicate group
+                # and exclude the rest. The interpreter can manually override the table.
+                if "date" in group.columns:
+                    ordered = group.copy()
+                    ordered["date"] = pd.to_datetime(ordered["date"], errors="coerce")
+                    ordered = ordered.sort_values("date")
+                else:
+                    ordered = group.sort_values("rta_point_id")
+
+                keep_id = int(ordered["rta_point_id"].iloc[-1])
+                for point_id in ordered["rta_point_id"].astype(int).tolist():
+                    if point_id != keep_id:
+                        ids_to_exclude.add(point_id)
+
+            mask = result["rta_point_id"].astype(int).isin(ids_to_exclude)
+            result.loc[mask, "use_for_rta"] = False
+            result.loc[mask, "exclusion_reason"] = "near_duplicate_tmb_review"
+
+    return result
+
+
+def render_m4_rta_point_selection_panel(
+    diagnostics_df: pd.DataFrame,
+    *,
+    well_id: str,
+) -> None:
+    """Render editable RTA point selection without mutating the source diagnostics."""
+    st.subheader("Selección editable de puntos para matching RTA")
+
+    selection_df = load_rta_point_selection_for_ui(diagnostics_df, well_id)
+
+    selected_count = int(selection_df["use_for_rta"].fillna(False).sum())
+    excluded_count = int(len(selection_df) - selected_count)
+
+    col_m1, col_m2, col_m3 = st.columns(3)
+    with col_m1:
+        st.metric("Puntos diagnósticos", f"{len(selection_df):,}")
+    with col_m2:
+        st.metric("Usados en RTA", f"{selected_count:,}")
+    with col_m3:
+        st.metric("Excluidos", f"{excluded_count:,}")
+
+    st.caption(
+        "Esta selección solo afecta el matching M4. No modifica "
+        "`history_enriched.csv` ni `rta_diagnostics.csv`."
+    )
+
+    action_cols = st.columns(5)
+    action: str | None = None
+
+    with action_cols[0]:
+        if st.button("Excluir drawdown inválido", use_container_width=True):
+            action = "exclude_invalid_drawdown"
+    with action_cols[1]:
+        if st.button("Excluir qo <= 0", use_container_width=True):
+            action = "exclude_non_positive_qo"
+    with action_cols[2]:
+        if st.button("Excluir Pwf faltante", use_container_width=True):
+            action = "exclude_missing_pwf"
+    with action_cols[3]:
+        if st.button("Excluir t_mb repetido", use_container_width=True):
+            action = "exclude_near_duplicate_tmb"
+    with action_cols[4]:
+        if st.button("Restaurar todos", use_container_width=True):
+            action = "restore_all"
+
+    if action is not None:
+        selection_df = apply_quick_rta_selection_action(selection_df, action)
+        st.session_state["rta_point_selection_editor_cache"] = selection_df
+
+    cached = st.session_state.get("rta_point_selection_editor_cache")
+    if isinstance(cached, pd.DataFrame) and len(cached) == len(selection_df):
+        selection_df = cached
+
+    display_columns = [
+        column
+        for column in (
+            "rta_point_id",
+            "date",
+            "use_for_rta",
+            "exclusion_reason",
+            "elapsed_days",
+            "material_balance_time_days",
+            "qo_stb_d",
+            "pwf_used_psia",
+            "delta_p_psia",
+            "valid_drawdown",
+            "normalized_rate_stb_d_psi",
+        )
+        if column in selection_df.columns
+    ]
+
+    edited_selection = st.data_editor(
+        selection_df[display_columns],
+        use_container_width=True,
+        hide_index=True,
+        num_rows="fixed",
+        key=f"rta_point_selection_editor_{well_id}",
+        column_config={
+            "use_for_rta": st.column_config.CheckboxColumn(
+                "use_for_rta",
+                help="Si está activo, este punto se usa para matching RTA.",
+            ),
+            "exclusion_reason": st.column_config.TextColumn(
+                "exclusion_reason",
+                help="Razón trazable para excluir o conservar el punto.",
+            ),
+        },
+        disabled=[
+            column
+            for column in display_columns
+            if column not in {"use_for_rta", "exclusion_reason"}
+        ],
+    )
+
+    st.session_state["rta_point_selection_editor_cache"] = edited_selection
+
+    save_col, clear_col, download_col = st.columns(3)
+
+    selection_path = get_rta_point_selection_path(well_id)
+
+    with save_col:
+        if st.button(
+            "Guardar selección RTA",
+            type="primary",
+            use_container_width=True,
+        ):
+            try:
+                saved = edited_selection.copy()
+                saved["use_for_rta"] = saved["use_for_rta"].fillna(False).astype(bool)
+                saved["exclusion_reason"] = saved["exclusion_reason"].fillna("").astype(str)
+                saved.to_csv(selection_path, index=False)
+            except Exception as exc:  # noqa: BLE001
+                st.error(f"No fue posible guardar selección RTA: {exc}")
+                return
+
+            st.session_state[SESSION_RTA_POINT_SELECTION_PATH] = str(selection_path)
+            st.success(f"Selección RTA guardada: `{selection_path}`")
+            st.rerun()
+
+    with clear_col:
+        if st.button("Descartar selección guardada", use_container_width=True):
+            if selection_path.exists():
+                selection_path.unlink()
+            st.session_state.pop(SESSION_RTA_POINT_SELECTION_PATH, None)
+            st.session_state.pop("rta_point_selection_editor_cache", None)
+            st.success("Selección RTA descartada. Se usarán todos los puntos válidos por defecto.")
+            st.rerun()
+
+    with download_col:
+        active_path = get_active_rta_point_selection_path(well_id)
+        if active_path is not None:
+            render_download_button(
+                active_path,
+                "Descargar selección RTA CSV",
+                "text/csv",
+                key_suffix=f"rta_point_selection_{well_id}",
+            )
+        else:
+            st.caption("Guarda primero la selección RTA.")
+
+    active_path = get_active_rta_point_selection_path(well_id)
+    if active_path is not None:
+        st.info(f"Selección RTA activa para matching: `{active_path}`")
+
+
+def render_m4_diagnostics_outputs(well_id: str, artifacts: WorkflowArtifacts) -> None:
     """Render generated M4 diagnostic artifacts."""
     diagnostics_df = read_csv_safe(artifacts.rta_diagnostics_csv)
 
@@ -2325,6 +2598,7 @@ def render_m4_diagnostics_outputs(artifacts: WorkflowArtifacts) -> None:
 
     render_rta_diagnostics_plot(diagnostics_df)
     render_rta_qc_alerts(artifacts.rta_qc_report_json)
+    render_m4_rta_point_selection_panel(diagnostics_df, well_id=well_id)
 
     st.subheader("Tabla diagnóstica RTA")
     st.dataframe(diagnostics_df, use_container_width=True, hide_index=True)
@@ -2717,6 +2991,32 @@ def render_m4_type_curves_panel(
         st.info("No hay diagnóstico RTA válido para matching manual.")
         return
 
+    point_selection_path = get_active_rta_point_selection_path(well_id)
+    point_selection_df = (
+        read_selection_csv(point_selection_path)
+        if point_selection_path is not None
+        else None
+    )
+    selected_diagnostics_df, point_selection_qc = apply_rta_point_selection(
+        diagnostics_df,
+        point_selection_df,
+    )
+
+    if point_selection_qc.get("selection_applied"):
+        st.info(
+            "Selección RTA activa: "
+            f"{point_selection_qc['diagnostic_rows_after_selection']} de "
+            f"{point_selection_qc['diagnostic_rows_before_selection']} puntos "
+            "se usarán para matching."
+        )
+
+    if selected_diagnostics_df.empty:
+        st.warning(
+            "La selección RTA dejó cero puntos disponibles. Ajusta la selección en "
+            "`M4 RTA > Diagnóstico`."
+        )
+        return
+
     existing = load_existing_rta_match_config_for_ui(well_id)
 
     method_options = ("fetkovich", "palacio_blasingame", "agarwal_gardner")
@@ -2789,7 +3089,7 @@ def render_m4_type_curves_panel(
         )
 
         selected_anchor = render_rta_anchor_selection_plot(
-            diagnostics_df,
+            selected_diagnostics_df,
             x_column=x_column,
             y_column=y_column,
         )
@@ -2917,7 +3217,7 @@ def render_m4_type_curves_panel(
     st.subheader("Vista previa de overlay manual")
     saved_match_df = read_csv_safe(artifacts.rta_manual_match_points_csv)
     render_manual_match_plot(
-        diagnostics_df,
+        selected_diagnostics_df,
         saved_match_df,
         x_column=x_column,
         y_column=y_column,
@@ -2969,10 +3269,12 @@ def render_m4_type_curves_panel(
 
     with col_run_saved:
         active_match_config = get_active_rta_match_config_path()
+        active_point_selection = get_active_rta_point_selection_path(well_id)
         cmd = build_rta_match_command(
             well_id=well_id,
             diagnostics_csv=artifacts.rta_diagnostics_csv,
             rta_match_config_json=active_match_config,
+            rta_point_selection_csv=active_point_selection,
         )
 
         with st.expander("Comando matching RTA equivalente", expanded=False):
@@ -3013,10 +3315,12 @@ def render_m4_type_curves_panel(
                 return
 
             st.session_state[SESSION_RTA_MATCH_CONFIG_PATH] = str(saved_path)
+            active_point_selection = get_active_rta_point_selection_path(well_id)
             cmd = build_rta_match_command(
                 well_id=well_id,
                 diagnostics_csv=artifacts.rta_diagnostics_csv,
                 rta_match_config_json=saved_path,
+                rta_point_selection_csv=active_point_selection,
             )
 
             with st.spinner("Guardando configuración y generando puntos RTA..."):
@@ -3997,7 +4301,7 @@ def render_artifacts(well_id: str) -> None:
             render_m4_rta_configuration_panel(well_id=well_id, artifacts=artifacts)
 
         with m4_tabs[1]:
-            render_m4_diagnostics_outputs(artifacts)
+            render_m4_diagnostics_outputs(well_id, artifacts)
 
         with m4_tabs[2]:
             render_m4_type_curves_panel(well_id=well_id, artifacts=artifacts)

@@ -218,6 +218,8 @@ def build_rta_diagnostics(
         msg = "No hay filas válidas con date, qo_stb_d y pwf_used_psia para M4 RTA."
         raise ValueError(msg)
 
+    prepared["rta_point_id"] = range(1, len(prepared) + 1)
+
     first_date = prepared["date"].min()
     prepared["elapsed_days"] = (
         (prepared["date"] - first_date).dt.total_seconds() / 86_400.0
@@ -270,6 +272,7 @@ def build_rta_diagnostics(
     )
 
     priority_columns = [
+        "rta_point_id",
         "well_id",
         "date",
         "elapsed_days",
