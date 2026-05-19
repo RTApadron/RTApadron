@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -94,6 +95,7 @@ class WorkflowArtifacts:
 
     enriched_history_csv: Path
     dca_fit_results_csv: Path
+    dca_forecast_csv: Path
     dca_qc_report_json: Path
     dca_rate_fit_png: Path
     dca_forecast_plot_png: Path
@@ -106,6 +108,7 @@ class WorkflowArtifacts:
         return cls(
             enriched_history_csv=OUTPUT_DIR / f"{safe_well_id}_history_enriched.csv",
             dca_fit_results_csv=OUTPUT_DIR / f"{safe_well_id}_dca_fit_results.csv",
+            dca_forecast_csv=OUTPUT_DIR / f"{safe_well_id}_dca_forecast.csv",
             dca_qc_report_json=OUTPUT_DIR / f"{safe_well_id}_dca_qc_report.json",
             dca_rate_fit_png=OUTPUT_DIR / f"{safe_well_id}_dca_rate_fit.png",
             dca_forecast_plot_png=OUTPUT_DIR / f"{safe_well_id}_dca_forecast_plot.png",
@@ -1796,6 +1799,550 @@ def render_quick_dca_summary(artifacts: WorkflowArtifacts) -> None:
         st.metric("Modelos RMSE similar", str(models_with_similar_rmse_count))
 
 
+def read_json_safe(path: Path) -> dict[str, Any]:
+    """Read a JSON artifact without interrupting the UI if it is missing/invalid."""
+    if not path.exists():
+        return {}
+
+    try:
+        return read_json(path)
+    except Exception as exc:  # noqa: BLE001
+        st.warning(f"No fue posible leer `{path.name}`: {exc}")
+        return {}
+
+
+def normalize_date_column(df: pd.DataFrame | None) -> pd.DataFrame:
+    """Return a copy sorted by a normalized `date` column when possible."""
+    if df is None or df.empty:
+        return pd.DataFrame()
+
+    result = df.copy()
+    date_candidates = ("date", "timestamp", "datetime", "fecha")
+
+    for column in date_candidates:
+        if column in result.columns:
+            result["date"] = pd.to_datetime(result[column], errors="coerce")
+            result = result.dropna(subset=["date"]).sort_values("date")
+            return result
+
+    return result
+
+
+def first_existing_column(
+    df: pd.DataFrame,
+    candidates: tuple[str, ...],
+) -> str | None:
+    """Return the first candidate column available in a DataFrame."""
+    for column in candidates:
+        if column in df.columns:
+            return column
+    return None
+
+
+def numeric_columns_except(
+    df: pd.DataFrame,
+    excluded_columns: set[str],
+) -> list[str]:
+    """Return columns with at least one numeric value, excluding metadata columns."""
+    result: list[str] = []
+
+    for column in df.columns:
+        if column in excluded_columns:
+            continue
+
+        numeric_values = pd.to_numeric(df[column], errors="coerce")
+        if numeric_values.notna().any():
+            result.append(column)
+
+    return result
+
+
+def nested_number_from_keys(data: dict[str, Any], candidates: tuple[str, ...]) -> float | None:
+    """Find a numeric value inside a nested JSON-like dictionary."""
+    for key, value in data.items():
+        if key in candidates and isinstance(value, (int, float)):
+            return float(value)
+
+        if isinstance(value, dict):
+            nested_value = nested_number_from_keys(value, candidates)
+            if nested_value is not None:
+                return nested_value
+
+    return None
+
+
+def row_number_from_candidates(
+    row: pd.Series,
+    candidates: tuple[str, ...],
+) -> float | None:
+    """Read the first valid positive numeric value from a fit-result row."""
+    for column in candidates:
+        if column not in row.index:
+            continue
+
+        value = pd.to_numeric(pd.Series([row[column]]), errors="coerce").iloc[0]
+        if pd.notna(value):
+            return float(value)
+
+    return None
+
+
+def arps_rate(
+    *,
+    model: str,
+    qi_stb_d: float,
+    decline_per_day: float,
+    b_factor: float,
+    time_days: pd.Series,
+) -> pd.Series:
+    """Compute simple Arps rate curve for plotting fitted DCA models."""
+    t = pd.to_numeric(time_days, errors="coerce").clip(lower=0.0)
+    model_lc = model.lower()
+
+    if decline_per_day <= 0:
+        return pd.Series([qi_stb_d] * len(t), index=t.index, dtype="float64")
+
+    if "exp" in model_lc or b_factor <= 1e-12:
+        return qi_stb_d * (-decline_per_day * t).apply(math.exp)
+
+    if "harm" in model_lc:
+        b_factor = 1.0
+
+    return qi_stb_d / ((1.0 + b_factor * decline_per_day * t) ** (1.0 / b_factor))
+
+
+def build_fit_curve_from_summary(
+    history_df: pd.DataFrame,
+    fit_results_df: pd.DataFrame,
+) -> pd.DataFrame:
+    """Build fitted DCA curves from summary parameters when curve columns are absent."""
+    history = normalize_date_column(history_df)
+    fit_results = fit_results_df.copy() if fit_results_df is not None else pd.DataFrame()
+
+    if history.empty or fit_results.empty or "date" not in history.columns:
+        return pd.DataFrame()
+
+    model_col = first_existing_column(fit_results, ("model", "dca_model", "decline_model", "modelo"))
+    if model_col is None:
+        return pd.DataFrame()
+
+    rate_col = first_existing_column(
+        history,
+        ("qo_stb_d", "oil_rate_stb_d", "q_oil_stb_d", "q_stb_d", "rate_stb_d"),
+    )
+    if rate_col is None:
+        return pd.DataFrame()
+
+    base_dates = history[["date", rate_col]].dropna(subset=["date"]).copy()
+    if base_dates.empty:
+        return pd.DataFrame()
+
+    result = base_dates[["date"]].copy()
+    start_date = result["date"].min()
+    result["time_days"] = (result["date"] - start_date).dt.total_seconds() / 86_400.0
+
+    for _, row in fit_results.iterrows():
+        model_name = str(row[model_col])
+        qi = row_number_from_candidates(
+            row,
+            (
+                "qi_stb_d",
+                "fit_qi_stb_d",
+                "fitted_qi_stb_d",
+                "initial_rate_stb_d",
+                "forecast_qi_stb_d",
+                "q_i",
+                "qi",
+            ),
+        )
+        decline = row_number_from_candidates(
+            row,
+            (
+                "di_per_day",
+                "decline_per_day",
+                "nominal_decline_per_day",
+                "di_nominal_per_day",
+                "d_i_per_day",
+                "di_d",
+                "di",
+            ),
+        )
+        b_factor = row_number_from_candidates(
+            row,
+            ("b", "b_factor", "hyperbolic_b", "arps_b"),
+        )
+
+        if qi is None or decline is None:
+            continue
+
+        curve_name = f"Ajuste {model_name}"
+        result[curve_name] = arps_rate(
+            model=model_name,
+            qi_stb_d=qi,
+            decline_per_day=decline,
+            b_factor=0.0 if b_factor is None else b_factor,
+            time_days=result["time_days"],
+        )
+
+    curve_columns = [column for column in result.columns if column.startswith("Ajuste ")]
+    if not curve_columns:
+        return pd.DataFrame()
+
+    return result[["date", *curve_columns]]
+
+
+def add_history_qo_trace(fig: go.Figure, history_df: pd.DataFrame) -> bool:
+    """Add historical oil-rate trace to a Plotly figure."""
+    history = normalize_date_column(history_df)
+    rate_col = first_existing_column(
+        history,
+        ("qo_stb_d", "oil_rate_stb_d", "q_oil_stb_d", "q_stb_d", "rate_stb_d"),
+    )
+
+    if history.empty or "date" not in history.columns or rate_col is None:
+        return False
+
+    plot_df = history[["date", rate_col]].copy()
+    plot_df[rate_col] = pd.to_numeric(plot_df[rate_col], errors="coerce")
+    plot_df = plot_df.dropna(subset=["date", rate_col])
+
+    if plot_df.empty:
+        return False
+
+    fig.add_trace(
+        go.Scatter(
+            x=plot_df["date"],
+            y=plot_df[rate_col],
+            mode="markers",
+            name="Historia qo",
+            marker={"size": 7},
+            customdata=plot_df["date"].dt.strftime("%Y-%m-%d"),
+            hovertemplate=(
+                "Fecha: %{customdata}<br>"
+                "qo: %{y:,.2f} STB/d"
+                "<extra></extra>"
+            ),
+        )
+    )
+    return True
+
+
+def add_long_or_wide_model_curves(
+    fig: go.Figure,
+    curve_df: pd.DataFrame,
+    *,
+    preferred_rate_columns: tuple[str, ...],
+    trace_prefix: str,
+) -> int:
+    """Add DCA model curves from either long-form or wide-form CSV structures."""
+    df = normalize_date_column(curve_df)
+    if df.empty or "date" not in df.columns:
+        return 0
+
+    traces_added = 0
+    model_col = first_existing_column(df, ("model", "dca_model", "decline_model", "modelo"))
+    rate_col = first_existing_column(df, preferred_rate_columns)
+
+    if model_col is not None and rate_col is not None:
+        for model_name, model_df in df.groupby(model_col):
+            clean_df = model_df[["date", rate_col]].copy()
+            clean_df[rate_col] = pd.to_numeric(clean_df[rate_col], errors="coerce")
+            clean_df = clean_df.dropna(subset=["date", rate_col])
+            if clean_df.empty:
+                continue
+
+            fig.add_trace(
+                go.Scatter(
+                    x=clean_df["date"],
+                    y=clean_df[rate_col],
+                    mode="lines",
+                    name=f"{trace_prefix} {model_name}",
+                    hovertemplate=(
+                        "Fecha: %{x|%Y-%m-%d}<br>"
+                        "qo: %{y:,.2f} STB/d"
+                        "<extra></extra>"
+                    ),
+                )
+            )
+            traces_added += 1
+
+        return traces_added
+
+    excluded_columns = {
+        "date",
+        "timestamp",
+        "datetime",
+        "fecha",
+        "well_id",
+        "model",
+        "dca_model",
+        "decline_model",
+        "modelo",
+        "time_days",
+        "t_days",
+        "days",
+    }
+
+    for column in numeric_columns_except(df, excluded_columns):
+        lower_column = column.lower()
+        is_curve_like = any(
+            token in lower_column
+            for token in (
+                "fit",
+                "model",
+                "forecast",
+                "qo",
+                "rate",
+                "exponential",
+                "hyperbolic",
+                "harmonic",
+                "exp",
+                "hyp",
+                "har",
+            )
+        )
+        if not is_curve_like:
+            continue
+
+        clean_df = df[["date", column]].copy()
+        clean_df[column] = pd.to_numeric(clean_df[column], errors="coerce")
+        clean_df = clean_df.dropna(subset=["date", column])
+        if clean_df.empty:
+            continue
+
+        fig.add_trace(
+            go.Scatter(
+                x=clean_df["date"],
+                y=clean_df[column],
+                mode="lines",
+                name=str(column),
+                hovertemplate=(
+                    "Fecha: %{x|%Y-%m-%d}<br>"
+                    "qo: %{y:,.2f} STB/d"
+                    "<extra></extra>"
+                ),
+            )
+        )
+        traces_added += 1
+
+    return traces_added
+
+
+def build_dca_fit_plotly_figure(
+    history_df: pd.DataFrame,
+    fit_results_df: pd.DataFrame,
+) -> tuple[go.Figure, int]:
+    """Build interactive Plotly figure for DCA fit."""
+    fig = go.Figure()
+    add_history_qo_trace(fig, history_df)
+
+    traces_added = add_long_or_wide_model_curves(
+        fig,
+        fit_results_df,
+        preferred_rate_columns=(
+            "qo_fit_stb_d",
+            "q_fit_stb_d",
+            "qo_model_stb_d",
+            "q_model_stb_d",
+            "rate_fit_stb_d",
+            "fit_rate_stb_d",
+            "q_stb_d",
+            "qo_stb_d",
+        ),
+        trace_prefix="Ajuste",
+    )
+
+    if traces_added == 0:
+        derived_fit_df = build_fit_curve_from_summary(history_df, fit_results_df)
+        traces_added = add_long_or_wide_model_curves(
+            fig,
+            derived_fit_df,
+            preferred_rate_columns=tuple(
+                column
+                for column in derived_fit_df.columns
+                if column.startswith("Ajuste ")
+            ),
+            trace_prefix="Ajuste",
+        )
+
+    fig.update_layout(
+        title="Ajuste DCA interactivo",
+        xaxis_title="Fecha",
+        yaxis_title="qo [STB/d]",
+        hovermode="x unified",
+        height=520,
+        margin={"l": 20, "r": 20, "t": 60, "b": 20},
+        legend={"orientation": "h"},
+    )
+
+    return fig, traces_added
+
+
+def build_dca_forecast_plotly_figure(
+    history_df: pd.DataFrame,
+    forecast_df: pd.DataFrame,
+    qc_report: dict[str, Any],
+) -> tuple[go.Figure, int]:
+    """Build interactive Plotly figure for DCA forecast."""
+    fig = go.Figure()
+    add_history_qo_trace(fig, history_df)
+
+    traces_added = add_long_or_wide_model_curves(
+        fig,
+        forecast_df,
+        preferred_rate_columns=(
+            "qo_forecast_stb_d",
+            "q_forecast_stb_d",
+            "forecast_qo_stb_d",
+            "forecast_rate_stb_d",
+            "qo_stb_d",
+            "q_stb_d",
+            "rate_stb_d",
+        ),
+        trace_prefix="Forecast",
+    )
+
+    abandonment_rate = nested_number_from_keys(
+        qc_report,
+        (
+            "abandonment_rate",
+            "abandonment_rate_stb_d",
+            "q_abandonment_stb_d",
+            "economic_limit_stb_d",
+            "qo_abandonment_stb_d",
+        ),
+    )
+
+    if abandonment_rate is not None and abandonment_rate > 0:
+        fig.add_hline(
+            y=abandonment_rate,
+            line_dash="dash",
+            annotation_text=f"Abandono: {abandonment_rate:,.2f} STB/d",
+            annotation_position="top left",
+        )
+
+    fig.update_layout(
+        title="Forecast DCA interactivo",
+        xaxis_title="Fecha",
+        yaxis_title="qo [STB/d]",
+        hovermode="x unified",
+        height=520,
+        margin={"l": 20, "r": 20, "t": 60, "b": 20},
+        legend={"orientation": "h"},
+    )
+
+    return fig, traces_added
+
+
+def render_interactive_dca_final_plots(artifacts: WorkflowArtifacts) -> None:
+    """Render final DCA plots with Plotly while keeping PNG backend artifacts."""
+    st.subheader("Gráficas DCA interactivas")
+
+    if go is None:
+        st.warning("Plotly no está instalado. Instala `plotly` para ver estas gráficas.")
+        return
+
+    history_df = read_csv_safe(artifacts.enriched_history_csv)
+    fit_results_df = read_csv_safe(artifacts.dca_fit_results_csv)
+    forecast_df = read_csv_safe(artifacts.dca_forecast_csv)
+    qc_report = read_json_safe(artifacts.dca_qc_report_json)
+
+    missing_artifacts = [
+        path.name
+        for path in (
+            artifacts.enriched_history_csv,
+            artifacts.dca_fit_results_csv,
+            artifacts.dca_forecast_csv,
+            artifacts.dca_qc_report_json,
+        )
+        if not path.exists()
+    ]
+
+    if missing_artifacts:
+        st.info(
+            "Faltan algunos artefactos DCA para completar las gráficas interactivas: "
+            + ", ".join(missing_artifacts)
+        )
+
+    if history_df is None or history_df.empty:
+        st.warning(
+            "No hay historia enriquecida válida para graficar. "
+            "Ejecuta primero el workflow M1-M2-M3."
+        )
+        return
+
+    if fit_results_df is None:
+        fit_results_df = pd.DataFrame()
+
+    if forecast_df is None:
+        forecast_df = pd.DataFrame()
+
+    fit_fig, fit_curve_count = build_dca_fit_plotly_figure(history_df, fit_results_df)
+    st.plotly_chart(
+        fit_fig,
+        use_container_width=True,
+        key=f"dca_final_fit_plotly_{artifacts.enriched_history_csv.stem}",
+    )
+
+    if fit_curve_count == 0:
+        st.caption(
+            "Se muestra la historia de qo. No se encontraron columnas de curva de ajuste "
+            "ni parámetros suficientes para reconstruir curvas DCA desde `fit_results`."
+        )
+
+    forecast_fig, forecast_curve_count = build_dca_forecast_plotly_figure(
+        history_df,
+        forecast_df,
+        qc_report,
+    )
+    st.plotly_chart(
+        forecast_fig,
+        use_container_width=True,
+        key=f"dca_final_forecast_plotly_{artifacts.enriched_history_csv.stem}",
+    )
+
+    if forecast_curve_count == 0:
+        st.caption(
+            "Se muestra la historia de qo. No se encontraron curvas de forecast "
+            "en `dca_forecast.csv`."
+        )
+
+    with st.expander("Datos usados por las gráficas interactivas", expanded=False):
+        col_csv_1, col_csv_2, col_csv_3, col_json = st.columns(4)
+
+        with col_csv_1:
+            render_download_button(
+                artifacts.enriched_history_csv,
+                "Descargar historia CSV",
+                "text/csv",
+                key_suffix="interactive_history",
+            )
+
+        with col_csv_2:
+            render_download_button(
+                artifacts.dca_fit_results_csv,
+                "Descargar fit_results CSV",
+                "text/csv",
+                key_suffix="interactive_fit_results",
+            )
+
+        with col_csv_3:
+            render_download_button(
+                artifacts.dca_forecast_csv,
+                "Descargar forecast CSV",
+                "text/csv",
+                key_suffix="interactive_forecast",
+            )
+
+        with col_json:
+            render_download_button(
+                artifacts.dca_qc_report_json,
+                "Descargar QC JSON",
+                "application/json",
+                key_suffix="interactive_qc",
+            )
+
+
 def render_sidebar_inputs() -> dict[str, Any]:
     st.sidebar.header("Entrada M1-M2-M3")
 
@@ -1935,6 +2482,7 @@ def render_artifacts(well_id: str) -> None:
 
     with tabs[3]:
         render_dataframe_from_csv(artifacts.dca_fit_results_csv, "fit_results")
+        render_dataframe_from_csv(artifacts.dca_forecast_csv, "forecast")
         render_json_report(artifacts.dca_qc_report_json, "dca_qc_report")
 
     with tabs[4]:
@@ -1956,11 +2504,33 @@ def render_artifacts(well_id: str) -> None:
             render_interactive_forecast_anchor_selector(enriched_df)
 
     with tabs[6]:
+        render_interactive_dca_final_plots(artifacts)
+
+        st.divider()
+        st.subheader("Gráficas PNG del backend")
+        st.caption(
+            "Se conservan los PNG generados por las funciones existentes del backend "
+            "para mantener compatibilidad con `plot_dca_rate_fit` y `plot_dca_forecast`."
+        )
+
         col_fit, col_forecast = st.columns(2)
         with col_fit:
-            render_png(artifacts.dca_rate_fit_png, "Ajuste de tasa")
+            render_png(artifacts.dca_rate_fit_png, "Ajuste de tasa PNG")
+            render_download_button(
+                artifacts.dca_rate_fit_png,
+                "Descargar ajuste PNG",
+                "image/png",
+                key_suffix="graphs_tab_rate_fit_png",
+            )
+
         with col_forecast:
-            render_png(artifacts.dca_forecast_plot_png, "Forecast DCA")
+            render_png(artifacts.dca_forecast_plot_png, "Forecast DCA PNG")
+            render_download_button(
+                artifacts.dca_forecast_plot_png,
+                "Descargar forecast PNG",
+                "image/png",
+                key_suffix="graphs_tab_forecast_png",
+            )
 
     with tabs[7]:
         st.subheader("Descargar artefactos")
@@ -1975,6 +2545,11 @@ def render_artifacts(well_id: str) -> None:
             render_download_button(
                 artifacts.dca_fit_results_csv,
                 "Descargar fit_results CSV",
+                "text/csv",
+            )
+            render_download_button(
+                artifacts.dca_forecast_csv,
+                "Descargar forecast CSV",
                 "text/csv",
             )
 
