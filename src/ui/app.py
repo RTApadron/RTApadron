@@ -1,11 +1,4 @@
-"""Streamlit UI for ecoRTA M1-M2-M3 workflow.
-
-Thin UI:
-- Executes existing CLI workflow.
-- Displays generated artifacts.
-- Allows M1 editable history, Pwf overrides, geometry and survey inputs.
-- Allows interactive DCA fit window and forecast anchor selection.
-"""
+"""Streamlit UI for ecoRTA M1-M2-M3 workflow."""
 
 from __future__ import annotations
 
@@ -20,6 +13,10 @@ from typing import Any
 import pandas as pd
 import streamlit as st
 
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
 try:
     import plotly.graph_objects as go
     from plotly.subplots import make_subplots
@@ -27,8 +24,7 @@ except ImportError:  # pragma: no cover
     go = None
     make_subplots = None
 
-
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+from src.domain.models import PVTConfig
 OUTPUT_DIR = PROJECT_ROOT / "output"
 UI_INPUT_DIR = PROJECT_ROOT / "data" / "ui_uploads"
 
@@ -37,6 +33,10 @@ PWF_OVERRIDE_MODES = (
     "prefer_measured_else_estimated",
     "estimated_only",
     "manual_override",
+)
+PVT_OIL_CORRELATIONS = (
+    "standing",
+    "placeholder_config",
 )
 
 M1_RATE_COLUMNS = ("qo_stb_d", "qg_mscf_d", "qw_stb_d")
@@ -61,6 +61,7 @@ SESSION_PENDING_FORECAST_ANCHOR = "pending_forecast_anchor_selection"
 
 SESSION_PWF_OVERRIDE_MODE = "pwf_override_mode_value"
 SESSION_EDITED_HISTORY_PATH = "edited_history_csv_path"
+SESSION_PVT_CONFIG_PATH = "pvt_config_ui_path"
 
 GEOMETRY_FIELDS = {
     "well_id": "",
@@ -127,7 +128,6 @@ def ensure_dirs() -> None:
 
 
 def initialize_session_defaults() -> None:
-    """Initialize session state before widgets are instantiated."""
     pending_window = st.session_state.pop(SESSION_PENDING_FIT_WINDOW, None)
     if pending_window is not None:
         try:
@@ -182,11 +182,6 @@ def apply_light_css() -> None:
             padding: 0.75rem;
             border-radius: 0.75rem;
         }
-
-        .small-muted {
-            color: #6b7280;
-            font-size: 0.9rem;
-        }
         </style>
         """,
         unsafe_allow_html=True,
@@ -204,6 +199,15 @@ def save_uploaded_file(uploaded_file: Any, target_name: str) -> Path | None:
 
 def get_active_edited_history_path() -> Path | None:
     raw_path = st.session_state.get(SESSION_EDITED_HISTORY_PATH)
+    if not raw_path:
+        return None
+
+    path = Path(str(raw_path))
+    return path if path.exists() else None
+
+
+def get_active_pvt_config_path() -> Path | None:
+    raw_path = st.session_state.get(SESSION_PVT_CONFIG_PATH)
     if not raw_path:
         return None
 
@@ -257,6 +261,54 @@ def as_float(value: Any, default: float = 0.0) -> float:
 
 def existing_columns(df: pd.DataFrame, columns: tuple[str, ...]) -> list[str]:
     return [column for column in columns if column in df.columns]
+
+
+def default_pvt_config(well_id: str) -> dict[str, Any]:
+    return {
+        "well_id": well_id,
+        "api": 30.0,
+        "gamma_g": 0.75,
+        "temp_f": 180.0,
+        "rsb_scf_stb": 250.0,
+        "pb_psia": None,
+        "bo_rb_stb": 1.20,
+        "rs_scf_stb": 250.0,
+        "mu_o_cp": 2.0,
+        "rho_o_lbft3": 52.0,
+        "oil_corr": "standing",
+        "pvt_model_version": "m2-ui-config-0.1",
+        "calibrate": False,
+        "calibrated_flag": False,
+        "lab_bo_rb_stb": None,
+        "lab_rs_scf_stb": None,
+        "lab_mu_o_cp": None,
+        "lab_rho_o_lbft3": None,
+        "lab_pb_psia": None,
+    }
+
+
+def load_existing_pvt_config_for_ui(well_id: str) -> dict[str, Any]:
+    active_path = get_active_pvt_config_path()
+    default_path = Path("data") / f"pvt_config_{well_id}.json"
+
+    for path in (active_path, default_path):
+        if path is None or not path.exists():
+            continue
+
+        try:
+            loaded = read_json(path)
+            return default_pvt_config(well_id) | loaded
+        except Exception:
+            continue
+
+    return default_pvt_config(well_id)
+
+
+def clean_optional_float(value: float | None) -> float | None:
+    if value is None:
+        return None
+    parsed = as_float(value, default=0.0)
+    return parsed if parsed > 0 else None
 
 
 def build_full_workflow_command(
@@ -330,10 +382,35 @@ def show_command(cmd: list[str]) -> None:
     st.code(" ".join(cmd), language="bash")
 
 
-def render_download_button(path: Path, label: str, mime: str) -> None:
+def render_download_button(
+    path: Path,
+    label: str,
+    mime: str,
+    *,
+    key_suffix: str | None = None,
+) -> None:
+    """Render download button with stable unique Streamlit key.
+
+    The caller line number is included to avoid duplicate keys when the same
+    file is downloadable from different tabs.
+    """
+    import inspect
+
     if not path.exists():
         st.caption(f"No disponible todavía: `{path.name}`")
         return
+
+    caller = inspect.stack()[1]
+    caller_token = f"{Path(caller.filename).stem}_{caller.lineno}"
+
+    safe_suffix = key_suffix or label
+    raw_key = f"download_{caller_token}_{safe_suffix}_{path.name}"
+    button_key = (
+        raw_key.replace(" ", "_")
+        .replace("/", "_")
+        .replace("\\", "_")
+        .replace(":", "_")
+    )
 
     st.download_button(
         label=label,
@@ -341,6 +418,7 @@ def render_download_button(path: Path, label: str, mime: str) -> None:
         file_name=path.name,
         mime=mime,
         use_container_width=True,
+        key=button_key,
     )
 
 
@@ -403,6 +481,373 @@ def render_time_series(
 
     st.line_chart(chart_df.set_index("date"), y=selected_columns, height=360)
     st.caption(y_label)
+
+
+def compute_pvt_preview_table(
+    *,
+    api: float,
+    gamma_g: float,
+    temp_f: float,
+    rsb_scf_stb: float,
+    pmin_psia: int,
+    pmax_psia: int,
+    step_psia: int,
+    fallback_config: dict[str, Any],
+) -> tuple[pd.DataFrame, str]:
+    pressures = list(range(pmin_psia, pmax_psia + step_psia, step_psia))
+
+    try:
+        try:
+            from src.rta_pvt.pvt_tools import PVTInputs, compute_pvt_table
+        except ModuleNotFoundError:
+            from pvt_tools import PVTInputs, compute_pvt_table  # type: ignore
+
+        inputs = PVTInputs(
+            API=api,
+            gamma_g=gamma_g,
+            T_F=temp_f,
+            Rsb=rsb_scf_stb,
+            pressures=pressures,
+        )
+        table = pd.DataFrame(compute_pvt_table(inputs))
+        return table, "pvt_tools"
+    except Exception:
+        table = pd.DataFrame(
+            {
+                "pressure_psi": pressures,
+                "Rs_scf_per_STB": fallback_config["rs_scf_stb"],
+                "Bo_bbl_per_STB": fallback_config["bo_rb_stb"],
+                "mu_o_cP": fallback_config["mu_o_cp"],
+                "rho_o_lbft3": fallback_config["rho_o_lbft3"],
+                "Pb_psi": fallback_config["pb_psia"],
+            }
+        )
+        return table, "constant_config_fallback"
+
+
+def render_pvt_preview_plot(pvt_table: pd.DataFrame) -> None:
+    """Render separate PVT preview plots for Bo, Rs and oil viscosity."""
+    if go is None:
+        st.info("Plotly no está disponible para graficar PVT.")
+        return
+
+    if "pressure_psi" not in pvt_table.columns:
+        st.info("La tabla PVT no tiene columna `pressure_psi`.")
+        return
+
+    pb: float | None = None
+    if "Pb_psi" in pvt_table.columns and pvt_table["Pb_psi"].notna().any():
+        raw_pb = as_float(pvt_table["Pb_psi"].dropna().iloc[0], default=0.0)
+        pb = raw_pb if raw_pb > 0 else None
+
+    def make_single_pvt_plot(
+        *,
+        y_column: str,
+        title: str,
+        y_axis_title: str,
+        key: str,
+    ) -> None:
+        if y_column not in pvt_table.columns:
+            st.info(f"No existe columna `{y_column}` para graficar.")
+            return
+
+        fig = go.Figure()
+        fig.add_trace(
+            go.Scatter(
+                x=pvt_table["pressure_psi"],
+                y=pvt_table[y_column],
+                mode="markers+lines",
+                name=y_axis_title,
+            )
+        )
+
+        if pb is not None:
+            fig.add_vline(
+                x=pb,
+                line_dash="dash",
+                annotation_text=f"Pb = {pb:,.0f} psia",
+                annotation_position="top",
+            )
+
+        fig.update_layout(
+            title=title,
+            xaxis_title="Presión [psia]",
+            yaxis_title=y_axis_title,
+            height=390,
+            margin={"l": 20, "r": 20, "t": 60, "b": 20},
+        )
+
+        st.plotly_chart(fig, use_container_width=True, key=key)
+
+    make_single_pvt_plot(
+        y_column="mu_o_cP",
+        title="Viscosidad del aceite vs presión",
+        y_axis_title="μo [cP]",
+        key="pvt_preview_mu_o_plot",
+    )
+
+    make_single_pvt_plot(
+        y_column="Rs_scf_per_STB",
+        title="Rs vs presión",
+        y_axis_title="Rs [scf/STB]",
+        key="pvt_preview_rs_plot",
+    )
+
+    make_single_pvt_plot(
+        y_column="Bo_bbl_per_STB",
+        title="Bo vs presión",
+        y_axis_title="Bo [rb/STB]",
+        key="pvt_preview_bo_plot",
+    )
+
+
+def save_pvt_config_from_ui(payload: dict[str, Any], well_id: str) -> Path:
+    validated = PVTConfig(**payload)
+    target_path = UI_INPUT_DIR / f"{well_id}_pvt_config_ui.json"
+    write_json(target_path, validated.model_dump())
+    return target_path
+
+
+def render_m2_pvt_configuration_panel(well_id: str) -> None:
+    st.header("Módulo 2 | Modelo PVT / Correlaciones")
+
+    st.caption(
+        "Este panel genera un `pvt_config_json` válido para el backend M2. "
+        "La tabla integrada por fecha se calcula después evaluando este modelo "
+        "contra la historia del pozo."
+    )
+
+    existing = load_existing_pvt_config_for_ui(well_id)
+
+    col_a, col_b, col_c = st.columns(3)
+
+    with col_a:
+        api = st.number_input(
+            "API",
+            min_value=1.0,
+            max_value=80.0,
+            value=as_float(existing.get("api"), 30.0),
+            step=0.1,
+        )
+        gamma_g = st.number_input(
+            "gamma_g",
+            min_value=0.1,
+            max_value=2.0,
+            value=as_float(existing.get("gamma_g"), 0.75),
+            step=0.01,
+        )
+        temp_f = st.number_input(
+            "temp_f",
+            min_value=32.0,
+            max_value=450.0,
+            value=as_float(existing.get("temp_f"), 180.0),
+            step=1.0,
+        )
+
+    with col_b:
+        rsb_scf_stb = st.number_input(
+            "rsb_scf_stb",
+            min_value=0.0,
+            value=as_float(existing.get("rsb_scf_stb"), 250.0),
+            step=10.0,
+        )
+        pb_psia_input = st.number_input(
+            "pb_psia manual/opcional",
+            min_value=0.0,
+            value=as_float(existing.get("pb_psia"), 0.0),
+            step=10.0,
+        )
+        oil_corr = st.selectbox(
+            "oil_corr",
+            options=PVT_OIL_CORRELATIONS,
+            index=(
+                PVT_OIL_CORRELATIONS.index(str(existing.get("oil_corr")))
+                if str(existing.get("oil_corr")) in PVT_OIL_CORRELATIONS
+                else 0
+            ),
+        )
+
+    with col_c:
+        bo_rb_stb = st.number_input(
+            "bo_rb_stb base",
+            min_value=0.1,
+            value=as_float(existing.get("bo_rb_stb"), 1.20),
+            step=0.01,
+        )
+        rs_scf_stb = st.number_input(
+            "rs_scf_stb base",
+            min_value=0.0,
+            value=as_float(existing.get("rs_scf_stb"), 250.0),
+            step=10.0,
+        )
+        mu_o_cp = st.number_input(
+            "mu_o_cp base",
+            min_value=0.001,
+            value=as_float(existing.get("mu_o_cp"), 2.0),
+            step=0.1,
+        )
+        rho_o_lbft3 = st.number_input(
+            "rho_o_lbft3 base",
+            min_value=1.0,
+            value=as_float(existing.get("rho_o_lbft3"), 52.0),
+            step=0.5,
+        )
+
+    st.subheader("Calibración con laboratorio")
+    calibrate = st.checkbox(
+        "calibrate",
+        value=bool(existing.get("calibrate", False)),
+        help="Si está activo, el adaptador M2 usa los valores lab_* disponibles.",
+    )
+
+    lab_col1, lab_col2, lab_col3, lab_col4, lab_col5 = st.columns(5)
+
+    with lab_col1:
+        lab_bo_rb_stb = st.number_input(
+            "lab_bo_rb_stb",
+            min_value=0.0,
+            value=as_float(existing.get("lab_bo_rb_stb"), 0.0),
+            step=0.01,
+        )
+    with lab_col2:
+        lab_rs_scf_stb = st.number_input(
+            "lab_rs_scf_stb",
+            min_value=0.0,
+            value=as_float(existing.get("lab_rs_scf_stb"), 0.0),
+            step=10.0,
+        )
+    with lab_col3:
+        lab_mu_o_cp = st.number_input(
+            "lab_mu_o_cp",
+            min_value=0.0,
+            value=as_float(existing.get("lab_mu_o_cp"), 0.0),
+            step=0.1,
+        )
+    with lab_col4:
+        lab_rho_o_lbft3 = st.number_input(
+            "lab_rho_o_lbft3",
+            min_value=0.0,
+            value=as_float(existing.get("lab_rho_o_lbft3"), 0.0),
+            step=0.5,
+        )
+    with lab_col5:
+        lab_pb_psia = st.number_input(
+            "lab_pb_psia",
+            min_value=0.0,
+            value=as_float(existing.get("lab_pb_psia"), 0.0),
+            step=10.0,
+        )
+
+    pvt_payload = {
+        "well_id": well_id,
+        "api": api,
+        "gamma_g": gamma_g,
+        "temp_f": temp_f,
+        "rsb_scf_stb": clean_optional_float(rsb_scf_stb),
+        "pb_psia": clean_optional_float(pb_psia_input),
+        "bo_rb_stb": bo_rb_stb,
+        "rs_scf_stb": rs_scf_stb,
+        "mu_o_cp": mu_o_cp,
+        "rho_o_lbft3": rho_o_lbft3,
+        "oil_corr": oil_corr,
+        "pvt_model_version": "m2-ui-config-0.1",
+        "calibrate": calibrate,
+        "calibrated_flag": calibrate,
+        "lab_bo_rb_stb": clean_optional_float(lab_bo_rb_stb),
+        "lab_rs_scf_stb": clean_optional_float(lab_rs_scf_stb),
+        "lab_mu_o_cp": clean_optional_float(lab_mu_o_cp),
+        "lab_rho_o_lbft3": clean_optional_float(lab_rho_o_lbft3),
+        "lab_pb_psia": clean_optional_float(lab_pb_psia),
+    }
+
+    st.subheader("Vista previa PVT vs presión")
+    pmin_col, pmax_col, step_col = st.columns(3)
+
+    with pmin_col:
+        pmin_psia = st.number_input(
+            "pmin_psia",
+            min_value=1,
+            value=500,
+            step=100,
+        )
+    with pmax_col:
+        pmax_psia = st.number_input(
+            "pmax_psia",
+            min_value=1,
+            value=4500,
+            step=100,
+        )
+    with step_col:
+        step_psia = st.number_input(
+            "step_psia",
+            min_value=1,
+            value=250,
+            step=50,
+        )
+
+    if int(pmax_psia) < int(pmin_psia):
+        st.error("pmax_psia debe ser mayor o igual que pmin_psia.")
+        return
+
+    pvt_table, engine_name = compute_pvt_preview_table(
+        api=api,
+        gamma_g=gamma_g,
+        temp_f=temp_f,
+        rsb_scf_stb=rsb_scf_stb,
+        pmin_psia=int(pmin_psia),
+        pmax_psia=int(pmax_psia),
+        step_psia=int(step_psia),
+        fallback_config=pvt_payload,
+    )
+
+    if engine_name == "pvt_tools":
+        st.success("Vista previa calculada con `src/rta_pvt/pvt_tools.py`.")
+    else:
+        st.warning(
+            "No fue posible importar `pvt_tools`; se muestra una vista previa "
+            "constante basada en el JSON. El workflow M2 sigue usando el adaptador actual."
+        )
+
+    render_pvt_preview_plot(pvt_table)
+    st.dataframe(pvt_table, use_container_width=True, hide_index=True)
+
+    st.subheader("JSON PVT que usará el workflow")
+    st.json(pvt_payload, expanded=False)
+
+    col_save, col_clear, col_download = st.columns(3)
+
+    with col_save:
+        if st.button("Guardar configuración PVT UI", type="primary", use_container_width=True):
+            try:
+                saved_path = save_pvt_config_from_ui(pvt_payload, well_id)
+            except Exception as exc:  # noqa: BLE001
+                st.error(f"No fue posible validar/guardar PVTConfig: {exc}")
+                return
+
+            st.session_state[SESSION_PVT_CONFIG_PATH] = str(saved_path)
+            st.success(f"Configuración PVT guardada: `{saved_path}`")
+            st.rerun()
+
+    with col_clear:
+        if st.button("Descartar PVT UI activo", use_container_width=True):
+            st.session_state.pop(SESSION_PVT_CONFIG_PATH, None)
+            st.success("PVT UI activo descartado.")
+            st.rerun()
+
+    with col_download:
+        active_path = get_active_pvt_config_path()
+        if active_path is not None:
+            render_download_button(
+                active_path,
+                "Descargar PVT JSON UI",
+                "application/json",
+            )
+        else:
+            st.caption("Guarda primero la configuración PVT UI.")
+
+    active_path = get_active_pvt_config_path()
+    if active_path is not None:
+        st.info(f"PVT UI activo para el workflow: `{active_path}`")
 
 
 def render_m1_production_plot(enriched_df: pd.DataFrame) -> None:
@@ -658,11 +1103,6 @@ def render_interactive_dca_fit_window_selector(enriched_df: pd.DataFrame) -> Non
         },
     )
 
-    st.caption(
-        "Selecciona puntos con click-and-drag. La app tomará la fecha mínima "
-        "y máxima como `fit_from_date` y `fit_to_date`."
-    )
-
     points = extract_plotly_selection_points(event)
     if not points:
         st.info("No hay selección activa.")
@@ -737,11 +1177,6 @@ def render_interactive_forecast_anchor_selector(enriched_df: pd.DataFrame) -> No
             "displaylogo": False,
             "modeBarButtonsToAdd": ["select2d", "lasso2d"],
         },
-    )
-
-    st.caption(
-        "Haz click sobre un punto o selecciónalo con una caja pequeña. "
-        "Si seleccionas varios, se usa el más reciente."
     )
 
     points = extract_plotly_selection_points(event)
@@ -876,7 +1311,6 @@ def save_edited_history(edited_df: pd.DataFrame, well_id: str, pwf_mode: str) ->
 
 
 def render_m1_geometry_and_survey_panel(well_id: str) -> None:
-    """Render editable well geometry/mechanical state and survey inputs."""
     st.subheader("Estado mecánico, profundidades y survey")
 
     artifacts = WorkflowArtifacts.for_well(well_id)
@@ -1044,19 +1478,9 @@ def render_m1_geometry_and_survey_panel(well_id: str) -> None:
             "text/csv",
         )
 
-    st.caption(
-        "Estos archivos quedan preparados para conectar el cálculo de Pwf y el M4 RTA. "
-        "En este commit todavía no modifican los cálculos existentes."
-    )
-
 
 def render_m1_editable_history_panel(enriched_df: pd.DataFrame, well_id: str) -> None:
     st.subheader("Edición manual de historia y control de Pwf")
-
-    st.caption(
-        "Esta edición no sobrescribe datos crudos. Guarda una copia en "
-        "`data/ui_uploads` y el workflow la usa como `--history-csv`."
-    )
 
     pwf_mode = st.selectbox(
         "Estrategia de Pwf para guardar historia editada",
@@ -1096,35 +1520,6 @@ def render_m1_editable_history_panel(enriched_df: pd.DataFrame, well_id: str) ->
         hide_index=True,
         num_rows="dynamic",
         key="m1_history_data_editor",
-        column_config={
-            "date": st.column_config.DateColumn("date"),
-            "qo_stb_d": st.column_config.NumberColumn("qo_stb_d", format="%.3f"),
-            "qg_mscf_d": st.column_config.NumberColumn("qg_mscf_d", format="%.3f"),
-            "qw_stb_d": st.column_config.NumberColumn("qw_stb_d", format="%.3f"),
-            "whp_psia": st.column_config.NumberColumn("whp_psia", format="%.3f"),
-            "t_wh_f": st.column_config.NumberColumn("t_wh_f", format="%.3f"),
-            "pwf_measured_psia": st.column_config.NumberColumn(
-                "pwf_measured_psia",
-                format="%.3f",
-            ),
-            "pwf_estimated_psia": st.column_config.NumberColumn(
-                "pwf_estimated_psia",
-                format="%.3f",
-            ),
-            "pwf_manual_psia": st.column_config.NumberColumn(
-                "pwf_manual_psia",
-                format="%.3f",
-            ),
-            "pwf_used_psia": st.column_config.NumberColumn(
-                "pwf_used_psia",
-                format="%.3f",
-                disabled=True,
-            ),
-            "pwf_source": st.column_config.TextColumn(
-                "pwf_source",
-                disabled=True,
-            ),
-        },
     )
 
     preview_df = apply_pwf_override_strategy(
@@ -1252,6 +1647,9 @@ def render_m1_summary(enriched_df: pd.DataFrame, well_id: str) -> None:
             "pwf_manual_psia",
             "pwf_used_psia",
             "pwf_source",
+            "tvd_perf_ft",
+            "tubing_id_in",
+            "length_ft",
         )
         if column in enriched_df.columns
     ]
@@ -1271,11 +1669,9 @@ def render_m2_summary(enriched_df: pd.DataFrame) -> None:
 
     st.warning(
         "Nota física: esta tabla muestra PVT evaluado por fecha porque cada fila "
-        "usa una Pwf/temperatura histórica. El modelo PVT base debe definirse "
-        "en función de presión, temperatura y correlaciones, no del tiempo."
+        "usa una Pwf/temperatura histórica. El modelo PVT base se define en el "
+        "panel `M2 Modelo PVT`."
     )
-
-    pvt_columns = existing_columns(enriched_df, M2_PVT_COLUMNS)
 
     col1, col2, col3, col4 = st.columns(4)
 
@@ -1311,10 +1707,7 @@ def render_m2_summary(enriched_df: pd.DataFrame) -> None:
         enriched_df,
         title="PVT evaluado por punto histórico",
         columns=M2_PVT_COLUMNS,
-        y_label=(
-            "Estas propiedades corresponden a cada condición histórica de P/T. "
-            "No representan una dependencia física directa con el tiempo."
-        ),
+        y_label="Propiedades PVT integradas a la historia.",
     )
 
     meta_columns = [
@@ -1343,8 +1736,6 @@ def render_m2_summary(enriched_df: pd.DataFrame) -> None:
             use_container_width=True,
             hide_index=True,
         )
-    elif pvt_columns:
-        st.dataframe(enriched_df[pvt_columns], use_container_width=True, hide_index=True)
     else:
         st.info("No se encontraron columnas PVT en la historia enriquecida.")
 
@@ -1422,6 +1813,10 @@ def render_sidebar_inputs() -> dict[str, Any]:
     active_edited_path = get_active_edited_history_path()
     if active_edited_path is not None:
         st.sidebar.success(f"Usando historia editada: {active_edited_path.name}")
+
+    active_pvt_path = get_active_pvt_config_path()
+    if active_pvt_path is not None:
+        st.sidebar.success(f"Usando PVT UI: {active_pvt_path.name}")
 
     well_id = st.sidebar.text_input("well_id", value="W001").strip()
 
@@ -1512,7 +1907,8 @@ def render_artifacts(well_id: str) -> None:
     tabs = st.tabs(
         [
             "M1 Pozo / Historia",
-            "M2 PVT",
+            "M2 Modelo PVT",
+            "M2 PVT integrado",
             "M3 DCA",
             "Selección ventana DCA",
             "Selección amarre forecast",
@@ -1529,16 +1925,19 @@ def render_artifacts(well_id: str) -> None:
             render_m1_summary(enriched_df, well_id)
 
     with tabs[1]:
+        render_m2_pvt_configuration_panel(well_id)
+
+    with tabs[2]:
         if enriched_df is None:
             st.info(f"No se encontró `{artifacts.enriched_history_csv.name}`.")
         else:
             render_m2_summary(enriched_df)
 
-    with tabs[2]:
+    with tabs[3]:
         render_dataframe_from_csv(artifacts.dca_fit_results_csv, "fit_results")
         render_json_report(artifacts.dca_qc_report_json, "dca_qc_report")
 
-    with tabs[3]:
+    with tabs[4]:
         if enriched_df is None:
             st.info(
                 "Ejecuta primero el workflow para generar la historia enriquecida "
@@ -1547,7 +1946,7 @@ def render_artifacts(well_id: str) -> None:
         else:
             render_interactive_dca_fit_window_selector(enriched_df)
 
-    with tabs[4]:
+    with tabs[5]:
         if enriched_df is None:
             st.info(
                 "Ejecuta primero el workflow para generar la historia enriquecida "
@@ -1556,14 +1955,14 @@ def render_artifacts(well_id: str) -> None:
         else:
             render_interactive_forecast_anchor_selector(enriched_df)
 
-    with tabs[5]:
+    with tabs[6]:
         col_fit, col_forecast = st.columns(2)
         with col_fit:
             render_png(artifacts.dca_rate_fit_png, "Ajuste de tasa")
         with col_forecast:
             render_png(artifacts.dca_forecast_plot_png, "Forecast DCA")
 
-    with tabs[6]:
+    with tabs[7]:
         st.subheader("Descargar artefactos")
         col_csv, col_json, col_png = st.columns(3)
 
@@ -1604,6 +2003,14 @@ def render_artifacts(well_id: str) -> None:
                 "Descargar geometría JSON",
                 "application/json",
             )
+
+            active_pvt_path = get_active_pvt_config_path()
+            if active_pvt_path is not None:
+                render_download_button(
+                    active_pvt_path,
+                    "Descargar PVT JSON UI",
+                    "application/json",
+                )
 
         with col_png:
             render_download_button(
@@ -1649,13 +2056,18 @@ def main() -> None:
     edited_history_csv_path = get_active_edited_history_path()
     history_csv_path = edited_history_csv_path or uploaded_history_csv_path
 
-    pvt_config_json_path = save_uploaded_file(
+    uploaded_pvt_config_json_path = save_uploaded_file(
         inputs["pvt_config_upload"],
         f"{inputs['well_id']}_pvt_config_upload.json",
     )
+    ui_pvt_config_json_path = get_active_pvt_config_path()
+    pvt_config_json_path = ui_pvt_config_json_path or uploaded_pvt_config_json_path
 
     if history_csv_path is not None:
         st.caption(f"Historia usada por el workflow: `{history_csv_path}`")
+
+    if pvt_config_json_path is not None:
+        st.caption(f"PVT usado por el workflow: `{pvt_config_json_path}`")
 
     try:
         cmd = build_full_workflow_command(
