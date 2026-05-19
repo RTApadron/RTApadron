@@ -1,22 +1,24 @@
-"""Servicio de integración M1 + M2.
+"""M1 + M2 integration service.
 
-Este servicio recibe historia normalizada del Módulo 1, completa Pwf cuando
-faltan mediciones/estimaciones, aplica la regla de Pwf usada y une propiedades
-PVT del Módulo 2.
+This service receives normalized well history, optionally enriches it with
+well geometry/survey context, completes Pwf when needed, applies the Pwf-used
+rule, and joins PVT properties.
 
-La salida queda lista para DCA/RTA y mantiene trazabilidad de datos medidos,
-estimados y calculados.
+The output is ready for DCA/RTA and preserves traceability.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from pathlib import Path
 from typing import Any
 
 import pandas as pd
 
+from src.adapters.m1_geometry_adapter import (
+    WellGeometryContext,
+    apply_geometry_context_to_history,
+)
 from src.adapters.m1_loader_adapter import apply_pwf_rule
 from src.adapters.m2_pvt_adapter import build_pvt_table
 from src.adapters.pwf_estimator_adapter import (
@@ -37,6 +39,20 @@ PWF_TRACE_COLUMNS = [
     "pwf_estimation_used_default_tvd",
     "pwf_estimation_used_default_tubing_id",
     "pwf_estimation_used_default_length",
+    "pwf_estimation_force_reestimated",
+]
+
+GEOMETRY_TRACE_COLUMNS = [
+    "geometry_source",
+    "survey_source",
+    "tvd_perf_ft",
+    "perforation_mid_tvd_ft",
+    "perforation_top_md_ft",
+    "perforation_bottom_md_ft",
+    "sensor_depth_md_ft",
+    "pump_depth_md_ft",
+    "tubing_id_in",
+    "length_ft",
 ]
 
 ENRICHED_COLUMNS = [
@@ -52,6 +68,7 @@ ENRICHED_COLUMNS = [
     "pwf_used_psia",
     "pwf_source",
     *PWF_TRACE_COLUMNS,
+    *GEOMETRY_TRACE_COLUMNS,
     "bo",
     "rs",
     "mu_o_cp",
@@ -65,7 +82,7 @@ ENRICHED_COLUMNS = [
 
 @dataclass(frozen=True)
 class IntegrationOutput:
-    """Resultado del servicio de integración M1 + M2."""
+    """M1 + M2 integration result."""
 
     enriched: pd.DataFrame
     qc_report: dict[str, Any]
@@ -77,25 +94,22 @@ def integrate_history_with_pvt(
     *,
     auto_estimate_missing_pwf: bool = True,
     pwf_defaults: PwfEstimationDefaults | None = None,
+    geometry_context: WellGeometryContext | None = None,
 ) -> IntegrationOutput:
-    """Integra historia de producción/presión con propiedades PVT.
-
-    Args:
-        history_df: Historia normalizada del pozo.
-        pvt_cfg: Configuración PVT del pozo.
-        auto_estimate_missing_pwf: Si es True, estima Pwf cuando no existe
-            medición ni estimación previa.
-        pwf_defaults: Parámetros fallback para el estimador Pwf v1.
-
-    Returns:
-        IntegrationOutput con tabla enriquecida y reporte QC.
-    """
+    """Integrate production history with PVT properties."""
     _validate_history(history_df)
 
     history = history_df.copy()
 
+    history = _add_api_from_pvt_config_if_missing(history, pvt_cfg)
+    history = apply_geometry_context_to_history(history, geometry_context)
+
     if auto_estimate_missing_pwf:
-        history = estimate_missing_pwf_v1(history, defaults=pwf_defaults)
+        history = estimate_missing_pwf_v1(
+            history,
+            defaults=pwf_defaults,
+            force_reestimate=geometry_context is not None,
+        )
 
     history = apply_pwf_rule(history)
     pvt = build_pvt_table(history, pvt_cfg)
@@ -120,7 +134,7 @@ def integrate_history_with_pvt(
 
 
 def build_qc_report(enriched: pd.DataFrame) -> dict[str, Any]:
-    """Genera reporte QC simple y serializable."""
+    """Build simple serializable QC report."""
     total_rows = int(len(enriched))
 
     pwf_source_counts = (
@@ -144,6 +158,7 @@ def build_qc_report(enriched: pd.DataFrame) -> dict[str, Any]:
         "wells": sorted(enriched["well_id"].dropna().astype(str).unique().tolist()),
         "pwf_source_counts": pwf_source_counts,
         "pwf_estimation_trace": _build_pwf_trace_summary(enriched),
+        "geometry_trace": _build_geometry_trace_summary(enriched),
         "warnings": _build_warnings(enriched),
         "missing_pvt_by_column": missing_pvt_by_column,
         "has_required_columns": all(
@@ -156,10 +171,11 @@ def write_outputs(
     output: IntegrationOutput,
     *,
     well_id: str,
-    output_dir: str | Path = "output",
-) -> tuple[Path, Path]:
-    """Escribe CSV enriquecido y reporte QC JSON."""
+    output_dir: str | Any = "output",
+) -> tuple[Any, Any]:
+    """Write enriched CSV and QC JSON."""
     import json
+    from pathlib import Path
 
     out_dir = Path(output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -175,6 +191,19 @@ def write_outputs(
     return enriched_path, qc_path
 
 
+def _add_api_from_pvt_config_if_missing(
+    history: pd.DataFrame,
+    pvt_cfg: PVTConfig,
+) -> pd.DataFrame:
+    out = history.copy()
+
+    if "api" not in out.columns:
+        api = getattr(pvt_cfg, "api", pd.NA)
+        out["api"] = api
+
+    return out
+
+
 def _build_pwf_trace_summary(enriched: pd.DataFrame) -> dict[str, Any]:
     estimated_v1 = (
         enriched["pwf_source"].astype("string") == "estimated_v1"
@@ -184,6 +213,10 @@ def _build_pwf_trace_summary(enriched: pd.DataFrame) -> dict[str, Any]:
 
     return {
         "estimated_v1_rows": int(estimated_v1.sum()),
+        "force_reestimated_rows": _count_true(
+            enriched,
+            "pwf_estimation_force_reestimated",
+        ),
         "used_default_whp_rows": _count_true(
             enriched,
             "pwf_estimation_used_default_whp",
@@ -204,6 +237,18 @@ def _build_pwf_trace_summary(enriched: pd.DataFrame) -> dict[str, Any]:
             enriched,
             "pwf_estimation_used_default_length",
         ),
+    }
+
+
+def _build_geometry_trace_summary(enriched: pd.DataFrame) -> dict[str, Any]:
+    return {
+        "has_geometry_source": _has_non_null(enriched, "geometry_source"),
+        "has_survey_source": _has_non_null(enriched, "survey_source"),
+        "geometry_sources": _unique_strings(enriched, "geometry_source"),
+        "survey_sources": _unique_strings(enriched, "survey_source"),
+        "rows_with_tvd_perf_ft": _count_valid_positive(enriched, "tvd_perf_ft"),
+        "rows_with_tubing_id_in": _count_valid_positive(enriched, "tubing_id_in"),
+        "rows_with_length_ft": _count_valid_positive(enriched, "length_ft"),
     }
 
 
@@ -246,16 +291,40 @@ def _build_warnings(enriched: pd.DataFrame) -> list[str]:
                 f"{label} ({field_name})."
             )
 
+    if not _has_non_null(enriched, "geometry_source"):
+        warnings.append(
+            "No se usó archivo de geometría M1 para estimar Pwf; "
+            "se aplicaron datos existentes o defaults."
+        )
+
     return warnings
 
 
 def _count_true(df: pd.DataFrame, column: str) -> int:
-    """Cuenta valores verdaderos evitando FutureWarning de fillna en object dtype."""
     if column not in df.columns:
         return 0
 
     values = df[column].map(lambda value: bool(value) if pd.notna(value) else False)
     return int(values.sum())
+
+
+def _count_valid_positive(df: pd.DataFrame, column: str) -> int:
+    if column not in df.columns:
+        return 0
+
+    values = pd.to_numeric(df[column], errors="coerce")
+    return int((values.notna() & (values > 0)).sum())
+
+
+def _has_non_null(df: pd.DataFrame, column: str) -> bool:
+    return column in df.columns and bool(df[column].notna().any())
+
+
+def _unique_strings(df: pd.DataFrame, column: str) -> list[str]:
+    if column not in df.columns:
+        return []
+
+    return sorted(df[column].dropna().astype(str).unique().tolist())
 
 
 def _validate_history(history_df: pd.DataFrame) -> None:
