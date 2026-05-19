@@ -1578,7 +1578,13 @@ def render_m1_editable_history_panel(enriched_df: pd.DataFrame, well_id: str) ->
         st.info(f"Historia editada activa para el workflow: `{active_path}`")
 
 
-def render_m1_summary(enriched_df: pd.DataFrame, well_id: str) -> None:
+def render_m1_summary(
+    enriched_df: pd.DataFrame,
+    well_id: str,
+    *,
+    show_geometry_and_survey: bool = True,
+    show_editable_history: bool = True,
+) -> None:
     st.header("Módulo 1 | Pozo e historia de producción")
 
     col1, col2, col3, col4 = st.columns(4)
@@ -1631,8 +1637,11 @@ def render_m1_summary(enriched_df: pd.DataFrame, well_id: str) -> None:
         )
         st.dataframe(source_counts, use_container_width=True, hide_index=True)
 
-    render_m1_geometry_and_survey_panel(well_id)
-    render_m1_editable_history_panel(enriched_df, well_id)
+    if show_geometry_and_survey:
+        render_m1_geometry_and_survey_panel(well_id)
+
+    if show_editable_history:
+        render_m1_editable_history_panel(enriched_df, well_id)
 
     st.subheader("Tabla M1-M2 enriquecida")
     priority_columns = [
@@ -2445,160 +2454,193 @@ def render_sidebar_inputs() -> dict[str, Any]:
     }
 
 
+def render_downloads_tab(artifacts: WorkflowArtifacts) -> None:
+    """Render all workflow artifact download buttons."""
+    st.subheader("Descargar artefactos")
+    col_csv, col_json, col_png = st.columns(3)
+
+    with col_csv:
+        render_download_button(
+            artifacts.enriched_history_csv,
+            "Descargar historia enriquecida CSV",
+            "text/csv",
+        )
+        render_download_button(
+            artifacts.dca_fit_results_csv,
+            "Descargar fit_results CSV",
+            "text/csv",
+        )
+        render_download_button(
+            artifacts.dca_forecast_csv,
+            "Descargar forecast CSV",
+            "text/csv",
+        )
+
+        edited_path = get_active_edited_history_path()
+        if edited_path is not None:
+            render_download_button(
+                edited_path,
+                "Descargar historia editada CSV",
+                "text/csv",
+            )
+
+        render_download_button(
+            artifacts.survey_input_csv,
+            "Descargar survey CSV",
+            "text/csv",
+        )
+
+    with col_json:
+        render_download_button(
+            artifacts.dca_qc_report_json,
+            "Descargar QC JSON",
+            "application/json",
+        )
+        render_download_button(
+            artifacts.well_geometry_json,
+            "Descargar geometría JSON",
+            "application/json",
+        )
+
+        active_pvt_path = get_active_pvt_config_path()
+        if active_pvt_path is not None:
+            render_download_button(
+                active_pvt_path,
+                "Descargar PVT JSON UI",
+                "application/json",
+            )
+
+    with col_png:
+        render_download_button(
+            artifacts.dca_rate_fit_png,
+            "Descargar ajuste PNG",
+            "image/png",
+        )
+        render_download_button(
+            artifacts.dca_forecast_plot_png,
+            "Descargar forecast PNG",
+            "image/png",
+        )
+
+
+def render_dca_graphs_tab(artifacts: WorkflowArtifacts) -> None:
+    """Render final DCA plots: interactive Plotly plus legacy backend PNG."""
+    render_interactive_dca_final_plots(artifacts)
+
+    st.divider()
+    st.subheader("Gráficas PNG del backend")
+    st.caption(
+        "Se conservan los PNG generados por las funciones existentes del backend "
+        "para mantener compatibilidad con `plot_dca_rate_fit` y `plot_dca_forecast`."
+    )
+
+    col_fit, col_forecast = st.columns(2)
+    with col_fit:
+        render_png(artifacts.dca_rate_fit_png, "Ajuste de tasa PNG")
+        render_download_button(
+            artifacts.dca_rate_fit_png,
+            "Descargar ajuste PNG",
+            "image/png",
+            key_suffix="graphs_tab_rate_fit_png",
+        )
+
+    with col_forecast:
+        render_png(artifacts.dca_forecast_plot_png, "Forecast DCA PNG")
+        render_download_button(
+            artifacts.dca_forecast_plot_png,
+            "Descargar forecast PNG",
+            "image/png",
+            key_suffix="graphs_tab_forecast_png",
+        )
+
+
 def render_artifacts(well_id: str) -> None:
     artifacts = WorkflowArtifacts.for_well(well_id)
     enriched_df = read_csv_safe(artifacts.enriched_history_csv)
 
     render_quick_dca_summary(artifacts)
 
-    tabs = st.tabs(
-        [
-            "M1 Pozo / Historia",
-            "M2 Modelo PVT",
-            "M2 PVT integrado",
-            "M3 DCA",
-            "Selección ventana DCA",
-            "Selección amarre forecast",
-            "Gráficas DCA",
-            "Descargas",
-        ]
-    )
+    main_tabs = st.tabs(["M1 Pozo", "M2 PVT", "M3 DCA", "Descargas"])
 
-    with tabs[0]:
-        if enriched_df is None:
-            st.info(f"No se encontró `{artifacts.enriched_history_csv.name}`.")
+    with main_tabs[0]:
+        m1_tabs = st.tabs(["Historia", "Geometría / Survey", "Edición Pwf"])
+
+        with m1_tabs[0]:
+            if enriched_df is None:
+                st.info(f"No se encontró `{artifacts.enriched_history_csv.name}`.")
+                st.caption(
+                    "Ejecuta el workflow para generar la historia enriquecida M1-M2."
+                )
+            else:
+                render_m1_summary(
+                    enriched_df,
+                    well_id,
+                    show_geometry_and_survey=False,
+                    show_editable_history=False,
+                )
+
+        with m1_tabs[1]:
             render_m1_geometry_and_survey_panel(well_id)
-        else:
-            render_m1_summary(enriched_df, well_id)
 
-    with tabs[1]:
-        render_m2_pvt_configuration_panel(well_id)
+        with m1_tabs[2]:
+            if enriched_df is None:
+                st.info(
+                    "Ejecuta primero el workflow para generar la historia enriquecida "
+                    "y habilitar la edición manual de historia/Pwf."
+                )
+            else:
+                render_m1_editable_history_panel(enriched_df, well_id)
 
-    with tabs[2]:
-        if enriched_df is None:
-            st.info(f"No se encontró `{artifacts.enriched_history_csv.name}`.")
-        else:
-            render_m2_summary(enriched_df)
+    with main_tabs[1]:
+        m2_tabs = st.tabs(["Modelo PVT", "PVT integrado"])
 
-    with tabs[3]:
-        render_dataframe_from_csv(artifacts.dca_fit_results_csv, "fit_results")
-        render_dataframe_from_csv(artifacts.dca_forecast_csv, "forecast")
-        render_json_report(artifacts.dca_qc_report_json, "dca_qc_report")
+        with m2_tabs[0]:
+            render_m2_pvt_configuration_panel(well_id)
 
-    with tabs[4]:
-        if enriched_df is None:
-            st.info(
-                "Ejecuta primero el workflow para generar la historia enriquecida "
-                "y habilitar la selección interactiva."
-            )
-        else:
-            render_interactive_dca_fit_window_selector(enriched_df)
+        with m2_tabs[1]:
+            if enriched_df is None:
+                st.info(f"No se encontró `{artifacts.enriched_history_csv.name}`.")
+            else:
+                render_m2_summary(enriched_df)
 
-    with tabs[5]:
-        if enriched_df is None:
-            st.info(
-                "Ejecuta primero el workflow para generar la historia enriquecida "
-                "y habilitar la selección del punto de amarre."
-            )
-        else:
-            render_interactive_forecast_anchor_selector(enriched_df)
-
-    with tabs[6]:
-        render_interactive_dca_final_plots(artifacts)
-
-        st.divider()
-        st.subheader("Gráficas PNG del backend")
-        st.caption(
-            "Se conservan los PNG generados por las funciones existentes del backend "
-            "para mantener compatibilidad con `plot_dca_rate_fit` y `plot_dca_forecast`."
+    with main_tabs[2]:
+        m3_tabs = st.tabs(
+            [
+                "Resultados",
+                "Ventana ajuste",
+                "Amarre forecast",
+                "Gráficas",
+            ]
         )
 
-        col_fit, col_forecast = st.columns(2)
-        with col_fit:
-            render_png(artifacts.dca_rate_fit_png, "Ajuste de tasa PNG")
-            render_download_button(
-                artifacts.dca_rate_fit_png,
-                "Descargar ajuste PNG",
-                "image/png",
-                key_suffix="graphs_tab_rate_fit_png",
-            )
+        with m3_tabs[0]:
+            render_dataframe_from_csv(artifacts.dca_fit_results_csv, "fit_results")
+            render_dataframe_from_csv(artifacts.dca_forecast_csv, "forecast")
+            render_json_report(artifacts.dca_qc_report_json, "dca_qc_report")
 
-        with col_forecast:
-            render_png(artifacts.dca_forecast_plot_png, "Forecast DCA PNG")
-            render_download_button(
-                artifacts.dca_forecast_plot_png,
-                "Descargar forecast PNG",
-                "image/png",
-                key_suffix="graphs_tab_forecast_png",
-            )
-
-    with tabs[7]:
-        st.subheader("Descargar artefactos")
-        col_csv, col_json, col_png = st.columns(3)
-
-        with col_csv:
-            render_download_button(
-                artifacts.enriched_history_csv,
-                "Descargar historia enriquecida CSV",
-                "text/csv",
-            )
-            render_download_button(
-                artifacts.dca_fit_results_csv,
-                "Descargar fit_results CSV",
-                "text/csv",
-            )
-            render_download_button(
-                artifacts.dca_forecast_csv,
-                "Descargar forecast CSV",
-                "text/csv",
-            )
-
-            edited_path = get_active_edited_history_path()
-            if edited_path is not None:
-                render_download_button(
-                    edited_path,
-                    "Descargar historia editada CSV",
-                    "text/csv",
+        with m3_tabs[1]:
+            if enriched_df is None:
+                st.info(
+                    "Ejecuta primero el workflow para generar la historia enriquecida "
+                    "y habilitar la selección interactiva."
                 )
+            else:
+                render_interactive_dca_fit_window_selector(enriched_df)
 
-            render_download_button(
-                artifacts.survey_input_csv,
-                "Descargar survey CSV",
-                "text/csv",
-            )
-
-        with col_json:
-            render_download_button(
-                artifacts.dca_qc_report_json,
-                "Descargar QC JSON",
-                "application/json",
-            )
-            render_download_button(
-                artifacts.well_geometry_json,
-                "Descargar geometría JSON",
-                "application/json",
-            )
-
-            active_pvt_path = get_active_pvt_config_path()
-            if active_pvt_path is not None:
-                render_download_button(
-                    active_pvt_path,
-                    "Descargar PVT JSON UI",
-                    "application/json",
+        with m3_tabs[2]:
+            if enriched_df is None:
+                st.info(
+                    "Ejecuta primero el workflow para generar la historia enriquecida "
+                    "y habilitar la selección del punto de amarre."
                 )
+            else:
+                render_interactive_forecast_anchor_selector(enriched_df)
 
-        with col_png:
-            render_download_button(
-                artifacts.dca_rate_fit_png,
-                "Descargar ajuste PNG",
-                "image/png",
-            )
-            render_download_button(
-                artifacts.dca_forecast_plot_png,
-                "Descargar forecast PNG",
-                "image/png",
-            )
+        with m3_tabs[3]:
+            render_dca_graphs_tab(artifacts)
 
+    with main_tabs[3]:
+        render_downloads_tab(artifacts)
 
 def main() -> None:
     configure_page()
