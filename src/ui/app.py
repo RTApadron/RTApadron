@@ -26,7 +26,7 @@ except ImportError:  # pragma: no cover
     make_subplots = None
 
 from src.domain.models import PVTConfig
-from src.rta.models import RTAConfig, default_rta_config
+from src.rta.models import RTAConfig, RTAMatchConfig, default_rta_config, default_rta_match_config
 OUTPUT_DIR = PROJECT_ROOT / "output"
 UI_INPUT_DIR = PROJECT_ROOT / "data" / "ui_uploads"
 
@@ -65,6 +65,7 @@ SESSION_PWF_OVERRIDE_MODE = "pwf_override_mode_value"
 SESSION_EDITED_HISTORY_PATH = "edited_history_csv_path"
 SESSION_PVT_CONFIG_PATH = "pvt_config_ui_path"
 SESSION_RTA_CONFIG_PATH = "rta_config_ui_path"
+SESSION_RTA_MATCH_CONFIG_PATH = "rta_match_config_ui_path"
 
 GEOMETRY_FIELDS = {
     "well_id": "",
@@ -103,6 +104,8 @@ class WorkflowArtifacts:
     dca_forecast_plot_png: Path
     rta_diagnostics_csv: Path
     rta_qc_report_json: Path
+    rta_manual_match_points_csv: Path
+    rta_manual_match_qc_report_json: Path
     well_geometry_json: Path
     survey_input_csv: Path
 
@@ -118,6 +121,8 @@ class WorkflowArtifacts:
             dca_forecast_plot_png=OUTPUT_DIR / f"{safe_well_id}_dca_forecast_plot.png",
             rta_diagnostics_csv=OUTPUT_DIR / f"{safe_well_id}_rta_diagnostics.csv",
             rta_qc_report_json=OUTPUT_DIR / f"{safe_well_id}_rta_qc_report.json",
+            rta_manual_match_points_csv=OUTPUT_DIR / f"{safe_well_id}_rta_manual_match_points.csv",
+            rta_manual_match_qc_report_json=OUTPUT_DIR / f"{safe_well_id}_rta_manual_match_qc_report.json",
             well_geometry_json=OUTPUT_DIR / f"{safe_well_id}_well_geometry.json",
             survey_input_csv=OUTPUT_DIR / f"{safe_well_id}_survey_input.csv",
         )
@@ -226,6 +231,15 @@ def get_active_pvt_config_path() -> Path | None:
 
 def get_active_rta_config_path() -> Path | None:
     raw_path = st.session_state.get(SESSION_RTA_CONFIG_PATH)
+    if not raw_path:
+        return None
+
+    path = Path(str(raw_path))
+    return path if path.exists() else None
+
+
+def get_active_rta_match_config_path() -> Path | None:
+    raw_path = st.session_state.get(SESSION_RTA_MATCH_CONFIG_PATH)
     if not raw_path:
         return None
 
@@ -1826,6 +1840,79 @@ def build_rta_diagnostics_command(
     return cmd
 
 
+
+
+def default_rta_match_config_payload(well_id: str) -> dict[str, Any]:
+    """Return editable default RTA manual match payload for UI."""
+    return default_rta_match_config(well_id).model_dump()
+
+
+def load_existing_rta_match_config_for_ui(well_id: str) -> dict[str, Any]:
+    """Load active RTA manual match config or return editable defaults."""
+    active_path = get_active_rta_match_config_path()
+    default_path = UI_INPUT_DIR / f"{well_id}_rta_match_config_ui.json"
+
+    for path in (active_path, default_path):
+        if path is None or not path.exists():
+            continue
+
+        try:
+            loaded = read_json(path)
+            return default_rta_match_config_payload(well_id) | loaded
+        except Exception:
+            continue
+
+    return default_rta_match_config_payload(well_id)
+
+
+def save_rta_match_config_from_ui(payload: dict[str, Any], well_id: str) -> Path:
+    """Validate and save the user-editable RTA manual match config."""
+    payload["well_id"] = well_id
+    validated = RTAMatchConfig(**payload)
+    target_path = UI_INPUT_DIR / f"{well_id}_rta_match_config_ui.json"
+    write_json(target_path, validated.model_dump())
+    return target_path
+
+
+def build_rta_match_command(
+    *,
+    well_id: str,
+    diagnostics_csv: Path,
+    rta_match_config_json: Path | None,
+) -> list[str]:
+    """Build CLI command for M4 manual type-curve overlay preparation."""
+    cmd = [
+        sys.executable,
+        "-m",
+        "src.rta.run_rta_match",
+        "--well-id",
+        well_id,
+        "--diagnostics-csv",
+        str(diagnostics_csv),
+        "--output-dir",
+        str(OUTPUT_DIR),
+    ]
+
+    if rta_match_config_json is not None:
+        cmd.extend(["--rta-match-config-json", str(rta_match_config_json)])
+
+    return cmd
+
+
+def render_rta_match_config_json_download(well_id: str) -> None:
+    """Render active RTA manual match config download button if available."""
+    active_path = get_active_rta_match_config_path()
+    if active_path is None:
+        st.caption("Guarda primero la configuración de matching RTA.")
+        return
+
+    render_download_button(
+        active_path,
+        "Descargar RTA match JSON UI",
+        "application/json",
+    )
+
+
 def render_rta_config_json_download(well_id: str) -> None:
     active_path = get_active_rta_config_path()
     if active_path is not None:
@@ -2175,15 +2262,348 @@ def render_m4_diagnostics_outputs(artifacts: WorkflowArtifacts) -> None:
     render_json_report(artifacts.rta_qc_report_json, "rta_qc_report")
 
 
-def render_m4_type_curves_placeholder() -> None:
-    st.header("Módulo 4 | Curvas tipo")
+def render_manual_match_plot(
+    diagnostics_df: pd.DataFrame,
+    match_points_df: pd.DataFrame | None,
+    *,
+    x_column: str,
+    y_column: str,
+    x_multiplier: float,
+    y_multiplier: float,
+) -> None:
+    """Render diagnostic and manually scaled RTA points on log-log axes."""
+    if go is None:
+        st.warning("Plotly no está instalado.")
+        return
 
-    st.info(
-        "M4.1 deja preparada la tabla diagnóstica. En el siguiente commit se podrán "
-        "agregar overlays y matching manual/automático para Fetkovich, "
-        "Palacio-Blasingame y Agarwal-Gardner."
+    if x_column not in diagnostics_df.columns or y_column not in diagnostics_df.columns:
+        st.info(
+            "No se puede graficar matching manual porque faltan columnas "
+            f"`{x_column}` o `{y_column}`."
+        )
+        return
+
+    plot_df = diagnostics_df[[x_column, y_column]].copy()
+    plot_df[x_column] = pd.to_numeric(plot_df[x_column], errors="coerce")
+    plot_df[y_column] = pd.to_numeric(plot_df[y_column], errors="coerce")
+    plot_df = plot_df[(plot_df[x_column] > 0) & (plot_df[y_column] > 0)]
+
+    if plot_df.empty:
+        st.info("No hay puntos positivos válidos para graficar matching manual.")
+        return
+
+    fig = go.Figure()
+
+    fig.add_trace(
+        go.Scatter(
+            x=plot_df[x_column],
+            y=plot_df[y_column],
+            mode="markers",
+            name="Diagnóstico original",
+            marker={"size": 7},
+            hovertemplate=(
+                f"{x_column}=%{{x:.4g}}<br>"
+                f"{y_column}=%{{y:.4g}}"
+                "<extra></extra>"
+            ),
+        )
     )
 
+    preview_x = plot_df[x_column] * x_multiplier
+    preview_y = plot_df[y_column] * y_multiplier
+    fig.add_trace(
+        go.Scatter(
+            x=preview_x,
+            y=preview_y,
+            mode="markers",
+            name="Preview escalado",
+            marker={"size": 8, "symbol": "diamond"},
+            hovertemplate="x_match=%{x:.4g}<br>y_match=%{y:.4g}<extra></extra>",
+        )
+    )
+
+    if match_points_df is not None and not match_points_df.empty:
+        if {"x_match", "y_match"}.issubset(match_points_df.columns):
+            saved_df = match_points_df[["x_match", "y_match"]].copy()
+            saved_df["x_match"] = pd.to_numeric(saved_df["x_match"], errors="coerce")
+            saved_df["y_match"] = pd.to_numeric(saved_df["y_match"], errors="coerce")
+            saved_df = saved_df[(saved_df["x_match"] > 0) & (saved_df["y_match"] > 0)]
+
+            if not saved_df.empty:
+                fig.add_trace(
+                    go.Scatter(
+                        x=saved_df["x_match"],
+                        y=saved_df["y_match"],
+                        mode="markers",
+                        name="Match guardado",
+                        marker={"size": 6, "symbol": "x"},
+                        hovertemplate=(
+                            "x_match=%{x:.4g}<br>"
+                            "y_match=%{y:.4g}"
+                            "<extra></extra>"
+                        ),
+                    )
+                )
+
+    fig.update_layout(
+        title="Overlay manual preliminar de puntos RTA",
+        xaxis_title=x_column,
+        yaxis_title=y_column,
+        xaxis_type="log",
+        yaxis_type="log",
+        height=560,
+        margin={"l": 20, "r": 20, "t": 70, "b": 20},
+        legend={"orientation": "h"},
+    )
+
+    st.plotly_chart(
+        fig,
+        use_container_width=True,
+        key="rta_manual_match_overlay_plot",
+    )
+
+
+def render_m4_type_curves_panel(
+    *,
+    well_id: str,
+    artifacts: WorkflowArtifacts,
+) -> None:
+    """Render M4 manual type-curve overlay controls."""
+    st.header("Módulo 4 | Curvas tipo y matching manual")
+
+    st.caption(
+        "Este panel prepara el overlay manual sobre ejes log-log. "
+        "Todavía no calcula k, skin, volumen contactado ni OOIP: esos resultados "
+        "requieren incorporar las curvas tipo validadas de cada método."
+    )
+
+    if not artifacts.rta_diagnostics_csv.exists():
+        st.info(
+            f"No se encontró `{artifacts.rta_diagnostics_csv.name}`. "
+            "Genera primero los diagnósticos RTA en `M4 RTA > Datos RTA`."
+        )
+        return
+
+    diagnostics_df = read_csv_safe(artifacts.rta_diagnostics_csv)
+    if diagnostics_df is None or diagnostics_df.empty:
+        st.info("No hay diagnóstico RTA válido para matching manual.")
+        return
+
+    existing = load_existing_rta_match_config_for_ui(well_id)
+
+    method_options = ("fetkovich", "palacio_blasingame", "agarwal_gardner")
+    x_options = ("elapsed_days", "material_balance_time_days")
+    y_options = ("normalized_rate_stb_d_psi", "qo_stb_d")
+
+    col_a, col_b, col_c = st.columns(3)
+
+    with col_a:
+        method = st.selectbox(
+            "Método / familia de curva tipo",
+            options=method_options,
+            index=(
+                method_options.index(str(existing.get("method")))
+                if str(existing.get("method")) in method_options
+                else 0
+            ),
+        )
+        match_name = st.text_input(
+            "match_name",
+            value=str(existing.get("match_name", "manual_match_001")),
+        )
+
+    with col_b:
+        x_column = st.selectbox(
+            "Eje X diagnóstico",
+            options=x_options,
+            index=(
+                x_options.index(str(existing.get("x_column")))
+                if str(existing.get("x_column")) in x_options
+                else 1
+            ),
+        )
+        y_column = st.selectbox(
+            "Eje Y diagnóstico",
+            options=y_options,
+            index=(
+                y_options.index(str(existing.get("y_column")))
+                if str(existing.get("y_column")) in y_options
+                else 0
+            ),
+        )
+
+    with col_c:
+        x_multiplier = st.number_input(
+            "x_multiplier",
+            min_value=1.0e-12,
+            value=as_float(existing.get("x_multiplier"), 1.0),
+            step=0.1,
+            format="%.8g",
+            help="Multiplicador para mover puntos horizontalmente en escala log-log.",
+        )
+        y_multiplier = st.number_input(
+            "y_multiplier",
+            min_value=1.0e-12,
+            value=as_float(existing.get("y_multiplier"), 1.0),
+            step=0.1,
+            format="%.8g",
+            help="Multiplicador para mover puntos verticalmente en escala log-log.",
+        )
+
+    x_label = st.text_input(
+        "x_label",
+        value=str(existing.get("x_label", "tD / tiempo equivalente")),
+    )
+    y_label = st.text_input(
+        "y_label",
+        value=str(existing.get("y_label", "qD / tasa normalizada")),
+    )
+    notes = st.text_area(
+        "notes",
+        value=str(existing.get("notes") or ""),
+        height=80,
+    )
+
+    match_payload = {
+        "well_id": well_id,
+        "method": method,
+        "x_column": x_column,
+        "y_column": y_column,
+        "x_multiplier": x_multiplier,
+        "y_multiplier": y_multiplier,
+        "x_label": x_label,
+        "y_label": y_label,
+        "match_name": match_name,
+        "notes": notes,
+        "match_model_version": "m4-rta-manual-match-0.1",
+    }
+
+    st.subheader("Vista previa de overlay manual")
+    saved_match_df = read_csv_safe(artifacts.rta_manual_match_points_csv)
+    render_manual_match_plot(
+        diagnostics_df,
+        saved_match_df,
+        x_column=x_column,
+        y_column=y_column,
+        x_multiplier=x_multiplier,
+        y_multiplier=y_multiplier,
+    )
+
+    st.subheader("JSON de matching manual RTA")
+    st.json(match_payload, expanded=False)
+
+    active_path = get_active_rta_match_config_path()
+    if active_path is not None:
+        st.info(f"RTA match UI activo: `{active_path}`")
+
+    col_save, col_clear, col_download = st.columns(3)
+
+    with col_save:
+        if st.button(
+            "Guardar configuración de matching",
+            type="primary",
+            use_container_width=True,
+        ):
+            try:
+                saved_path = save_rta_match_config_from_ui(match_payload, well_id)
+            except Exception as exc:  # noqa: BLE001
+                st.error(f"No fue posible validar/guardar RTAMatchConfig: {exc}")
+                return
+
+            st.session_state[SESSION_RTA_MATCH_CONFIG_PATH] = str(saved_path)
+            st.success(f"Configuración de matching guardada: `{saved_path}`")
+            st.rerun()
+
+    with col_clear:
+        if st.button("Descartar matching UI activo", use_container_width=True):
+            st.session_state.pop(SESSION_RTA_MATCH_CONFIG_PATH, None)
+            st.success("Matching RTA UI activo descartado.")
+            st.rerun()
+
+    with col_download:
+        render_rta_match_config_json_download(well_id)
+
+    st.subheader("Generar puntos escalados para matching")
+
+    col_run_saved, col_save_run = st.columns(2)
+
+    with col_run_saved:
+        active_match_config = get_active_rta_match_config_path()
+        cmd = build_rta_match_command(
+            well_id=well_id,
+            diagnostics_csv=artifacts.rta_diagnostics_csv,
+            rta_match_config_json=active_match_config,
+        )
+
+        with st.expander("Comando matching RTA equivalente", expanded=False):
+            show_command(cmd)
+
+        if st.button(
+            "Generar puntos de matching",
+            use_container_width=True,
+            key=f"run_rta_manual_match_{well_id}",
+        ):
+            with st.spinner("Generando puntos escalados RTA..."):
+                result = run_command(cmd)
+
+            if result.returncode != 0:
+                st.error("Matching manual RTA terminó con error.")
+                st.subheader("STDERR")
+                st.code(result.stderr or "(vacío)", language="text")
+                st.subheader("STDOUT")
+                st.code(result.stdout or "(vacío)", language="text")
+                return
+
+            st.success("Puntos de matching RTA generados correctamente.")
+            if result.stdout:
+                with st.expander("STDOUT matching RTA", expanded=False):
+                    st.code(result.stdout, language="text")
+
+    with col_save_run:
+        if st.button(
+            "Guardar y generar puntos de matching",
+            type="primary",
+            use_container_width=True,
+            key=f"save_and_run_rta_manual_match_{well_id}",
+        ):
+            try:
+                saved_path = save_rta_match_config_from_ui(match_payload, well_id)
+            except Exception as exc:  # noqa: BLE001
+                st.error(f"No fue posible validar/guardar RTAMatchConfig: {exc}")
+                return
+
+            st.session_state[SESSION_RTA_MATCH_CONFIG_PATH] = str(saved_path)
+            cmd = build_rta_match_command(
+                well_id=well_id,
+                diagnostics_csv=artifacts.rta_diagnostics_csv,
+                rta_match_config_json=saved_path,
+            )
+
+            with st.spinner("Guardando configuración y generando puntos RTA..."):
+                result = run_command(cmd)
+
+            if result.returncode != 0:
+                st.error("Matching manual RTA terminó con error.")
+                st.subheader("STDERR")
+                st.code(result.stderr or "(vacío)", language="text")
+                st.subheader("STDOUT")
+                st.code(result.stdout or "(vacío)", language="text")
+                return
+
+            st.success("Configuración guardada y puntos de matching generados.")
+            if result.stdout:
+                with st.expander("STDOUT matching RTA", expanded=False):
+                    st.code(result.stdout, language="text")
+
+    st.subheader("Artefactos de matching manual")
+    render_dataframe_from_csv(
+        artifacts.rta_manual_match_points_csv,
+        "rta_manual_match_points",
+    )
+    render_json_report(
+        artifacts.rta_manual_match_qc_report_json,
+        "rta_manual_match_qc_report",
+    )
 
 def render_m4_results_placeholder(artifacts: WorkflowArtifacts) -> None:
     st.header("Módulo 4 | Resultados RTA")
@@ -2193,6 +2613,17 @@ def render_m4_results_placeholder(artifacts: WorkflowArtifacts) -> None:
         return
 
     render_json_report(artifacts.rta_qc_report_json, "Resumen QC RTA")
+
+    if artifacts.rta_manual_match_qc_report_json.exists():
+        render_json_report(
+            artifacts.rta_manual_match_qc_report_json,
+            "Resumen QC matching manual RTA",
+        )
+    else:
+        st.info(
+            "Aún no hay QC de matching manual. Genera puntos en "
+            "`M4 RTA > Curvas tipo`."
+        )
 
 
 def render_quick_dca_summary(artifacts: WorkflowArtifacts) -> None:
@@ -2923,6 +3354,11 @@ def render_downloads_tab(artifacts: WorkflowArtifacts) -> None:
             "Descargar diagnósticos RTA CSV",
             "text/csv",
         )
+        render_download_button(
+            artifacts.rta_manual_match_points_csv,
+            "Descargar puntos matching RTA CSV",
+            "text/csv",
+        )
 
         edited_path = get_active_edited_history_path()
         if edited_path is not None:
@@ -2955,6 +3391,11 @@ def render_downloads_tab(artifacts: WorkflowArtifacts) -> None:
             "Descargar QC RTA JSON",
             "application/json",
         )
+        render_download_button(
+            artifacts.rta_manual_match_qc_report_json,
+            "Descargar QC matching RTA JSON",
+            "application/json",
+        )
 
         active_pvt_path = get_active_pvt_config_path()
         if active_pvt_path is not None:
@@ -2969,6 +3410,14 @@ def render_downloads_tab(artifacts: WorkflowArtifacts) -> None:
             render_download_button(
                 active_rta_path,
                 "Descargar RTA JSON UI",
+                "application/json",
+            )
+
+        active_rta_match_path = get_active_rta_match_config_path()
+        if active_rta_match_path is not None:
+            render_download_button(
+                active_rta_match_path,
+                "Descargar RTA match JSON UI",
                 "application/json",
             )
 
@@ -3111,7 +3560,7 @@ def render_artifacts(well_id: str) -> None:
             render_m4_diagnostics_outputs(artifacts)
 
         with m4_tabs[2]:
-            render_m4_type_curves_placeholder()
+            render_m4_type_curves_panel(well_id=well_id, artifacts=artifacts)
 
         with m4_tabs[3]:
             render_m4_results_placeholder(artifacts)
