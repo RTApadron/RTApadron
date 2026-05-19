@@ -1,9 +1,4 @@
-"""Adaptador conservador para estimar Pwf cuando no viene medida ni estimada.
-
-Este adaptador envuelve el estimador existente en src/well_mod/pwf.py sin
-modificarlo. La intención es que el pipeline M1-M2 pueda completar
-pwf_estimated_psia cuando falte, manteniendo trazabilidad del origen.
-"""
+"""Adapter for estimating Pwf when no valid flowing bottomhole pressure exists."""
 
 from __future__ import annotations
 
@@ -13,13 +8,13 @@ import pandas as pd
 
 try:
     from src.well_mod.pwf import PwfInputs, estimate_pwf_v1
-except ModuleNotFoundError:  # Compatibilidad con ejecuciones antiguas
+except ModuleNotFoundError:  # Backward compatibility
     from well_mod.pwf import PwfInputs, estimate_pwf_v1  # type: ignore[no-redef]
 
 
 @dataclass(frozen=True)
 class PwfEstimationDefaults:
-    """Parámetros por defecto para el estimador Pwf v1."""
+    """Fallback parameters for Pwf estimator v1."""
 
     api: float = 30.0
     whp_psia: float = 100.0
@@ -41,6 +36,7 @@ TRACE_COLUMNS = [
     "pwf_estimation_used_default_tvd",
     "pwf_estimation_used_default_tubing_id",
     "pwf_estimation_used_default_length",
+    "pwf_estimation_force_reestimated",
 ]
 
 
@@ -48,14 +44,17 @@ def estimate_missing_pwf_v1(
     history_df: pd.DataFrame,
     *,
     defaults: PwfEstimationDefaults | None = None,
+    force_reestimate: bool = False,
 ) -> pd.DataFrame:
-    """Completa pwf_estimated_psia solo cuando no hay Pwf medida ni estimada.
+    """Complete pwf_estimated_psia using estimate_pwf_v1.
 
-    Reglas:
-    - Si pwf_measured_psia es válida, no se toca la fila.
-    - Si pwf_estimated_psia ya existe y es válida, no se toca la fila.
-    - Si faltan ambas, se llama estimate_pwf_v1().
-    - Se agregan columnas de trazabilidad de parámetros usados.
+    Rules:
+    - Valid measured Pwf is never overwritten.
+    - If force_reestimate=False, only rows without measured and without estimated
+      Pwf are estimated.
+    - If force_reestimate=True, rows without measured Pwf are re-estimated even
+      if pwf_estimated_psia already exists. This is used when geometry/survey
+      inputs change.
     """
     _validate_required_columns(history_df)
 
@@ -79,7 +78,11 @@ def estimate_missing_pwf_v1(
     estimated_valid = out["pwf_estimated_psia"].notna() & (
         out["pwf_estimated_psia"] > 0
     )
-    needs_estimation = ~measured_valid & ~estimated_valid
+
+    if force_reestimate:
+        needs_estimation = ~measured_valid
+    else:
+        needs_estimation = ~measured_valid & ~estimated_valid
 
     for idx in out.index[needs_estimation]:
         row = out.loc[idx]
@@ -128,12 +131,17 @@ def estimate_missing_pwf_v1(
         out.loc[idx, "pwf_estimation_used_default_tvd"] = tvd_default
         out.loc[idx, "pwf_estimation_used_default_tubing_id"] = tubing_default
         out.loc[idx, "pwf_estimation_used_default_length"] = length_default
+        out.loc[idx, "pwf_estimation_force_reestimated"] = bool(force_reestimate)
 
-    existing_estimated = ~measured_valid & estimated_valid
+    existing_estimated = ~measured_valid & estimated_valid & ~needs_estimation
     out.loc[
         existing_estimated & out["pwf_estimation_method"].isna(),
         "pwf_estimation_method",
     ] = "provided_in_history"
+    out.loc[
+        existing_estimated & out["pwf_estimation_force_reestimated"].isna(),
+        "pwf_estimation_force_reestimated",
+    ] = False
 
     return out
 
