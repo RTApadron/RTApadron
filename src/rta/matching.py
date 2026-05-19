@@ -15,6 +15,7 @@ from typing import Any
 import pandas as pd
 
 from src.rta.models import RTAMatchConfig
+from src.rta.point_selection import apply_rta_point_selection, read_selection_csv
 
 
 def _to_numeric(series: pd.Series) -> pd.Series:
@@ -36,6 +37,7 @@ def build_manual_match_points(
         raise ValueError(msg)
 
     df = diagnostics_df.copy()
+    x_multiplier, y_multiplier = config.effective_multipliers()
 
     x_raw = _to_numeric(df[config.x_column])
     y_raw = _to_numeric(df[config.y_column])
@@ -43,6 +45,7 @@ def build_manual_match_points(
 
     points = pd.DataFrame(
         {
+            "rta_point_id": df.get("rta_point_id", pd.Series([pd.NA] * len(df))),
             "well_id": df.get("well_id", pd.Series([config.well_id] * len(df))),
             "date": df.get("date", pd.Series([pd.NA] * len(df))),
             "method": config.method,
@@ -51,10 +54,10 @@ def build_manual_match_points(
             "y_column": config.y_column,
             "x_raw": x_raw,
             "y_raw": y_raw,
-            "x_multiplier": config.x_multiplier,
-            "y_multiplier": config.y_multiplier,
-            "x_match": x_raw * config.x_multiplier,
-            "y_match": y_raw * config.y_multiplier,
+            "x_multiplier": x_multiplier,
+            "y_multiplier": y_multiplier,
+            "x_match": x_raw * x_multiplier,
+            "y_match": y_raw * y_multiplier,
             "valid_match_point": valid,
             "match_model_version": config.match_model_version,
         }
@@ -78,8 +81,13 @@ def build_manual_match_points(
         "valid_match_rows": int(len(points)),
         "x_column": config.x_column,
         "y_column": config.y_column,
-        "x_multiplier": config.x_multiplier,
-        "y_multiplier": config.y_multiplier,
+        "match_mode": config.match_mode,
+        "x_multiplier": x_multiplier,
+        "y_multiplier": y_multiplier,
+        "anchor_x_raw": config.anchor_x_raw,
+        "anchor_y_raw": config.anchor_y_raw,
+        "target_x": config.target_x,
+        "target_y": config.target_y,
         "x_match_min": float(points["x_match"].min()),
         "x_match_max": float(points["x_match"].max()),
         "y_match_min": float(points["y_match"].min()),
@@ -99,15 +107,28 @@ def run_manual_match(
     diagnostics_csv: Path,
     config: RTAMatchConfig,
     output_dir: Path,
+    point_selection_csv: Path | None = None,
 ) -> tuple[Path, Path]:
-    """Read diagnostics, build manually scaled match points and write artifacts."""
+    """Read diagnostics, apply optional point selection and write match artifacts."""
     if not diagnostics_csv.exists():
         msg = f"No existe tabla diagnóstica RTA: {diagnostics_csv}"
         raise FileNotFoundError(msg)
 
     output_dir.mkdir(parents=True, exist_ok=True)
     diagnostics_df = pd.read_csv(diagnostics_csv)
-    points, qc_report = build_manual_match_points(diagnostics_df, config)
+
+    selection_df = (
+        read_selection_csv(point_selection_csv)
+        if point_selection_csv is not None and point_selection_csv.exists()
+        else None
+    )
+    selected_diagnostics_df, selection_qc = apply_rta_point_selection(
+        diagnostics_df,
+        selection_df,
+    )
+
+    points, qc_report = build_manual_match_points(selected_diagnostics_df, config)
+    qc_report["point_selection"] = selection_qc
 
     points_path = output_dir / f"{config.well_id}_rta_manual_match_points.csv"
     qc_path = output_dir / f"{config.well_id}_rta_manual_match_qc_report.json"

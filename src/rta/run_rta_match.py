@@ -56,6 +56,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Optional user-editable RTA manual match config JSON.",
     )
     parser.add_argument(
+        "--rta-point-selection-csv",
+        type=Path,
+        default=None,
+        help="Optional editable point selection CSV with rta_point_id/use_for_rta.",
+    )
+    parser.add_argument(
         "--output-dir",
         type=Path,
         default=PROJECT_ROOT / "output",
@@ -83,11 +89,16 @@ def main() -> None:
     if config_path is not None and not config_path.is_absolute():
         config_path = PROJECT_ROOT / config_path
 
+    point_selection_csv = args.rta_point_selection_csv
+    if point_selection_csv is not None and not point_selection_csv.is_absolute():
+        point_selection_csv = PROJECT_ROOT / point_selection_csv
+
     config = load_rta_match_config(config_path, well_id)
     points_path, qc_path = run_manual_match(
         diagnostics_csv=diagnostics_csv,
         config=config,
         output_dir=output_dir,
+        point_selection_csv=point_selection_csv,
     )
 
     print(f"RTA manual match points written: {points_path}")
