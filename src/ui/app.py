@@ -1,4 +1,4 @@
-"""Streamlit UI for ecoRTA M1-M2-M3 workflow."""
+"""Streamlit UI for ecoRTA M1-M2-M3-M4 workflow."""
 
 from __future__ import annotations
 
@@ -26,6 +26,7 @@ except ImportError:  # pragma: no cover
     make_subplots = None
 
 from src.domain.models import PVTConfig
+from src.rta.models import RTAConfig, default_rta_config
 OUTPUT_DIR = PROJECT_ROOT / "output"
 UI_INPUT_DIR = PROJECT_ROOT / "data" / "ui_uploads"
 
@@ -63,6 +64,7 @@ SESSION_PENDING_FORECAST_ANCHOR = "pending_forecast_anchor_selection"
 SESSION_PWF_OVERRIDE_MODE = "pwf_override_mode_value"
 SESSION_EDITED_HISTORY_PATH = "edited_history_csv_path"
 SESSION_PVT_CONFIG_PATH = "pvt_config_ui_path"
+SESSION_RTA_CONFIG_PATH = "rta_config_ui_path"
 
 GEOMETRY_FIELDS = {
     "well_id": "",
@@ -99,6 +101,8 @@ class WorkflowArtifacts:
     dca_qc_report_json: Path
     dca_rate_fit_png: Path
     dca_forecast_plot_png: Path
+    rta_diagnostics_csv: Path
+    rta_qc_report_json: Path
     well_geometry_json: Path
     survey_input_csv: Path
 
@@ -112,6 +116,8 @@ class WorkflowArtifacts:
             dca_qc_report_json=OUTPUT_DIR / f"{safe_well_id}_dca_qc_report.json",
             dca_rate_fit_png=OUTPUT_DIR / f"{safe_well_id}_dca_rate_fit.png",
             dca_forecast_plot_png=OUTPUT_DIR / f"{safe_well_id}_dca_forecast_plot.png",
+            rta_diagnostics_csv=OUTPUT_DIR / f"{safe_well_id}_rta_diagnostics.csv",
+            rta_qc_report_json=OUTPUT_DIR / f"{safe_well_id}_rta_qc_report.json",
             well_geometry_json=OUTPUT_DIR / f"{safe_well_id}_well_geometry.json",
             survey_input_csv=OUTPUT_DIR / f"{safe_well_id}_survey_input.csv",
         )
@@ -119,7 +125,7 @@ class WorkflowArtifacts:
 
 def configure_page() -> None:
     st.set_page_config(
-        page_title="ecoRTA | M1-M2-M3",
+        page_title="ecoRTA | M1-M2-M3-M4",
         page_icon="📉",
         layout="wide",
     )
@@ -211,6 +217,15 @@ def get_active_edited_history_path() -> Path | None:
 
 def get_active_pvt_config_path() -> Path | None:
     raw_path = st.session_state.get(SESSION_PVT_CONFIG_PATH)
+    if not raw_path:
+        return None
+
+    path = Path(str(raw_path))
+    return path if path.exists() else None
+
+
+def get_active_rta_config_path() -> Path | None:
+    raw_path = st.session_state.get(SESSION_RTA_CONFIG_PATH)
     if not raw_path:
         return None
 
@@ -1752,6 +1767,434 @@ def render_m2_summary(enriched_df: pd.DataFrame) -> None:
         st.info("No se encontraron columnas PVT en la historia enriquecida.")
 
 
+
+def default_rta_config_payload(well_id: str) -> dict[str, Any]:
+    """Return editable default RTA config payload for UI."""
+    return default_rta_config(well_id).model_dump()
+
+
+def load_existing_rta_config_for_ui(well_id: str) -> dict[str, Any]:
+    """Load active RTA config or return editable defaults."""
+    active_path = get_active_rta_config_path()
+    default_path = UI_INPUT_DIR / f"{well_id}_rta_config_ui.json"
+
+    for path in (active_path, default_path):
+        if path is None or not path.exists():
+            continue
+
+        try:
+            loaded = read_json(path)
+            return default_rta_config_payload(well_id) | loaded
+        except Exception:
+            continue
+
+    return default_rta_config_payload(well_id)
+
+
+def save_rta_config_from_ui(payload: dict[str, Any], well_id: str) -> Path:
+    """Validate and save a user-editable M4 RTA config JSON."""
+    payload = dict(payload)
+    payload["well_id"] = well_id
+    validated = RTAConfig(**payload)
+    target_path = UI_INPUT_DIR / f"{well_id}_rta_config_ui.json"
+    write_json(target_path, validated.model_dump())
+    return target_path
+
+
+def build_rta_diagnostics_command(
+    *,
+    well_id: str,
+    history_csv: Path,
+    rta_config_json: Path | None,
+) -> list[str]:
+    """Build CLI command for M4 diagnostic preparation."""
+    cmd = [
+        sys.executable,
+        "-m",
+        "src.rta.run_rta",
+        "--well-id",
+        well_id,
+        "--history-csv",
+        str(history_csv),
+        "--output-dir",
+        str(OUTPUT_DIR),
+    ]
+
+    if rta_config_json is not None:
+        cmd.extend(["--rta-config-json", str(rta_config_json)])
+
+    return cmd
+
+
+def render_rta_config_json_download(well_id: str) -> None:
+    active_path = get_active_rta_config_path()
+    if active_path is not None:
+        render_download_button(
+            active_path,
+            "Descargar RTA JSON UI",
+            "application/json",
+            key_suffix=f"rta_config_{well_id}",
+        )
+    else:
+        st.caption("Guarda primero la configuración RTA UI.")
+
+
+def render_m4_rta_configuration_panel(
+    *,
+    well_id: str,
+    artifacts: WorkflowArtifacts,
+) -> None:
+    """Render user-editable M4 RTA config and run diagnostics."""
+    st.header("Módulo 4 | Configuración RTA")
+
+    st.caption(
+        "M4.1 prepara variables diagnósticas RTA desde la historia enriquecida M1-M2. "
+        "Estos valores son editables y se guardan por pozo en `data/ui_uploads`."
+    )
+
+    existing = load_existing_rta_config_for_ui(well_id)
+
+    col_a, col_b, col_c = st.columns(3)
+
+    with col_a:
+        pi_psia = st.number_input(
+            "pi_psia",
+            min_value=1.0,
+            value=as_float(existing.get("pi_psia"), 3500.0),
+            step=50.0,
+            help="Presión inicial de yacimiento. Editable por el intérprete.",
+        )
+        ct_1psi = st.number_input(
+            "ct_1psi",
+            min_value=1.0e-8,
+            max_value=1.0e-2,
+            value=as_float(existing.get("ct_1psi"), 1.2e-5),
+            step=1.0e-6,
+            format="%.8f",
+            help="Compresibilidad total en 1/psi.",
+        )
+        phi_frac = st.number_input(
+            "phi_frac",
+            min_value=0.001,
+            max_value=1.0,
+            value=as_float(existing.get("phi_frac"), 0.18),
+            step=0.01,
+            format="%.4f",
+        )
+
+    with col_b:
+        h_ft = st.number_input(
+            "h_ft",
+            min_value=0.001,
+            value=as_float(existing.get("h_ft"), 50.0),
+            step=1.0,
+            help="Espesor neto.",
+        )
+        rw_ft = st.number_input(
+            "rw_ft",
+            min_value=0.001,
+            value=as_float(existing.get("rw_ft"), 0.328),
+            step=0.001,
+            format="%.4f",
+            help="Radio de pozo.",
+        )
+        area_acres_input = st.number_input(
+            "area_acres opcional",
+            min_value=0.0,
+            value=as_float(existing.get("area_acres"), 0.0),
+            step=1.0,
+        )
+
+    with col_c:
+        swi_frac_input = st.number_input(
+            "swi_frac opcional",
+            min_value=0.0,
+            max_value=0.999,
+            value=as_float(existing.get("swi_frac"), 0.0),
+            step=0.01,
+            format="%.4f",
+        )
+        rta_model_version = st.text_input(
+            "rta_model_version",
+            value=str(existing.get("rta_model_version", "m4-rta-config-0.1")),
+        )
+        notes = st.text_area(
+            "notes",
+            value=str(existing.get("notes") or ""),
+            height=90,
+        )
+
+    rta_payload = {
+        "well_id": well_id,
+        "pi_psia": pi_psia,
+        "ct_1psi": ct_1psi,
+        "phi_frac": phi_frac,
+        "h_ft": h_ft,
+        "rw_ft": rw_ft,
+        "area_acres": clean_optional_float(area_acres_input),
+        "swi_frac": clean_optional_float(swi_frac_input),
+        "notes": notes,
+        "rta_model_version": rta_model_version,
+    }
+
+    st.subheader("JSON RTA que usará M4")
+    st.json(rta_payload, expanded=False)
+
+    active_path = get_active_rta_config_path()
+    if active_path is not None:
+        st.info(f"RTA UI activo para M4: `{active_path}`")
+    else:
+        st.warning(
+            "Aún no hay RTA JSON UI activo. Si generas diagnósticos sin guardar, "
+            "el CLI usará defaults internos."
+        )
+
+    col_save, col_clear, col_download = st.columns(3)
+
+    with col_save:
+        if st.button(
+            "Guardar configuración RTA UI",
+            type="primary",
+            use_container_width=True,
+        ):
+            try:
+                saved_path = save_rta_config_from_ui(rta_payload, well_id)
+            except Exception as exc:  # noqa: BLE001
+                st.error(f"No fue posible validar/guardar RTAConfig: {exc}")
+                return
+
+            st.session_state[SESSION_RTA_CONFIG_PATH] = str(saved_path)
+            st.success(f"Configuración RTA guardada: `{saved_path}`")
+            st.rerun()
+
+    with col_clear:
+        if st.button("Descartar RTA UI activo", use_container_width=True):
+            st.session_state.pop(SESSION_RTA_CONFIG_PATH, None)
+            st.success("RTA UI activo descartado.")
+            st.rerun()
+
+    with col_download:
+        render_rta_config_json_download(well_id)
+
+    st.subheader("Generar diagnósticos RTA")
+
+    if not artifacts.enriched_history_csv.exists():
+        st.info(
+            f"No se encontró `{artifacts.enriched_history_csv.name}`. "
+            "Ejecuta primero el workflow M1-M2-M3."
+        )
+        return
+
+    st.caption(f"Historia de entrada M4: `{artifacts.enriched_history_csv}`")
+
+    col_run_saved, col_save_run = st.columns(2)
+
+    with col_run_saved:
+        active_config = get_active_rta_config_path()
+        cmd = build_rta_diagnostics_command(
+            well_id=well_id,
+            history_csv=artifacts.enriched_history_csv,
+            rta_config_json=active_config,
+        )
+
+        with st.expander("Comando M4 equivalente", expanded=False):
+            show_command(cmd)
+
+        if st.button(
+            "Generar diagnósticos RTA",
+            use_container_width=True,
+            key=f"run_rta_diagnostics_{well_id}",
+        ):
+            with st.spinner("Generando diagnósticos RTA..."):
+                result = run_command(cmd)
+
+            if result.returncode != 0:
+                st.error("M4 RTA terminó con error.")
+                st.subheader("STDERR")
+                st.code(result.stderr or "(vacío)", language="text")
+                st.subheader("STDOUT")
+                st.code(result.stdout or "(vacío)", language="text")
+                return
+
+            st.success("Diagnósticos RTA generados correctamente.")
+            if result.stdout:
+                with st.expander("STDOUT M4", expanded=False):
+                    st.code(result.stdout, language="text")
+
+    with col_save_run:
+        if st.button(
+            "Guardar y generar diagnósticos RTA",
+            type="primary",
+            use_container_width=True,
+            key=f"save_and_run_rta_diagnostics_{well_id}",
+        ):
+            try:
+                saved_path = save_rta_config_from_ui(rta_payload, well_id)
+            except Exception as exc:  # noqa: BLE001
+                st.error(f"No fue posible validar/guardar RTAConfig: {exc}")
+                return
+
+            st.session_state[SESSION_RTA_CONFIG_PATH] = str(saved_path)
+
+            cmd = build_rta_diagnostics_command(
+                well_id=well_id,
+                history_csv=artifacts.enriched_history_csv,
+                rta_config_json=saved_path,
+            )
+
+            with st.spinner("Guardando configuración y generando diagnósticos RTA..."):
+                result = run_command(cmd)
+
+            if result.returncode != 0:
+                st.error("M4 RTA terminó con error.")
+                st.subheader("STDERR")
+                st.code(result.stderr or "(vacío)", language="text")
+                st.subheader("STDOUT")
+                st.code(result.stdout or "(vacío)", language="text")
+                return
+
+            st.success("Configuración guardada y diagnósticos RTA generados.")
+            if result.stdout:
+                with st.expander("STDOUT M4", expanded=False):
+                    st.code(result.stdout, language="text")
+
+
+def render_rta_diagnostics_plot(diagnostics_df: pd.DataFrame) -> None:
+    """Render initial M4 RTA diagnostic plots."""
+    st.subheader("Diagnóstico RTA interactivo")
+
+    if go is None:
+        st.warning("Plotly no está instalado.")
+        return
+
+    if diagnostics_df.empty:
+        st.info("No hay datos diagnósticos RTA para graficar.")
+        return
+
+    plot_df = diagnostics_df.copy()
+    for column in (
+        "elapsed_days",
+        "material_balance_time_days",
+        "normalized_rate_stb_d_psi",
+        "qo_stb_d",
+        "delta_p_psia",
+    ):
+        if column in plot_df.columns:
+            plot_df[column] = pd.to_numeric(plot_df[column], errors="coerce")
+
+    if "date" in plot_df.columns:
+        plot_df["date"] = pd.to_datetime(plot_df["date"], errors="coerce")
+
+    valid_norm = plot_df[
+        (plot_df.get("normalized_rate_stb_d_psi", pd.Series(dtype=float)) > 0)
+    ].copy()
+
+    if valid_norm.empty:
+        st.info("No hay filas con drawdown positivo para graficar q/Δp.")
+        return
+
+    fig_time = go.Figure()
+    fig_time.add_trace(
+        go.Scatter(
+            x=valid_norm["elapsed_days"],
+            y=valid_norm["normalized_rate_stb_d_psi"],
+            mode="markers+lines",
+            name="q/Δp vs tiempo",
+            customdata=valid_norm["date"].dt.strftime("%Y-%m-%d")
+            if "date" in valid_norm.columns
+            else None,
+            hovertemplate=(
+                "Fecha=%{customdata}<br>"
+                "t=%{x:.3f} días<br>"
+                "q/Δp=%{y:.6f} STB/d/psi"
+                "<extra></extra>"
+            ),
+        )
+    )
+    fig_time.update_layout(
+        title="RTA diagnóstico: tasa normalizada por drawdown",
+        xaxis_title="Tiempo transcurrido [días]",
+        yaxis_title="q/Δp [STB/d/psi]",
+        height=460,
+        hovermode="x unified",
+    )
+    fig_time.update_xaxes(type="log")
+    fig_time.update_yaxes(type="log")
+    st.plotly_chart(fig_time, use_container_width=True, key="rta_norm_rate_time_plot")
+
+    mb_df = valid_norm[
+        pd.to_numeric(valid_norm["material_balance_time_days"], errors="coerce") > 0
+    ].copy()
+    if mb_df.empty:
+        st.info("No hay tiempo de balance de materia positivo para graficar.")
+        return
+
+    fig_mb = go.Figure()
+    fig_mb.add_trace(
+        go.Scatter(
+            x=mb_df["material_balance_time_days"],
+            y=mb_df["normalized_rate_stb_d_psi"],
+            mode="markers+lines",
+            name="q/Δp vs MBT",
+            customdata=mb_df["date"].dt.strftime("%Y-%m-%d")
+            if "date" in mb_df.columns
+            else None,
+            hovertemplate=(
+                "Fecha=%{customdata}<br>"
+                "t_mb=%{x:.3f} días<br>"
+                "q/Δp=%{y:.6f} STB/d/psi"
+                "<extra></extra>"
+            ),
+        )
+    )
+    fig_mb.update_layout(
+        title="RTA diagnóstico: tasa normalizada vs tiempo de balance de materia",
+        xaxis_title="Material balance time [días]",
+        yaxis_title="q/Δp [STB/d/psi]",
+        height=460,
+        hovermode="x unified",
+    )
+    fig_mb.update_xaxes(type="log")
+    fig_mb.update_yaxes(type="log")
+    st.plotly_chart(fig_mb, use_container_width=True, key="rta_norm_rate_mbt_plot")
+
+
+def render_m4_diagnostics_outputs(artifacts: WorkflowArtifacts) -> None:
+    """Render generated M4 diagnostic artifacts."""
+    diagnostics_df = read_csv_safe(artifacts.rta_diagnostics_csv)
+
+    if diagnostics_df is None:
+        st.info(f"No se encontró `{artifacts.rta_diagnostics_csv.name}`.")
+        return
+
+    render_rta_diagnostics_plot(diagnostics_df)
+
+    st.subheader("Tabla diagnóstica RTA")
+    st.dataframe(diagnostics_df, use_container_width=True, hide_index=True)
+
+    render_json_report(artifacts.rta_qc_report_json, "rta_qc_report")
+
+
+def render_m4_type_curves_placeholder() -> None:
+    st.header("Módulo 4 | Curvas tipo")
+
+    st.info(
+        "M4.1 deja preparada la tabla diagnóstica. En el siguiente commit se podrán "
+        "agregar overlays y matching manual/automático para Fetkovich, "
+        "Palacio-Blasingame y Agarwal-Gardner."
+    )
+
+
+def render_m4_results_placeholder(artifacts: WorkflowArtifacts) -> None:
+    st.header("Módulo 4 | Resultados RTA")
+
+    if not artifacts.rta_qc_report_json.exists():
+        st.info("Genera primero los diagnósticos RTA.")
+        return
+
+    render_json_report(artifacts.rta_qc_report_json, "Resumen QC RTA")
+
+
 def render_quick_dca_summary(artifacts: WorkflowArtifacts) -> None:
     fit_df = read_csv_safe(artifacts.dca_fit_results_csv)
     if fit_df is None or fit_df.empty:
@@ -2475,6 +2918,11 @@ def render_downloads_tab(artifacts: WorkflowArtifacts) -> None:
             "Descargar forecast CSV",
             "text/csv",
         )
+        render_download_button(
+            artifacts.rta_diagnostics_csv,
+            "Descargar diagnósticos RTA CSV",
+            "text/csv",
+        )
 
         edited_path = get_active_edited_history_path()
         if edited_path is not None:
@@ -2502,11 +2950,25 @@ def render_downloads_tab(artifacts: WorkflowArtifacts) -> None:
             "application/json",
         )
 
+        render_download_button(
+            artifacts.rta_qc_report_json,
+            "Descargar QC RTA JSON",
+            "application/json",
+        )
+
         active_pvt_path = get_active_pvt_config_path()
         if active_pvt_path is not None:
             render_download_button(
                 active_pvt_path,
                 "Descargar PVT JSON UI",
+                "application/json",
+            )
+
+        active_rta_path = get_active_rta_config_path()
+        if active_rta_path is not None:
+            render_download_button(
+                active_rta_path,
+                "Descargar RTA JSON UI",
                 "application/json",
             )
 
@@ -2560,7 +3022,7 @@ def render_artifacts(well_id: str) -> None:
 
     render_quick_dca_summary(artifacts)
 
-    main_tabs = st.tabs(["M1 Pozo", "M2 PVT", "M3 DCA", "Descargas"])
+    main_tabs = st.tabs(["M1 Pozo", "M2 PVT", "M3 DCA", "M4 RTA", "Descargas"])
 
     with main_tabs[0]:
         m1_tabs = st.tabs(["Historia", "Geometría / Survey", "Edición Pwf"])
@@ -2640,6 +3102,21 @@ def render_artifacts(well_id: str) -> None:
             render_dca_graphs_tab(artifacts)
 
     with main_tabs[3]:
+        m4_tabs = st.tabs(["Datos RTA", "Diagnóstico", "Curvas tipo", "Resultados"])
+
+        with m4_tabs[0]:
+            render_m4_rta_configuration_panel(well_id=well_id, artifacts=artifacts)
+
+        with m4_tabs[1]:
+            render_m4_diagnostics_outputs(artifacts)
+
+        with m4_tabs[2]:
+            render_m4_type_curves_placeholder()
+
+        with m4_tabs[3]:
+            render_m4_results_placeholder(artifacts)
+
+    with main_tabs[4]:
         render_downloads_tab(artifacts)
 
 def main() -> None:
@@ -2648,11 +3125,12 @@ def main() -> None:
     apply_light_css()
     ensure_dirs()
 
-    st.title("ecoRTA | Workflow M1-M2-M3")
+    st.title("ecoRTA | Workflow M1-M2-M3-M4")
     st.caption(
         "Módulo 1: historia, Pwf, estado mecánico y survey. "
         "Módulo 2: propiedades PVT. "
-        "Módulo 3: curvas de declinación Arps."
+        "Módulo 3: curvas de declinación Arps. "
+        "Módulo 4: preparación diagnóstica RTA."
     )
 
     inputs = render_sidebar_inputs()
