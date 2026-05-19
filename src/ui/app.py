@@ -26,7 +26,12 @@ except ImportError:  # pragma: no cover
     make_subplots = None
 
 from src.domain.models import PVTConfig
-from src.rta.models import RTAConfig, RTAMatchConfig, default_rta_config, default_rta_match_config
+from src.rta.models import (
+    RTAConfig,
+    RTAMatchConfig,
+    default_rta_config,
+    default_rta_match_config,
+)
 OUTPUT_DIR = PROJECT_ROOT / "output"
 UI_INPUT_DIR = PROJECT_ROOT / "data" / "ui_uploads"
 
@@ -66,6 +71,8 @@ SESSION_EDITED_HISTORY_PATH = "edited_history_csv_path"
 SESSION_PVT_CONFIG_PATH = "pvt_config_ui_path"
 SESSION_RTA_CONFIG_PATH = "rta_config_ui_path"
 SESSION_RTA_MATCH_CONFIG_PATH = "rta_match_config_ui_path"
+SESSION_RTA_MATCH_ANCHOR_X = "rta_match_anchor_x"
+SESSION_RTA_MATCH_ANCHOR_Y = "rta_match_anchor_y"
 
 GEOMETRY_FIELDS = {
     "well_id": "",
@@ -2246,6 +2253,68 @@ def render_rta_diagnostics_plot(diagnostics_df: pd.DataFrame) -> None:
     st.plotly_chart(fig_mb, use_container_width=True, key="rta_norm_rate_mbt_plot")
 
 
+def render_rta_qc_alerts(qc_path: Path) -> None:
+    """Render practical QC warnings for RTA diagnostic preparation."""
+    qc = read_json_safe(qc_path)
+    if not qc:
+        return
+
+    st.subheader("Alertas QC RTA")
+
+    alert_items: list[str] = []
+
+    invalid_drawdown_rows = int(qc.get("invalid_drawdown_rows") or 0)
+    if invalid_drawdown_rows > 0:
+        alert_items.append(
+            f"{invalid_drawdown_rows} filas tienen drawdown inválido "
+            "(`delta_p_psia <= 0`) y no deben usarse para q/Δp."
+        )
+
+    non_positive_qo_rows = int(qc.get("input_non_positive_qo_rows") or 0)
+    if non_positive_qo_rows > 0:
+        alert_items.append(
+            f"{non_positive_qo_rows} filas de entrada tienen `qo_stb_d <= 0`."
+        )
+
+    missing_pwf_rows = int(qc.get("input_missing_pwf_used_rows") or 0)
+    if missing_pwf_rows > 0:
+        alert_items.append(
+            f"{missing_pwf_rows} filas de entrada no tienen `pwf_used_psia` válido."
+        )
+
+    duplicate_input_dates = int(qc.get("input_duplicate_date_rows") or 0)
+    duplicate_filtered_dates = int(qc.get("duplicate_date_rows_after_filtering") or 0)
+    if duplicate_input_dates > 0 or duplicate_filtered_dates > 0:
+        alert_items.append(
+            "Hay fechas duplicadas en la historia "
+            f"(entrada={duplicate_input_dates}, después de filtrar={duplicate_filtered_dates})."
+        )
+
+    near_duplicate_count = int(qc.get("near_duplicate_mb_time_group_count") or 0)
+    near_duplicate_rows = int(qc.get("near_duplicate_mb_time_row_count") or 0)
+    if near_duplicate_count > 0:
+        alert_items.append(
+            f"Se detectaron {near_duplicate_count} grupos "
+            f"({near_duplicate_rows} filas) con `material_balance_time_days` casi igual "
+            "y `q/Δp` diferente."
+        )
+
+    if alert_items:
+        st.warning("\n\n".join(f"- {item}" for item in alert_items))
+    else:
+        st.success("No se detectaron alertas QC principales en los diagnósticos RTA.")
+
+    groups = qc.get("near_duplicate_mb_time_groups", [])
+    if isinstance(groups, list) and groups:
+        st.caption(
+            "Grupos con tiempo de balance de materia casi repetido. "
+            "Esto puede indicar cambios de drawdown, Pwf, tasa o condiciones operativas."
+        )
+        groups_df = pd.DataFrame(groups)
+        st.dataframe(groups_df, use_container_width=True, hide_index=True)
+
+
+
 def render_m4_diagnostics_outputs(artifacts: WorkflowArtifacts) -> None:
     """Render generated M4 diagnostic artifacts."""
     diagnostics_df = read_csv_safe(artifacts.rta_diagnostics_csv)
@@ -2255,6 +2324,7 @@ def render_m4_diagnostics_outputs(artifacts: WorkflowArtifacts) -> None:
         return
 
     render_rta_diagnostics_plot(diagnostics_df)
+    render_rta_qc_alerts(artifacts.rta_qc_report_json)
 
     st.subheader("Tabla diagnóstica RTA")
     st.dataframe(diagnostics_df, use_container_width=True, hide_index=True)
@@ -2270,8 +2340,16 @@ def render_manual_match_plot(
     y_column: str,
     x_multiplier: float,
     y_multiplier: float,
+    anchor_x_raw: float | None = None,
+    anchor_y_raw: float | None = None,
+    target_x: float | None = None,
+    target_y: float | None = None,
 ) -> None:
-    """Render diagnostic and manually scaled RTA points on log-log axes."""
+    """Render diagnostic and manually scaled RTA points on log-log axes.
+
+    The explicit axis-range calculation avoids blank Plotly charts when the
+    editable target or saved match lies far from the original diagnostic cloud.
+    """
     if go is None:
         st.warning("Plotly no está instalado.")
         return
@@ -2294,6 +2372,21 @@ def render_manual_match_plot(
 
     fig = go.Figure()
 
+    axis_x_values: list[float] = []
+    axis_y_values: list[float] = []
+
+    def add_axis_values(x_values: Any, y_values: Any) -> None:
+        x_series = pd.to_numeric(pd.Series(x_values), errors="coerce")
+        y_series = pd.to_numeric(pd.Series(y_values), errors="coerce")
+
+        valid_x = x_series[x_series > 0].dropna()
+        valid_y = y_series[y_series > 0].dropna()
+
+        axis_x_values.extend(valid_x.astype(float).tolist())
+        axis_y_values.extend(valid_y.astype(float).tolist())
+
+    add_axis_values(plot_df[x_column], plot_df[y_column])
+
     fig.add_trace(
         go.Scatter(
             x=plot_df[x_column],
@@ -2311,6 +2404,8 @@ def render_manual_match_plot(
 
     preview_x = plot_df[x_column] * x_multiplier
     preview_y = plot_df[y_column] * y_multiplier
+    add_axis_values(preview_x, preview_y)
+
     fig.add_trace(
         go.Scatter(
             x=preview_x,
@@ -2330,6 +2425,7 @@ def render_manual_match_plot(
             saved_df = saved_df[(saved_df["x_match"] > 0) & (saved_df["y_match"] > 0)]
 
             if not saved_df.empty:
+                add_axis_values(saved_df["x_match"], saved_df["y_match"])
                 fig.add_trace(
                     go.Scatter(
                         x=saved_df["x_match"],
@@ -2345,22 +2441,254 @@ def render_manual_match_plot(
                     )
                 )
 
+    has_anchor = (
+        anchor_x_raw is not None
+        and anchor_y_raw is not None
+        and anchor_x_raw > 0
+        and anchor_y_raw > 0
+    )
+    has_target = target_x is not None and target_y is not None and target_x > 0 and target_y > 0
+
+    if has_anchor:
+        add_axis_values([anchor_x_raw], [anchor_y_raw])
+        fig.add_trace(
+            go.Scatter(
+                x=[anchor_x_raw],
+                y=[anchor_y_raw],
+                mode="markers",
+                name="Ancla seleccionada",
+                marker={"size": 14, "symbol": "circle-open", "line": {"width": 2}},
+                hovertemplate=(
+                    "anchor_x=%{x:.4g}<br>"
+                    "anchor_y=%{y:.4g}"
+                    "<extra></extra>"
+                ),
+            )
+        )
+
+    if has_target:
+        add_axis_values([target_x], [target_y])
+        fig.add_trace(
+            go.Scatter(
+                x=[target_x],
+                y=[target_y],
+                mode="markers+text",
+                name="Target editable",
+                marker={
+                    "size": 20,
+                    "symbol": "cross",
+                    "line": {"width": 2},
+                },
+                text=["Target"],
+                textposition="top center",
+                hovertemplate=(
+                    "target_x=%{x:.4g}<br>"
+                    "target_y=%{y:.4g}"
+                    "<extra></extra>"
+                ),
+            )
+        )
+
+    if has_anchor and has_target:
+        add_axis_values([anchor_x_raw, target_x], [anchor_y_raw, target_y])
+        fig.add_trace(
+            go.Scatter(
+                x=[anchor_x_raw, target_x],
+                y=[anchor_y_raw, target_y],
+                mode="lines",
+                name="Vector ancla → target",
+                line={"dash": "dash", "width": 2},
+                hoverinfo="skip",
+            )
+        )
+
+    if has_target:
+        x_min = min(axis_x_values)
+        x_max = max(axis_x_values)
+        y_min = min(axis_y_values)
+        y_max = max(axis_y_values)
+
+        # Draw a local target cross with line traces instead of layout shapes.
+        # This is more stable on Streamlit + Plotly log axes.
+        target_cross_x0 = max(x_min, target_x / 1.35)
+        target_cross_x1 = min(x_max, target_x * 1.35)
+        target_cross_y0 = max(y_min, target_y / 1.35)
+        target_cross_y1 = min(y_max, target_y * 1.35)
+
+        fig.add_trace(
+            go.Scatter(
+                x=[target_cross_x0, target_cross_x1],
+                y=[target_y, target_y],
+                mode="lines",
+                name="Cruz target horizontal",
+                line={"dash": "dot", "width": 1},
+                hoverinfo="skip",
+                showlegend=False,
+            )
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=[target_x, target_x],
+                y=[target_cross_y0, target_cross_y1],
+                mode="lines",
+                name="Cruz target vertical",
+                line={"dash": "dot", "width": 1},
+                hoverinfo="skip",
+                showlegend=False,
+            )
+        )
+
+    # Explicit log ranges prevent Plotly from producing a visually blank chart
+    # when target/match points are several log cycles away from the raw cloud.
+    import math
+
+    x_positive = [value for value in axis_x_values if value > 0 and math.isfinite(value)]
+    y_positive = [value for value in axis_y_values if value > 0 and math.isfinite(value)]
+
+    if not x_positive or not y_positive:
+        st.info("No hay valores positivos finitos para escalar la gráfica log-log.")
+        return
+
+    x_min = min(x_positive)
+    x_max = max(x_positive)
+    y_min = min(y_positive)
+    y_max = max(y_positive)
+
+    if x_min == x_max:
+        x_min /= 1.5
+        x_max *= 1.5
+    if y_min == y_max:
+        y_min /= 1.5
+        y_max *= 1.5
+
+    x_range = [
+        math.log10(x_min) - 0.08,
+        math.log10(x_max) + 0.08,
+    ]
+    y_range = [
+        math.log10(y_min) - 0.08,
+        math.log10(y_max) + 0.08,
+    ]
+
     fig.update_layout(
-        title="Overlay manual preliminar de puntos RTA",
+        title="Overlay manual preliminar de puntos RTA con target editable",
         xaxis_title=x_column,
         yaxis_title=y_column,
-        xaxis_type="log",
-        yaxis_type="log",
-        height=560,
+        height=620,
         margin={"l": 20, "r": 20, "t": 70, "b": 20},
         legend={"orientation": "h"},
     )
+    fig.update_xaxes(type="log", range=x_range)
+    fig.update_yaxes(type="log", range=y_range)
 
     st.plotly_chart(
         fig,
         use_container_width=True,
-        key="rta_manual_match_overlay_plot",
+        key=f"rta_manual_match_overlay_plot_{x_column}_{y_column}",
+        config={"displaylogo": False},
     )
+
+
+def render_rta_anchor_selection_plot(
+    diagnostics_df: pd.DataFrame,
+    *,
+    x_column: str,
+    y_column: str,
+) -> tuple[float, float] | None:
+    """Render a point selector to choose a diagnostic anchor for manual matching."""
+    if go is None:
+        st.warning("Plotly no está instalado.")
+        return None
+
+    if x_column not in diagnostics_df.columns or y_column not in diagnostics_df.columns:
+        st.info("No hay columnas válidas para seleccionar punto ancla.")
+        return None
+
+    columns = [x_column, y_column]
+    if "date" in diagnostics_df.columns:
+        columns.append("date")
+
+    plot_df = diagnostics_df[columns].copy()
+    plot_df[x_column] = pd.to_numeric(plot_df[x_column], errors="coerce")
+    plot_df[y_column] = pd.to_numeric(plot_df[y_column], errors="coerce")
+    plot_df = plot_df[(plot_df[x_column] > 0) & (plot_df[y_column] > 0)]
+
+    if plot_df.empty:
+        st.info("No hay puntos positivos válidos para seleccionar ancla.")
+        return None
+
+    custom_data = None
+    hovertemplate = (
+        f"{x_column}=%{{x:.4g}}<br>"
+        f"{y_column}=%{{y:.4g}}"
+        "<extra></extra>"
+    )
+    if "date" in plot_df.columns:
+        custom_data = plot_df["date"].astype(str)
+        hovertemplate = (
+            "Fecha=%{customdata}<br>"
+            f"{x_column}=%{{x:.4g}}<br>"
+            f"{y_column}=%{{y:.4g}}"
+            "<extra></extra>"
+        )
+
+    fig = go.Figure()
+    fig.add_trace(
+        go.Scatter(
+            x=plot_df[x_column],
+            y=plot_df[y_column],
+            mode="markers",
+            name="Puntos diagnósticos",
+            marker={"size": 8},
+            customdata=custom_data,
+            hovertemplate=hovertemplate,
+        )
+    )
+    fig.update_layout(
+        title="Selecciona un punto ancla de la nube diagnóstica",
+        xaxis_title=x_column,
+        yaxis_title=y_column,
+        xaxis_type="log",
+        yaxis_type="log",
+        dragmode="select",
+        height=460,
+        margin={"l": 20, "r": 20, "t": 70, "b": 20},
+        legend={"orientation": "h"},
+    )
+
+    event = st.plotly_chart(
+        fig,
+        use_container_width=True,
+        on_select="rerun",
+        selection_mode=("points", "box", "lasso"),
+        key=f"rta_anchor_selector_{x_column}_{y_column}",
+        config={
+            "displaylogo": False,
+            "modeBarButtonsToAdd": ["select2d", "lasso2d"],
+        },
+    )
+
+    points = extract_plotly_selection_points(event)
+    if not points:
+        return None
+
+    selected_point = points[-1]
+    selected_x = as_float(selected_point.get("x"), default=-1.0)
+    selected_y = as_float(selected_point.get("y"), default=-1.0)
+
+    if selected_x <= 0 or selected_y <= 0:
+        return None
+
+    st.session_state[SESSION_RTA_MATCH_ANCHOR_X] = selected_x
+    st.session_state[SESSION_RTA_MATCH_ANCHOR_Y] = selected_y
+    return selected_x, selected_y
+
+
+def positive_or_none(value: Any) -> float | None:
+    """Return a positive float or None."""
+    parsed = as_float(value, default=-1.0)
+    return parsed if parsed > 0 else None
+
 
 
 def render_m4_type_curves_panel(
@@ -2433,22 +2761,125 @@ def render_m4_type_curves_panel(
         )
 
     with col_c:
-        x_multiplier = st.number_input(
-            "x_multiplier",
-            min_value=1.0e-12,
-            value=as_float(existing.get("x_multiplier"), 1.0),
-            step=0.1,
-            format="%.8g",
-            help="Multiplicador para mover puntos horizontalmente en escala log-log.",
+        match_mode_options = ("multiplier", "point_to_target")
+        match_mode = st.selectbox(
+            "Modo de desplazamiento",
+            options=match_mode_options,
+            index=(
+                match_mode_options.index(str(existing.get("match_mode")))
+                if str(existing.get("match_mode")) in match_mode_options
+                else 0
+            ),
+            help=(
+                "multiplier: ingresa multiplicadores directamente. "
+                "point_to_target: selecciona un punto ancla y define a dónde moverlo."
+            ),
         )
-        y_multiplier = st.number_input(
-            "y_multiplier",
-            min_value=1.0e-12,
-            value=as_float(existing.get("y_multiplier"), 1.0),
-            step=0.1,
-            format="%.8g",
-            help="Multiplicador para mover puntos verticalmente en escala log-log.",
+
+    anchor_x_raw: float | None = positive_or_none(existing.get("anchor_x_raw"))
+    anchor_y_raw: float | None = positive_or_none(existing.get("anchor_y_raw"))
+    target_x: float | None = positive_or_none(existing.get("target_x"))
+    target_y: float | None = positive_or_none(existing.get("target_y"))
+
+    if match_mode == "point_to_target":
+        st.subheader("Desplazamiento por punto ancla → punto objetivo")
+        st.caption(
+            "Selecciona un punto de la nube diagnóstica y define el punto objetivo. "
+            "La app calcula automáticamente los multiplicadores log-log."
         )
+
+        selected_anchor = render_rta_anchor_selection_plot(
+            diagnostics_df,
+            x_column=x_column,
+            y_column=y_column,
+        )
+        if selected_anchor is not None:
+            anchor_x_raw, anchor_y_raw = selected_anchor
+
+        anchor_x_raw = positive_or_none(
+            st.session_state.get(SESSION_RTA_MATCH_ANCHOR_X, anchor_x_raw)
+        )
+        anchor_y_raw = positive_or_none(
+            st.session_state.get(SESSION_RTA_MATCH_ANCHOR_Y, anchor_y_raw)
+        )
+
+        if target_x is None and anchor_x_raw is not None:
+            target_x = anchor_x_raw * as_float(existing.get("x_multiplier"), 1.0)
+        if target_y is None and anchor_y_raw is not None:
+            target_y = anchor_y_raw * as_float(existing.get("y_multiplier"), 1.0)
+
+        col_anchor, col_target, col_effective = st.columns(3)
+
+        with col_anchor:
+            anchor_x_raw = st.number_input(
+                "anchor_x_raw",
+                min_value=1.0e-12,
+                value=anchor_x_raw or 1.0,
+                step=0.1,
+                format="%.8g",
+                help="Coordenada X del punto seleccionado en los datos reales.",
+            )
+            anchor_y_raw = st.number_input(
+                "anchor_y_raw",
+                min_value=1.0e-12,
+                value=anchor_y_raw or 1.0,
+                step=0.1,
+                format="%.8g",
+                help="Coordenada Y del punto seleccionado en los datos reales.",
+            )
+
+        with col_target:
+            target_x = st.number_input(
+                "target_x",
+                min_value=1.0e-12,
+                value=target_x or anchor_x_raw,
+                step=0.1,
+                format="%.8g",
+                help="Coordenada X objetivo del punto ancla.",
+            )
+            target_y = st.number_input(
+                "target_y",
+                min_value=1.0e-12,
+                value=target_y or anchor_y_raw,
+                step=0.1,
+                format="%.8g",
+                help="Coordenada Y objetivo del punto ancla.",
+            )
+
+        x_multiplier = target_x / anchor_x_raw
+        y_multiplier = target_y / anchor_y_raw
+
+        with col_effective:
+            st.metric("x_multiplier efectivo", f"{x_multiplier:.6g}")
+            st.metric("y_multiplier efectivo", f"{y_multiplier:.6g}")
+            st.caption(
+                "La cruz `Target` aparecerá en la vista previa. "
+                "El vector punteado muestra el desplazamiento del punto ancla."
+            )
+    else:
+        col_xmult, col_ymult = st.columns(2)
+        with col_xmult:
+            x_multiplier = st.number_input(
+                "x_multiplier",
+                min_value=1.0e-12,
+                value=as_float(existing.get("x_multiplier"), 1.0),
+                step=0.1,
+                format="%.8g",
+                help="Multiplicador para mover puntos horizontalmente en escala log-log.",
+            )
+        with col_ymult:
+            y_multiplier = st.number_input(
+                "y_multiplier",
+                min_value=1.0e-12,
+                value=as_float(existing.get("y_multiplier"), 1.0),
+                step=0.1,
+                format="%.8g",
+                help="Multiplicador para mover puntos verticalmente en escala log-log.",
+            )
+        anchor_x_raw = None
+        anchor_y_raw = None
+        target_x = None
+        target_y = None
 
     x_label = st.text_input(
         "x_label",
@@ -2471,11 +2902,16 @@ def render_m4_type_curves_panel(
         "y_column": y_column,
         "x_multiplier": x_multiplier,
         "y_multiplier": y_multiplier,
+        "match_mode": match_mode,
+        "anchor_x_raw": anchor_x_raw,
+        "anchor_y_raw": anchor_y_raw,
+        "target_x": target_x,
+        "target_y": target_y,
         "x_label": x_label,
         "y_label": y_label,
         "match_name": match_name,
         "notes": notes,
-        "match_model_version": "m4-rta-manual-match-0.1",
+        "match_model_version": "m4-rta-manual-match-0.3",
     }
 
     st.subheader("Vista previa de overlay manual")
@@ -2487,6 +2923,10 @@ def render_m4_type_curves_panel(
         y_column=y_column,
         x_multiplier=x_multiplier,
         y_multiplier=y_multiplier,
+        anchor_x_raw=anchor_x_raw,
+        anchor_y_raw=anchor_y_raw,
+        target_x=target_x,
+        target_y=target_y,
     )
 
     st.subheader("JSON de matching manual RTA")

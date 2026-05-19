@@ -8,6 +8,7 @@ Agarwal-Gardner should be implemented on top of this validated table.
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 from typing import Any
 
@@ -36,6 +37,144 @@ def _to_numeric(series: pd.Series) -> pd.Series:
 
 def _validate_history_columns(history_df: pd.DataFrame) -> list[str]:
     return [column for column in REQUIRED_HISTORY_COLUMNS if column not in history_df.columns]
+
+
+def _build_input_qc(history_df: pd.DataFrame) -> dict[str, Any]:
+    """Build QC counters from the raw enriched history before filtering."""
+    qc: dict[str, Any] = {
+        "input_missing_date_rows": None,
+        "input_missing_qo_rows": None,
+        "input_non_positive_qo_rows": None,
+        "input_missing_pwf_used_rows": None,
+        "input_duplicate_date_rows": None,
+    }
+
+    if "date" in history_df.columns:
+        dates = pd.to_datetime(history_df["date"], errors="coerce")
+        qc["input_missing_date_rows"] = int(dates.isna().sum())
+        qc["input_duplicate_date_rows"] = int(dates[dates.notna()].duplicated(keep=False).sum())
+
+    if "qo_stb_d" in history_df.columns:
+        qo = _to_numeric(history_df["qo_stb_d"])
+        qc["input_missing_qo_rows"] = int(qo.isna().sum())
+        qc["input_non_positive_qo_rows"] = int((qo.notna() & (qo <= 0)).sum())
+
+    if "pwf_used_psia" in history_df.columns:
+        pwf = _to_numeric(history_df["pwf_used_psia"])
+        qc["input_missing_pwf_used_rows"] = int(pwf.isna().sum())
+
+    return qc
+
+
+def _build_near_duplicate_mb_time_report(
+    diagnostics: pd.DataFrame,
+    *,
+    log10_bucket_decimals: int = 3,
+    min_normalized_rate_ratio: float = 1.05,
+) -> dict[str, Any]:
+    """Detect repeated or near-repeated material-balance time with different q/dp.
+
+    The grouping uses rounded log10(t_mb), which is appropriate for log-log RTA
+    diagnostics. A bucket precision of 3 decimals groups points that are very close
+    visually on a log axis without requiring exact equality in floating point values.
+    """
+    required = {"material_balance_time_days", "normalized_rate_stb_d_psi"}
+    if not required.issubset(diagnostics.columns):
+        return {
+            "near_duplicate_mb_time_group_count": 0,
+            "near_duplicate_mb_time_row_count": 0,
+            "near_duplicate_mb_time_groups": [],
+            "near_duplicate_mb_time_settings": {
+                "log10_bucket_decimals": log10_bucket_decimals,
+                "min_normalized_rate_ratio": min_normalized_rate_ratio,
+            },
+        }
+
+    columns = ["material_balance_time_days", "normalized_rate_stb_d_psi"]
+    if "date" in diagnostics.columns:
+        columns.append("date")
+
+    df = diagnostics[columns].copy()
+    df["material_balance_time_days"] = _to_numeric(df["material_balance_time_days"])
+    df["normalized_rate_stb_d_psi"] = _to_numeric(df["normalized_rate_stb_d_psi"])
+
+    if "date" in df.columns:
+        df["date"] = pd.to_datetime(df["date"], errors="coerce")
+
+    df = df[
+        (df["material_balance_time_days"] > 0)
+        & (df["normalized_rate_stb_d_psi"] > 0)
+    ].copy()
+
+    if df.empty:
+        return {
+            "near_duplicate_mb_time_group_count": 0,
+            "near_duplicate_mb_time_row_count": 0,
+            "near_duplicate_mb_time_groups": [],
+            "near_duplicate_mb_time_settings": {
+                "log10_bucket_decimals": log10_bucket_decimals,
+                "min_normalized_rate_ratio": min_normalized_rate_ratio,
+            },
+        }
+
+    df["tmb_log10_bucket"] = df["material_balance_time_days"].map(
+        lambda value: round(math.log10(float(value)), log10_bucket_decimals)
+    )
+
+    groups: list[dict[str, Any]] = []
+    row_count = 0
+
+    for bucket, group in df.groupby("tmb_log10_bucket", dropna=True):
+        if len(group) < 2:
+            continue
+
+        y_min = float(group["normalized_rate_stb_d_psi"].min())
+        y_max = float(group["normalized_rate_stb_d_psi"].max())
+        if y_min <= 0:
+            continue
+
+        rate_ratio = y_max / y_min
+        if rate_ratio < min_normalized_rate_ratio:
+            continue
+
+        tmb_min = float(group["material_balance_time_days"].min())
+        tmb_max = float(group["material_balance_time_days"].max())
+        item: dict[str, Any] = {
+            "tmb_log10_bucket": float(bucket),
+            "row_count": int(len(group)),
+            "material_balance_time_days_min": tmb_min,
+            "material_balance_time_days_max": tmb_max,
+            "normalized_rate_stb_d_psi_min": y_min,
+            "normalized_rate_stb_d_psi_max": y_max,
+            "normalized_rate_ratio_max_min": rate_ratio,
+        }
+
+        if "date" in group.columns and group["date"].notna().any():
+            item["date_min"] = group["date"].min().date().isoformat()
+            item["date_max"] = group["date"].max().date().isoformat()
+
+        groups.append(item)
+        row_count += int(len(group))
+
+    groups = sorted(
+        groups,
+        key=lambda item: item["normalized_rate_ratio_max_min"],
+        reverse=True,
+    )
+
+    return {
+        "near_duplicate_mb_time_group_count": len(groups),
+        "near_duplicate_mb_time_row_count": row_count,
+        "near_duplicate_mb_time_groups": groups[:20],
+        "near_duplicate_mb_time_settings": {
+            "log10_bucket_decimals": log10_bucket_decimals,
+            "min_normalized_rate_ratio": min_normalized_rate_ratio,
+            "interpretation": (
+                "Grupos con t_mb casi igual en eje log y q/dp diferente. "
+                "Revisar cambios de drawdown, Pwf, tasa o condiciones operativas."
+            ),
+        },
+    }
 
 
 def _prepare_history(history_df: pd.DataFrame, config: RTAConfig) -> pd.DataFrame:
@@ -72,6 +211,7 @@ def build_rta_diagnostics(
     config: RTAConfig,
 ) -> tuple[pd.DataFrame, dict[str, Any]]:
     """Build RTA diagnostic table from enriched history and editable config."""
+    input_qc = _build_input_qc(history_df)
     prepared = _prepare_history(history_df, config)
 
     if prepared.empty:
@@ -163,11 +303,24 @@ def build_rta_diagnostics(
     available_columns = [column for column in priority_columns if column in prepared.columns]
     diagnostics = prepared[available_columns].copy()
 
+    duplicate_date_rows = 0
+    if "date" in diagnostics.columns:
+        duplicate_date_rows = int(
+            diagnostics["date"][diagnostics["date"].notna()]
+            .duplicated(keep=False)
+            .sum()
+        )
+
+    near_duplicate_mb_time_report = _build_near_duplicate_mb_time_report(diagnostics)
+
     qc_report = {
         "well_id": config.well_id,
         "rta_model_version": config.rta_model_version,
         "input_rows": int(len(history_df)),
         "diagnostic_rows": int(len(diagnostics)),
+        **input_qc,
+        "duplicate_date_rows_after_filtering": duplicate_date_rows,
+        **near_duplicate_mb_time_report,
         "valid_drawdown_rows": int(diagnostics["valid_drawdown"].sum()),
         "invalid_drawdown_rows": int((~diagnostics["valid_drawdown"]).sum()),
         "date_min": diagnostics["date"].min().date().isoformat(),
@@ -183,6 +336,7 @@ def build_rta_diagnostics(
             "M4.1 prepara variables diagnósticas RTA; no realiza matching final de curvas tipo.",
             "Revisar pi_psia y propiedades de yacimiento antes de interpretar resultados.",
             "delta_p_psia debe ser positivo para usar normalized_rate_stb_d_psi.",
+            "Los puntos con t_mb casi repetido y q/dp diferente no se eliminan; se reportan como QC para revisión del intérprete.",
         ],
     }
 
