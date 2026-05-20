@@ -69,6 +69,7 @@ def default_rta_config(well_id: str) -> RTAConfig:
 
 
 RTAMethod = Literal["fetkovich", "palacio_blasingame", "agarwal_gardner"]
+RTAMatchMode = Literal["multiplier", "point_to_target"]
 
 RTA_X_COLUMN_OPTIONS = (
     "elapsed_days",
@@ -112,6 +113,33 @@ class RTAMatchConfig(BaseModel):
         gt=0.0,
         description="Manual y-axis multiplier for log-log overlay.",
     )
+    match_mode: RTAMatchMode = Field(
+        "multiplier",
+        description=(
+            "Manual match workflow. 'multiplier' uses x/y multipliers directly; "
+            "'point_to_target' derives multipliers from an anchor point and target point."
+        ),
+    )
+    anchor_x_raw: float | None = Field(
+        default=None,
+        gt=0.0,
+        description="Selected raw x-coordinate used as matching anchor.",
+    )
+    anchor_y_raw: float | None = Field(
+        default=None,
+        gt=0.0,
+        description="Selected raw y-coordinate used as matching anchor.",
+    )
+    target_x: float | None = Field(
+        default=None,
+        gt=0.0,
+        description="Target x-coordinate for the selected anchor point.",
+    )
+    target_y: float | None = Field(
+        default=None,
+        gt=0.0,
+        description="Target y-coordinate for the selected anchor point.",
+    )
     x_label: str = "tD / tiempo equivalente"
     y_label: str = "qD / tasa normalizada"
     match_name: str = "manual_match_001"
@@ -121,7 +149,7 @@ class RTAMatchConfig(BaseModel):
             "yacimiento hasta incorporar curvas tipo validadas."
         ),
     )
-    match_model_version: str = "m4-rta-manual-match-0.1"
+    match_model_version: str = "m4-rta-manual-match-0.3"
 
     @field_validator("well_id")
     @classmethod
@@ -147,6 +175,41 @@ class RTAMatchConfig(BaseModel):
             msg = f"y_column no soportada: {value}. Opciones: {RTA_Y_COLUMN_OPTIONS}"
             raise ValueError(msg)
         return value
+
+
+    def effective_multipliers(self) -> tuple[float, float]:
+        """Return x/y multipliers used to move the diagnostic cloud.
+
+        In multiplier mode, the stored multipliers are used directly. In
+        point-to-target mode, the multipliers are derived from the selected
+        anchor point and the desired target point.
+        """
+        if self.match_mode == "multiplier":
+            return self.x_multiplier, self.y_multiplier
+
+        required_values = {
+            "anchor_x_raw": self.anchor_x_raw,
+            "anchor_y_raw": self.anchor_y_raw,
+            "target_x": self.target_x,
+            "target_y": self.target_y,
+        }
+        missing = [
+            name
+            for name, value in required_values.items()
+            if value is None or value <= 0
+        ]
+        if missing:
+            msg = (
+                "match_mode='point_to_target' requiere valores positivos para: "
+                f"{missing}"
+            )
+            raise ValueError(msg)
+
+        assert self.anchor_x_raw is not None
+        assert self.anchor_y_raw is not None
+        assert self.target_x is not None
+        assert self.target_y is not None
+        return self.target_x / self.anchor_x_raw, self.target_y / self.anchor_y_raw
 
 
 def default_rta_match_config(well_id: str) -> RTAMatchConfig:
