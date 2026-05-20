@@ -392,6 +392,7 @@ def _plot_all_curves_streamlit(
     y_multiplier: float,
     method_label: str,
     selected_curve_id: str | None = None,
+    auxiliary_series: list[tuple[str, list[RTAOverlayPoint]]] | None = None,
 ) -> bytes:
     """Plot the full type-curve family + data cloud on one log-log figure."""
     from src.rta_type_curves.models import TypeCurve  # local to avoid circular
@@ -453,6 +454,22 @@ def _plot_all_curves_streamlit(
             linestyle="", marker="o", color="#22d3ee",
             markersize=4, label="Datos ajustados", zorder=6, alpha=0.85,
         )
+
+    # --- Auxiliary Blasingame series (qDdi, qDdid) ---
+    if auxiliary_series:
+        _aux_colors = ["#4ade80", "#f472b6"]   # green=integral, pink=derivative
+        _aux_markers = ["s", "^"]
+        for idx, (series_label, series_pts) in enumerate(auxiliary_series):
+            if not series_pts:
+                continue
+            ax_x = [p.x * x_multiplier for p in series_pts]
+            ax_y = [p.y * y_multiplier for p in series_pts]
+            ax.loglog(
+                ax_x, ax_y,
+                linestyle="", marker=_aux_markers[idx % 2],
+                color=_aux_colors[idx % 2],
+                markersize=4, label=series_label, zorder=6, alpha=0.75,
+            )
 
     # Axis labels from first curve
     x_lbl = type_curves[0].x_label if type_curves else "tDd"
@@ -881,6 +898,36 @@ def main() -> None:
                 ),
             )
 
+            # Build auxiliary Blasingame series (qDdi, qDdid) when available
+            _auxiliary: list[tuple[str, list[RTAOverlayPoint]]] = []
+            if use_rta_transforms and method.value == "palacio_blasingame":
+                _integral_pts = [
+                    RTAOverlayPoint(
+                        x=p.material_balance_time,
+                        y=p.blasingame_integral,
+                        label=p.well_id,
+                        date=p.date,
+                    )
+                    for p in rta_transform_points
+                    if p.method.value == "palacio_blasingame"
+                    and p.blasingame_integral is not None
+                ]
+                _deriv_pts = [
+                    RTAOverlayPoint(
+                        x=p.material_balance_time,
+                        y=p.blasingame_derivative,
+                        label=p.well_id,
+                        date=p.date,
+                    )
+                    for p in rta_transform_points
+                    if p.method.value == "palacio_blasingame"
+                    and p.blasingame_derivative is not None
+                ]
+                if _integral_pts:
+                    _auxiliary.append(("qDdi (integral norm. rate)", _integral_pts))
+                if _deriv_pts:
+                    _auxiliary.append(("qDdid (deriv. integral)", _deriv_pts))
+
             _latest_png_bytes = _plot_all_curves_streamlit(
                 type_curves=all_method_curves,
                 raw_points=rta_points,
@@ -888,6 +935,7 @@ def main() -> None:
                 y_multiplier=match_config.effective_y_multiplier,
                 method_label=method.value,
                 selected_curve_id=type_curve.curve_id,
+                auxiliary_series=_auxiliary or None,
             )
 
             st.subheader("Multiplicadores efectivos")

@@ -309,3 +309,119 @@ def test_compute_rta_transforms_from_csv_raises_for_missing_file(tmp_path: Path)
             path=tmp_path / "does_not_exist.csv",
             pi_psia=PI_PSIA,
         )
+
+
+# ---------------------------------------------------------------------------
+# Blasingame integral and derivative (qDdi, qDdid)
+# ---------------------------------------------------------------------------
+
+# Longer declining history for Blasingame tests (needs ≥ 3 rows for centered derivative)
+_DECLINING_HISTORY = _make_history([
+    {"well_id": "W-001", "date": f"2024-0{m}-01", "qo_stb_d": q, "pwf_used_psia": p}
+    for m, q, p in [
+        (1, 1000.0, 1500.0),
+        (2,  900.0, 1450.0),
+        (3,  810.0, 1400.0),
+        (4,  729.0, 1360.0),
+        (5,  656.0, 1330.0),
+    ]
+])
+
+
+def test_blasingame_integral_present_for_palacio_blasingame() -> None:
+    points = compute_rta_transforms(
+        dataframe=_DECLINING_HISTORY,
+        pi_psia=PI_PSIA,
+        methods=[RTATypeCurveMethod.PALACIO_BLASINGAME],
+    )
+    # At least some points should have a valid integral
+    with_integral = [p for p in points if p.blasingame_integral is not None]
+    assert len(with_integral) > 0
+
+
+def test_blasingame_integral_none_for_fetkovich_and_agarwal() -> None:
+    points = compute_rta_transforms(
+        dataframe=_DECLINING_HISTORY,
+        pi_psia=PI_PSIA,
+        methods=[RTATypeCurveMethod.FETKOVICH, RTATypeCurveMethod.AGARWAL_GARDNER],
+    )
+    for p in points:
+        assert p.blasingame_integral is None
+        assert p.blasingame_derivative is None
+
+
+def test_blasingame_integral_positive() -> None:
+    points = compute_rta_transforms(
+        dataframe=_DECLINING_HISTORY,
+        pi_psia=PI_PSIA,
+        methods=[RTATypeCurveMethod.PALACIO_BLASINGAME],
+    )
+    for p in points:
+        if p.blasingame_integral is not None:
+            assert p.blasingame_integral > 0, f"qDdi={p.blasingame_integral} not positive"
+
+
+def test_blasingame_integral_geq_normalized_rate_for_declining_production() -> None:
+    """For declining production qDdi ≥ qDd.
+
+    Physical reason: qDdi = (1/t̄) * ∫₀^t̄ qDd dt̄ is a cumulative average.
+    Since past normalized rates were higher than the current one (production
+    is declining), the average exceeds the instantaneous value.
+    Both converge only in the limit of constant-rate production.
+    """
+    points = compute_rta_transforms(
+        dataframe=_DECLINING_HISTORY,
+        pi_psia=PI_PSIA,
+        methods=[RTATypeCurveMethod.PALACIO_BLASINGAME],
+    )
+    for p in sorted(points, key=lambda x: x.date):
+        if p.blasingame_integral is not None:
+            assert p.blasingame_integral >= p.normalized_rate - 1e-9, (
+                f"qDdi={p.blasingame_integral:.4f} < qDd={p.normalized_rate:.4f} "
+                "(integral average should be >= instantaneous for declining production)"
+            )
+
+
+def test_blasingame_derivative_positive() -> None:
+    points = compute_rta_transforms(
+        dataframe=_DECLINING_HISTORY,
+        pi_psia=PI_PSIA,
+        methods=[RTATypeCurveMethod.PALACIO_BLASINGAME],
+    )
+    for p in points:
+        if p.blasingame_derivative is not None:
+            assert p.blasingame_derivative > 0, f"qDdid={p.blasingame_derivative} not positive"
+
+
+def test_blasingame_integral_numeric_check() -> None:
+    """Manual trapezoidal check for the first valid integral point."""
+    # Two-row history: MBT at row1 = Np1/q1
+    # qDdi(MBT1) ≈ 0.5*(nr0 + nr1) by definition (integral from 0 to MBT1, divided by MBT1)
+    # since MBT0=0, the trapezoid = 0.5*(nr0+nr1)*MBT1, so qDdi = 0.5*(nr0+nr1)
+    pi = 3000.0
+    df = _make_history([
+        {"well_id": "W-X", "date": "2024-01-01", "qo_stb_d": 1000.0, "pwf_used_psia": 2000.0},
+        {"well_id": "W-X", "date": "2024-02-01", "qo_stb_d":  800.0, "pwf_used_psia": 1900.0},
+        {"well_id": "W-X", "date": "2024-03-01", "qo_stb_d":  640.0, "pwf_used_psia": 1800.0},
+    ])
+    points = compute_rta_transforms(
+        dataframe=df, pi_psia=pi,
+        methods=[RTATypeCurveMethod.PALACIO_BLASINGAME],
+    )
+    pts = sorted(points, key=lambda p: p.date)
+    # First valid point: qDdi ≈ 0.5*(nr_row0 + nr_row1)
+    nr0 = 1000.0 / (pi - 2000.0)   # = 1000/1000 = 1.0
+    nr1 =  800.0 / (pi - 1900.0)   # = 800/1100  ≈ 0.7273
+    expected_qDdi_first = 0.5 * (nr0 + nr1)
+    assert pts[0].blasingame_integral == pytest.approx(expected_qDdi_first, rel=0.01)
+
+
+def test_rta_points_to_dataframe_includes_blasingame_columns() -> None:
+    points = compute_rta_transforms(
+        dataframe=_DECLINING_HISTORY,
+        pi_psia=PI_PSIA,
+        methods=[RTATypeCurveMethod.PALACIO_BLASINGAME],
+    )
+    df = rta_points_to_dataframe(points)
+    assert "blasingame_integral" in df.columns
+    assert "blasingame_derivative" in df.columns

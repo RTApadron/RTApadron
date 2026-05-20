@@ -24,10 +24,11 @@ Key output columns per point:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Sequence
 
+import numpy as np
 import pandas as pd
 
 from src.rta_type_curves.models import RTATypeCurveMethod
@@ -54,6 +55,12 @@ class RTATransformPoint:
     delta_p_psia: float
     normalized_rate: float
     material_balance_time: float
+
+    # Blasingame auxiliary functions (Palacio-Blasingame only; None for other methods)
+    # qDdi  = (1/t̄) * ∫₀^t̄ (q/Δp) dt̄          [Palacio-Blasingame Ec. 14]
+    # qDdid = |d(qDdi)/d(ln(t̄))|                [Palacio-Blasingame Ec. 15]
+    blasingame_integral: float | None = field(default=None)
+    blasingame_derivative: float | None = field(default=None)
 
     def to_overlay_point(self) -> RTAOverlayPoint:
         """Convert to an RTAOverlayPoint for use with the existing overlay engine."""
@@ -166,6 +173,83 @@ def _compute_base_columns(df: pd.DataFrame, pi_psia: float) -> pd.DataFrame:
     # Material balance time: Np / q  (days)
     df["material_balance_time"] = df["Np_stb"] / df["qo_stb_d"]
 
+    # Blasingame auxiliary functions (qDdi, qDdid)
+    df = _compute_blasingame_functions(df)
+
+    return df
+
+
+# ---------------------------------------------------------------------------
+# Blasingame auxiliary functions
+# ---------------------------------------------------------------------------
+
+def _compute_blasingame_functions(df: pd.DataFrame) -> pd.DataFrame:
+    """Add blasingame_integral and blasingame_derivative columns.
+
+    Both are computed on the *already sorted* df with positive
+    material_balance_time and normalized_rate values.
+
+    qDdi  = (1/t̄) · ∫₀^t̄ (q/Δp) dt̄        [Palacio-Blasingame Ec. 14]
+    qDdid = |d(qDdi)/d(ln(t̄))|               [Palacio-Blasingame Ec. 15]
+
+    Integral: trapezoidal rule on the MBT axis.
+    Derivative: Bourdet-style centered log-space finite differences;
+        one-sided at end points.  Negative values (noise artifacts) → NaN.
+
+    Physical interpretation:
+        - For declining production qDdi < qDd (integral lags instantaneous).
+        - qDdid > 0 always (q/Δp is decreasing → its integral average also
+          decreases → negative log-derivative → absolute value is positive).
+        - At late BDF all three traces (qDd, qDdi, qDdid) converge to the
+          b=1 harmonic stem on the Blasingame chart.
+    """
+    df = df.copy()
+    n = len(df)
+    mbt = df["material_balance_time"].to_numpy(dtype=float)
+    nr = df["normalized_rate"].to_numpy(dtype=float)
+
+    # --- qDdi: cumulative trapezoidal integral / MBT ---
+    # Row 0 may have MBT=0 (natural lower bound); integral starts at 0.
+    cumul = np.zeros(n)
+    for i in range(1, n):
+        dt = mbt[i] - mbt[i - 1]
+        if dt > 0:
+            cumul[i] = cumul[i - 1] + 0.5 * (nr[i] + nr[i - 1]) * dt
+        else:
+            cumul[i] = cumul[i - 1]
+
+    with np.errstate(divide="ignore", invalid="ignore"):
+        qDdi = np.where(mbt > 0, cumul / mbt, np.nan)
+
+    # --- qDdid: Bourdet log-derivative of qDdi ---
+    valid = np.isfinite(qDdi) & (mbt > 0)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        ln_mbt = np.where(valid, np.log(mbt), np.nan)
+    qDdid = np.full(n, np.nan)
+
+    for i in range(n):
+        if not valid[i]:
+            continue
+        left = i > 0 and valid[i - 1]
+        right = i < n - 1 and valid[i + 1]
+        if left and right:
+            d_ln = ln_mbt[i + 1] - ln_mbt[i - 1]
+            if d_ln > 0:
+                qDdid[i] = -(qDdi[i + 1] - qDdi[i - 1]) / d_ln
+        elif right:
+            d_ln = ln_mbt[i + 1] - ln_mbt[i]
+            if d_ln > 0:
+                qDdid[i] = -(qDdi[i + 1] - qDdi[i]) / d_ln
+        elif left:
+            d_ln = ln_mbt[i] - ln_mbt[i - 1]
+            if d_ln > 0:
+                qDdid[i] = -(qDdi[i] - qDdi[i - 1]) / d_ln
+
+    # Negative qDdid = noise artifact → discard
+    qDdid = np.where(qDdid > 0, qDdid, np.nan)
+
+    df["blasingame_integral"] = qDdi
+    df["blasingame_derivative"] = qDdid
     return df
 
 
@@ -218,15 +302,22 @@ def _transform_palacio_blasingame(df: pd.DataFrame) -> list[RTATransformPoint]:
     plotted using material balance time. The axes are the same as Fetkovich;
     the distinction lies in how matching parameters map to reservoir properties.
 
-    Note: A full Blasingame plot also includes the normalized rate integral
-    and its derivative. Those require denser, smoother histories than typical
-    field data and are deferred to a later sprint.
+    The full Blasingame plot includes three traces simultaneously:
+        qDd   — normalized rate (primary, this function's x/y)
+        qDdi  — normalized rate integral  [Ec. 14]
+        qDdid — derivative of integral    [Ec. 15]
+
+    All three are stored on RTATransformPoint so the UI can overlay them.
     """
     points = []
     for _, row in df.iterrows():
         mbt = float(row["material_balance_time"])
         nr = float(row["normalized_rate"])
         if mbt > 0 and nr > 0:
+            raw_bi = row.get("blasingame_integral")
+            raw_bd = row.get("blasingame_derivative")
+            bi = float(raw_bi) if (raw_bi is not None and pd.notna(raw_bi) and float(raw_bi) > 0) else None
+            bd = float(raw_bd) if (raw_bd is not None and pd.notna(raw_bd) and float(raw_bd) > 0) else None
             points.append(
                 RTATransformPoint(
                     well_id=str(row["well_id"]),
@@ -241,6 +332,8 @@ def _transform_palacio_blasingame(df: pd.DataFrame) -> list[RTATransformPoint]:
                     delta_p_psia=float(row["delta_p_psia"]),
                     normalized_rate=nr,
                     material_balance_time=mbt,
+                    blasingame_integral=bi,
+                    blasingame_derivative=bd,
                 )
             )
     return points
@@ -371,6 +464,8 @@ def rta_points_to_dataframe(points: list[RTATransformPoint]) -> pd.DataFrame:
                 "delta_p_psia": p.delta_p_psia,
                 "normalized_rate": p.normalized_rate,
                 "material_balance_time": p.material_balance_time,
+                "blasingame_integral": p.blasingame_integral,
+                "blasingame_derivative": p.blasingame_derivative,
             }
             for p in points
         ]
