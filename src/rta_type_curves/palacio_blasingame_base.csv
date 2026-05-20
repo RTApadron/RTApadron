@@ -1,0 +1,5 @@
+method,curve_id,curve_family,x,y,x_label,y_label,source,status,notes
+palacio_blasingame,palacio_blastingame_demo_liquid,normalized_rate_integral_demo,0.01,1.0,tDa,qDd,internal_demo,demo,Placeholder only. Replace with validated Palacio-Blasingame table or digitized curve.
+palacio_blasingame,palacio_blastingame_demo_liquid,normalized_rate_integral_demo,0.1,0.82,tDa,qDd,internal_demo,demo,Placeholder only. Replace with validated Palacio-Blasingame table or digitized curve.
+palacio_blasingame,palacio_blastingame_demo_liquid,normalized_rate_integral_demo,1.0,0.42,tDa,qDd,internal_demo,demo,Placeholder only. Replace with validated Palacio-Blasingame table or digitized curve.
+palacio_blasingame,palacio_blastingame_demo_liquid,normalized_rate_integral_demo,10.0,0.12,tDa,qDd,internal_demo,demo,Placeholder only. Replace with validated Palacio-Blasingame table or digitized curve.
