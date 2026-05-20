@@ -1012,6 +1012,25 @@ def main() -> None:
         except Exception as exc:
             st.error(str(exc))
 
+        # --- Save match for comparison table ---
+        if _mp is not None:
+            st.divider()
+            if st.button("📌 Guardar match", use_container_width=True,
+                         help="Guarda kh/k/N de este método para la tabla comparativa"):
+                st.session_state[f"_saved_match_{method.value}"] = {
+                    "method": method.value,
+                    "ref_curve_id": ref_curve_id,
+                    "kh_md_ft": _mp.kh_md_ft,
+                    "k_md": _mp.k_md,
+                    "n_vol_stb": _mp.n_vol_stb,
+                    "re_ft": _mp.re_ft,
+                    "area_acres": _mp.area_acres,
+                    "x_mult": st.session_state.get("x_multiplier", 1.0),
+                    "y_mult": st.session_state.get("y_multiplier", 1.0),
+                    "warnings": len(_mp.warnings),
+                }
+                st.success("Match guardado ✓")
+
         # --- Export section ---
         if _mp is not None and _latest_png_bytes is not None:
             st.divider()
@@ -1050,6 +1069,57 @@ def main() -> None:
                         )
                     except Exception as exc:
                         st.error(f"Error al exportar: {exc}")
+
+
+    # --- Comparison table (full-width, visible when ≥1 match saved) ---
+    _METHOD_LABELS = {
+        "fetkovich": "Fetkovich (SPE-4629)",
+        "palacio_blasingame": "Palacio-Blasingame (SPE-25909)",
+        "agarwal_gardner": "Agarwal-Gardner (SPE-49222)",
+    }
+    _saved = {
+        m: st.session_state[f"_saved_match_{m}"]
+        for m in ("fetkovich", "palacio_blasingame", "agarwal_gardner")
+        if f"_saved_match_{m}" in st.session_state
+    }
+
+    if _saved:
+        st.divider()
+        st.subheader("Comparación de métodos")
+        st.caption(
+            "Cada fila corresponde al match guardado con 📌 para ese método. "
+            "Los tres métodos comparten la misma ecuación de kh — la convergencia "
+            "de resultados indica consistencia del match visual."
+        )
+
+        def _fmtc(val: float | None, dec: int = 2) -> str:
+            return f"{val:.{dec}f}" if val is not None else "—"
+
+        rows = []
+        for m_val, data in _saved.items():
+            kh = data.get("kh_md_ft")
+            k = data.get("k_md")
+            n = data.get("n_vol_stb")
+            rows.append({
+                "Método": _METHOD_LABELS.get(m_val, m_val),
+                "kh (mD·ft)": _fmtc(kh, 1),
+                "k (mD)": _fmtc(k, 3),
+                "N vol. (MM STB)": f"{n / 1e6:.3f}" if n else "—",
+                "re (ft)": _fmtc(data.get("re_ft"), 0),
+                "Área (acres)": _fmtc(data.get("area_acres"), 1),
+                "Escala Y": f"{data['y_mult']:.4g}",
+                "Escala X": f"{data['x_mult']:.4g}",
+                "Curva ref.": data.get("ref_curve_id", "—"),
+                "⚠": str(data.get("warnings", 0)) if data.get("warnings") else "",
+            })
+
+        comp_df = pd.DataFrame(rows)
+        st.dataframe(comp_df, use_container_width=True, hide_index=True)
+
+        if st.button("🗑 Limpiar comparación"):
+            for m_val in ("fetkovich", "palacio_blasingame", "agarwal_gardner"):
+                st.session_state.pop(f"_saved_match_{m_val}", None)
+            st.rerun()
 
 
 if __name__ == "__main__":
