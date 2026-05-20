@@ -352,6 +352,104 @@ def _plot_overlay_streamlit(overlay_result: Any) -> None:
     plt.close(fig)
 
 
+def _plot_all_curves_streamlit(
+    type_curves: list[Any],
+    raw_points: list[RTAOverlayPoint],
+    x_multiplier: float,
+    y_multiplier: float,
+    method_label: str,
+    selected_curve_id: str | None = None,
+) -> None:
+    """Plot the full type-curve family + data cloud on one log-log figure."""
+    from src.rta_type_curves.models import TypeCurve  # local to avoid circular
+
+    fig, ax = plt.subplots(figsize=(11, 7))
+
+    bdf_curves = [c for c in type_curves if c.curve_family != "transient_stem"]
+    transient_curves = [c for c in type_curves if c.curve_family == "transient_stem"]
+
+    # --- BDF stems (solid) ---
+    bdf_colors = plt.cm.tab10.colors  # type: ignore[attr-defined]
+    for i, curve in enumerate(bdf_curves):
+        xs = [p.x for p in curve.points]
+        ys = [p.y for p in curve.points]
+        is_selected = curve.curve_id == selected_curve_id
+        ax.loglog(
+            xs, ys,
+            color=bdf_colors[i % len(bdf_colors)],
+            linewidth=2.0 if is_selected else 1.2,
+            linestyle="-",
+            label=curve.curve_id,
+            zorder=3,
+            alpha=1.0 if is_selected else 0.75,
+        )
+
+    # --- Transient stems (dashed, grouped color) ---
+    n_trans = len(transient_curves)
+    for i, curve in enumerate(transient_curves):
+        xs = [p.x for p in curve.points]
+        ys = [p.y for p in curve.points]
+        frac = i / max(n_trans - 1, 1)
+        color = plt.cm.autumn(0.15 + 0.7 * frac)  # type: ignore[attr-defined]
+        re_rw_label = curve.curve_id.split("re_rw_")[-1] if "re_rw_" in curve.curve_id else curve.curve_id
+        ax.loglog(
+            xs, ys,
+            color=color,
+            linewidth=0.9,
+            linestyle="--",
+            label=f"re/rw={re_rw_label}" if i == 0 or i == n_trans - 1 else "_nolegend_",
+            zorder=2,
+            alpha=0.65,
+        )
+
+    # --- Raw data points ---
+    if raw_points:
+        raw_x = [p.x for p in raw_points]
+        raw_y = [p.y for p in raw_points]
+        ax.loglog(
+            raw_x, raw_y,
+            linestyle="", marker="o", color="#f97316",
+            markersize=4, label="Datos raw", zorder=5, alpha=0.55,
+        )
+
+        # --- Matched (shifted) data ---
+        matched_x = [v * x_multiplier for v in raw_x]
+        matched_y = [v * y_multiplier for v in raw_y]
+        ax.loglog(
+            matched_x, matched_y,
+            linestyle="", marker="o", color="#22d3ee",
+            markersize=4, label="Datos ajustados", zorder=6, alpha=0.85,
+        )
+
+    # Axis labels from first curve
+    x_lbl = type_curves[0].x_label if type_curves else "tDd"
+    y_lbl = type_curves[0].y_label if type_curves else "qDd"
+    ax.set_xlabel(x_lbl, fontsize=10)
+    ax.set_ylabel(y_lbl, fontsize=10)
+    ax.set_title(f"{method_label} — familia completa de curvas tipo", fontsize=11)
+    ax.grid(True, which="both", alpha=0.25, linewidth=0.5)
+
+    # Compact legend
+    ax.legend(fontsize=7, ncol=2, loc="upper right", framealpha=0.85)
+
+    ax.xaxis.set_major_formatter(mticker.FuncFormatter(
+        lambda val, _: f"{val:g}" if val != 0 else "0"
+    ))
+    ax.yaxis.set_major_formatter(mticker.FuncFormatter(
+        lambda val, _: f"{val:g}" if val != 0 else "0"
+    ))
+    ax.xaxis.set_minor_formatter(mticker.NullFormatter())
+    ax.yaxis.set_minor_formatter(mticker.NullFormatter())
+
+    try:
+        fig.tight_layout()
+    except Exception:
+        pass
+
+    st.pyplot(fig, width="stretch")
+    plt.close(fig)
+
+
 def _read_uploaded_csv(uploaded_file: Any) -> pd.DataFrame:
     """Read an uploaded CSV through a temporary file."""
     with NamedTemporaryFile(delete=False, suffix=".csv") as temp_file:
@@ -488,28 +586,39 @@ def main() -> None:
             format_func=lambda value: value.value,
         )
 
-        curve_ids = registry.list_curve_ids(method)
+        all_method_curves = registry.get_by_method(method)
 
-        if not curve_ids:
+        if not all_method_curves:
             st.error(f"No hay curvas disponibles para el método {method.value}.")
             return
 
-        curve_id = st.selectbox(
-            "Curva",
-            options=curve_ids,
+        bdf_curve_ids = [
+            c.curve_id for c in all_method_curves
+            if c.curve_family != "transient_stem"
+        ]
+
+        st.caption(
+            f"{len(all_method_curves)} curvas cargadas "
+            f"({len(bdf_curve_ids)} BDF + "
+            f"{len(all_method_curves) - len(bdf_curve_ids)} transientes)"
+        )
+        st.warning(
+            "Curvas DEMO — analíticamente correctas pero no digitalizadas "
+            "desde los papers de referencia. No usar para interpretación final."
         )
 
-        type_curve = registry.get(method, curve_id)
-
-        st.caption(f"Familia: {type_curve.curve_family}")
-        st.caption(f"Estado de datos: {type_curve.status.value}")
-        st.caption(f"Fuente: {type_curve.source}")
-
-        if type_curve.status.value == "demo":
-            st.warning(
-                "Esta curva está marcada como demo. Debe reemplazarse por "
-                "curvas digitalizadas/validadas antes de interpretación técnica."
+        with st.expander("Curva de referencia (para kh / k)"):
+            st.caption(
+                "Selecciona la curva BDF sobre la que visualmente cae la nube "
+                "de puntos ajustados. Se usa solo para calcular kh y k."
             )
+            ref_curve_id = st.selectbox(
+                "Curva BDF de match",
+                options=bdf_curve_ids,
+                label_visibility="collapsed",
+            )
+            type_curve = registry.get(method, ref_curve_id)
+            st.caption(f"Familia: {type_curve.curve_family} · Fuente: {type_curve.source}")
 
         st.subheader("Datos del pozo")
 
@@ -685,7 +794,6 @@ def main() -> None:
 
         try:
             if use_rta_transforms and rta_transform_points:
-                # Filter to the selected method and convert to overlay points
                 from src.rta_type_curves.models import RTATypeCurveMethod
                 method_map = {m.value: m for m in RTATypeCurveMethod}
                 selected_method_enum = method_map.get(method.value, method)
@@ -694,17 +802,14 @@ def main() -> None:
                     if p.method == selected_method_enum
                 ]
                 if not method_points:
-                    st.warning(
-                        f"Sin puntos para el método {method.value} con el CSV cargado."
-                    )
+                    st.warning(f"Sin puntos para el método {method.value}.")
                     return
                 rta_points = _transform_points_to_overlay(method_points)
-                if method_points:
-                    st.caption(
-                        f"Ejes: **{method_points[0].x_label}** (X) · "
-                        f"**{method_points[0].y_label}** (Y) · "
-                        f"{len(method_points)} puntos válidos"
-                    )
+                st.caption(
+                    f"Ejes: **{method_points[0].x_label}** (X) · "
+                    f"**{method_points[0].y_label}** (Y) · "
+                    f"{len(method_points)} puntos válidos"
+                )
             else:
                 rta_points = build_overlay_points_from_dataframe(
                     dataframe=history_df,
@@ -714,43 +819,35 @@ def main() -> None:
                     date_column="date",
                 )
 
-            anchor_data_x = (
-                float(st.session_state["anchor_data_x"])
-                if st.session_state["use_anchor"]
-                else None
-            )
-            anchor_data_y = (
-                float(st.session_state["anchor_data_y"])
-                if st.session_state["use_anchor"]
-                else None
-            )
-            target_curve_x = (
-                float(st.session_state["target_curve_x"])
-                if st.session_state["use_anchor"]
-                else None
-            )
-            target_curve_y = (
-                float(st.session_state["target_curve_y"])
-                if st.session_state["use_anchor"]
-                else None
-            )
-
             match_config = ManualMatchConfig(
                 x_multiplier=_clamp_multiplier(st.session_state["x_multiplier"]),
                 y_multiplier=_clamp_multiplier(st.session_state["y_multiplier"]),
-                anchor_data_x=anchor_data_x,
-                anchor_data_y=anchor_data_y,
-                target_curve_x=target_curve_x,
-                target_curve_y=target_curve_y,
+                anchor_data_x=(
+                    float(st.session_state["anchor_data_x"])
+                    if st.session_state["use_anchor"] else None
+                ),
+                anchor_data_y=(
+                    float(st.session_state["anchor_data_y"])
+                    if st.session_state["use_anchor"] else None
+                ),
+                target_curve_x=(
+                    float(st.session_state["target_curve_x"])
+                    if st.session_state["use_anchor"] else None
+                ),
+                target_curve_y=(
+                    float(st.session_state["target_curve_y"])
+                    if st.session_state["use_anchor"] else None
+                ),
             )
 
-            overlay_result = build_overlay(
-                type_curve=type_curve,
-                rta_points=rta_points,
-                match_config=match_config,
+            _plot_all_curves_streamlit(
+                type_curves=all_method_curves,
+                raw_points=rta_points,
+                x_multiplier=match_config.effective_x_multiplier,
+                y_multiplier=match_config.effective_y_multiplier,
+                method_label=method.value,
+                selected_curve_id=type_curve.curve_id,
             )
-
-            _plot_overlay_streamlit(overlay_result)
 
             st.subheader("Multiplicadores efectivos")
 
