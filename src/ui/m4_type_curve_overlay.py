@@ -31,6 +31,7 @@ from src.services.rta_overlay_points_service import (
     list_positive_numeric_columns,
     load_history_for_overlay,
 )
+from src.services.rta_match_params_service import compute_match_params
 from src.services.rta_scenario_service import (
     load_rta_scenario,
     save_rta_scenario,
@@ -773,6 +774,45 @@ def main() -> None:
                 match_info["x_column"] = x_column
                 match_info["y_column"] = y_column
             st.json(match_info)
+
+            # --- Match parameters panel ---
+            st.subheader("Parámetros del match (DEMO)")
+            try:
+                match_params = compute_match_params(
+                    config=reservoir_config,
+                    effective_x_multiplier=match_config.effective_x_multiplier,
+                    effective_y_multiplier=match_config.effective_y_multiplier,
+                    method=method.value,
+                )
+
+                if match_params.warnings:
+                    for w in match_params.warnings:
+                        st.warning(w)
+
+                param_cols = st.columns(3)
+                with param_cols[0]:
+                    st.metric(
+                        "kh (mD·ft)",
+                        f"{match_params.kh_md_ft:.1f}" if match_params.kh_md_ft else "—",
+                    )
+                with param_cols[1]:
+                    st.metric(
+                        "k (mD)",
+                        f"{match_params.k_md:.3f}" if match_params.k_md else "—",
+                    )
+                with param_cols[2]:
+                    n_mm = (
+                        f"{match_params.n_vol_stb / 1e6:.2f} MM STB"
+                        if match_params.n_vol_stb
+                        else "—"
+                    )
+                    st.metric("N vol. (OOIP)", n_mm)
+
+                with st.expander("Detalle parámetros match"):
+                    st.json(match_params.as_dict())
+
+            except Exception as exc:
+                st.error(f"Error al calcular parámetros del match: {exc}")
 
             with st.expander("Vista previa de datos"):
                 st.dataframe(history_df.head(50), width="stretch")
