@@ -1,243 +1,168 @@
-## Hi there 👋
---# 📊 RTA Project - Herramienta de Análisis de Yacimientos
+# ecoRTA - Herramienta Python para Análisis RTA de Pozos Petroleros
 
-Este repositorio corresponde a mi **proyecto de grado** de la Maestría en Ingeniería de Yacimientos.  
-El objetivo es desarrollar una herramienta computacional para apoyar el **Análisis de Presión Transitoria (RTA)** y otras técnicas asociadas, utilizando **Python** y metodologías modernas de desarrollo ágil (Scrum).
+ecoRTA es una herramienta en desarrollo para apoyar el análisis de pozos petroleros mediante técnicas de **Rate Transient Analysis (RTA)**, **Decline Curve Analysis (DCA)**, integración de historia de producción, estimación de presión de fondo fluyendo y caracterización PVT.
 
----
-
-## 🚀 Características principales (Sprint 0)
-- Configuración de entorno en **Python 3.11**.
-- Control de versiones con **Git + GitHub**.
-- Entorno virtual (`venv`) y archivo `requirements.txt` para gestión de dependencias.
-- Primer script de prueba: `hola.py`.
+El proyecto forma parte de un trabajo de grado orientado al desarrollo de una herramienta digital para aplicar RTA en pozos exploratorios durante pruebas extensas de producción en los Llanos Orientales.
 
 ---
 
-## 📂 Estructura del proyecto
-RTApadron/
-│
-├── .gitignore # Archivos/carpetas ignorados (venv, VSCode, temporales)
-├── README.md # Documentación principal
-├── requirements.txt # Dependencias del proyecto
-└── hola.py # Script inicial de prueba
+## Estado actual del proyecto
+
+El proyecto se está construyendo de forma incremental por módulos:
+
+| Módulo | Descripción | Estado |
+|---|---|---|
+| M1 | Información de pozo, historia de producción y Pwf | Implementado parcialmente |
+| M2 | Propiedades PVT y enriquecimiento de historia | Implementado parcialmente |
+| M3 | DCA / curvas de declinación | Implementado con pruebas |
+| M4 | RTA mediante curvas tipo | En desarrollo |
+| M5 | Resultados integrados del pozo | Pendiente |
 
----
+Actualmente el repositorio tiene:
 
-## ⚙️ Instalación y uso
+- Pipeline M1-M2 para generar historia enriquecida.
+- Pipeline M3 para generar artefactos básicos de DCA.
+- Infraestructura M4 para cargar curvas tipo base desde CSV o tablas internas.
+- Overlay visual de puntos del pozo sobre curvas tipo.
+- Joystick logarítmico estilo arcade para matching manual.
+- Pruebas automatizadas con `pytest`.
 
-1. **Clonar este repositorio**
-   ```bash
-   git clone https://github.com/RTApadron/RTApadron.git
-   cd RTApadron
-python -m venv venv
-# En Windows PowerShell
-.\venv\Scripts\Activate
-pip install -r requirements.txt
-python hola.py
+Último estado verificado:
 
-👨‍💻 Autor
+```bash
+27 passed
+
+Estructura principal del repositorio: 
+
+src/
+  pipeline/
+    run_full_workflow.py
 
-Robert Padrón
-GitHub @RTApadron
+  rta_type_curves/
+    __init__.py
+    models.py
+    loader.py
+    registry.py
+    overlay.py
+    sample_data.py
 
-📌 Este proyecto se encuentra en desarrollo como parte de mi proyecto de grado. Toda contribución y retroalimentación es bienvenida.
+  services/
+    rta_overlay_points_service.py
 
+  ui/
+    app.py
+    m4_type_curve_overlay.py
 
+  rta_pvt/
+    make_pvt_cli.py
 
+  well_mod/
+    run_estimator.py
+    models.py
 
-# 🛠️ Proyecto RTA – Sprint 1
+  utils/
+    units.py
 
-Este proyecto contiene las herramientas desarrolladas durante los sprints de un flujo de trabajo de RTA (Rate Transient Analysis).  
-Los módulos se van construyendo incrementalmente: desde la información de pozo, pasando por PVT, hasta el modelado de flujo.
+data/
+  type_curves/
+    fetkovich_base.csv
+    palacio_blasingame_base.csv
+    agarwal_gardner_base.csv
 
----
+tests/
+  test_dca_service.py
+  test_full_workflow_pipeline.py
+  test_m1_m2_integration.py
+  test_run_dca_pipeline.py
+  test_type_curve_loader.py
+  test_type_curve_overlay.py
+  test_rta_overlay_points_service.py
 
-## 📂 Estructura del proyecto
+Limitaciones actuales
 
-```text
+El proyecto todavía no hace:
 
-VS Code RTA Project/
-│
-├─ src/
-│   └─ rta\_pvt/
-│       ├─ **init**.py
-│       ├─ pvt\_tools.py          # Funciones y clases principales (Standing, Beggs–Robinson)
-│       ├─ make\_pvt\_excel.py     # Genera resultados básicos (CSV/XLSX)
-│       ├─ make\_pvt\_outputs.py   # Genera resultados + gráficas en /output
-│       ├─ make\_pvt\_cli.py       # CLI: corre con argumentos (--api, --gamma-g, --temp, --rsb…)
-│       └─ app\_streamlit.py      # Interfaz gráfica con Streamlit
-│
-├─ output/                       # Resultados generados automáticamente
-│   ├─ sprint1\_propiedades\_pvt.csv
-│   ├─ sprint1\_propiedades\_pvt.xlsx
-│   ├─ cli\_plot\_rs.png
-│   ├─ cli\_plot\_bo.png
-│   └─ cli\_plot\_mu.png
-│
-├─ .vscode/
-│   └─ launch.json               # Configuración para correr Streamlit desde VSCode
-│
-├─ requirements.txt              # Dependencias (pandas, matplotlib, xlsxwriter, streamlit)
-└─ README.md
+digitalización validada de curvas tipo reales;
+cálculo formal de variables adimensionales RTA;
+cálculo de tiempo de balance de materiales;
+derivadas RTA;
+matching automático;
+estimación de:
+presión de yacimiento;
+kh;
+skin;
+volumen contactado;
+OOIP;
+EUR vía RTA;
+comparación con software comercial.
 
-````
 
----
+Próximos pasos técnicos
+1. Reemplazar curvas demo por curvas reales
 
-## ⚙️ Instalación
+Digitalizar o cargar tablas validadas para:
 
-1. Clona el repo o copia la carpeta del proyecto.  
-2. Crea y activa un entorno virtual (Windows PowerShell):
-   ```powershell
-   python -m venv .venv
-   .venv\Scripts\Activate.ps1
-````text
+Fetkovich
+Palacio-Blasingame
+Agarwal-Gardner
 
-3. Instala las dependencias:
+Cada curva debe quedar marcada como:
 
-   ```powershell
-   pip install -r requirements.txt
-   ```
+digitized_pending_qc
 
----
+y luego, cuando sea revisada:
 
-## ▶️ Uso de los scripts
+validated
+2. Crear servicio de transformación RTA
 
-### 1. Generar outputs simples
+Archivo propuesto:
 
-```powershell
-python src/rta_pvt/make_pvt_excel.py
-```
+src/services/rta_transform_service.py
 
-Genera `sprint1_propiedades_pvt.csv` y `sprint1_propiedades_pvt.xlsx`.
+Salida esperada:
 
----
+well_id
+date
+method
+x
+y
+x_label
+y_label
+qo_stb_d
+pwf_used_psia
+delta_p_psia
+normalized_rate
+material_balance_time
+3. Integrar puntos RTA reales en Streamlit
 
-### 2. Generar outputs + gráficas en `/output`
+La UI debe dejar de depender de columnas arbitrarias X/Y y pasar a usar transformaciones RTA por método.
 
-```powershell
-python src/rta_pvt/make_pvt_outputs.py
-```
+4. Implementar matching automático
 
-Resultados en la carpeta `output/`:
+Inicialmente como ajuste numérico simple sobre multiplicadores:
 
-* CSV y Excel con tabla PVT
-* Gráficas de Rs, Bo y μo (incluyendo anotación de Pb)
+x_multiplier
+y_multiplier
 
----
+Luego incorporar restricciones por régimen de flujo y calidad de ajuste.
 
-### 3. Usar CLI (argumentos por consola)
+5. Calcular parámetros de yacimiento
 
-```powershell
-python src/rta_pvt/make_pvt_cli.py --api 30 --gamma-g 0.80 --temp 200 --rsb 600
-```
+Una vez exista matching validado:
 
-Parámetros disponibles:
+kh
+skin
+volumen contactado
+OOIP
+presión de yacimiento
+Filosofía de desarrollo
 
-* `--api` → grados API
-* `--gamma-g` → gravedad específica del gas
-* `--temp` → temperatura en °F
-* `--rsb` → gas en solución a Pb (scf/STB)
-* `--pmin`, `--pmax`, `--step` → rango de presiones
+El proyecto sigue una estrategia conservadora:
 
-Genera:
-
-* `output/pvt_cli_results.csv`
-* `output/pvt_cli_results.xlsx`
-* `output/cli_plot_rs.png`
-* `output/cli_plot_bo.png`
-* `output/cli_plot_mu.png`
-
----
-
-### 4. Interfaz con Streamlit
-
-```powershell
-streamlit run src/rta_pvt/app_streamlit.py
-```
-
-Se abrirá en tu navegador (por defecto `http://localhost:8501`).
-Desde ahí puedes:
-
-* Ajustar inputs (API, γg, T, Rsb/Pb, rango de presiones).
-* Ver tabla y gráficas.
-* Descargar CSV/XLSX directamente.
-
-⚠️ Si el puerto 8501 está ocupado, usa por ejemplo:
-
-```powershell
-streamlit run src/rta_pvt/app_streamlit.py --server.port 8502
-```
-
----
-
-### 5. Desde VSCode (Debug)
-
-Con el archivo `.vscode/launch.json` puedes correr Streamlit directo desde VSCode:
-
-* Abre la pestaña **Run and Debug** (Ctrl+Shift+D).
-* Selecciona **“Streamlit: run app”**.
-* ▶️ Ejecuta.
-
----
-
-## 🚩 Roadmap de Sprints
-
-### Sprint 1 — Módulo 1: Información de Pozo (2 semanas)
-
-**Modelos de datos a implementar**
-
-* Well
-* Survey
-* Estado mecánico
-* Intervalos
-* Levantamiento
-* Historia: caudales **q-o-g-w**, Pwf (si existe), T, API
-
-**Funcionalidades**
-
-* Importadores desde **CSV/Excel** + validación.
-* Estimador de **Pwf frente a perforados**:
-
-  * Versión 1 (Sprint 1): gradiente hidrostático + fricción simplificada.
-  * Versión 2 (Sprint 4): integrar correlación de gradiente completa.
-
-**Criterio de éxito**
-
-* Cargar pozos e información histórica.
-* Derivar **Pwf estimada** cuando falte.
-* Cumplir con el requerimiento metodológico (ID, survey, historia y Pwf).
-
----
-
-### Sprint 2 — Módulo 2: PVT (2–3 semanas)
-
-**Funcionalidades**
-
-* Implementar correlaciones PVT: **Bo, Rs, μo, μg, ρ, Pb/Pr, Bg**.
-* Selector de correlación (Standing, Beggs–Robinson, Glaso, Lee, etc.).
-* Calibración con datos de laboratorio:
-
-  * Override de parámetros.
-  * Ajuste por mínimos cuadrados (“fit”).
-
-**Criterio de éxito**
-
-* Tablas PVT consistentes vs. laboratorio.
-* Función de selección y calibración activas.
-
----
-
-## ✨ Próximos sprints
-
-* **Sprint 3 — Módulo 3:** Modelo de flujo en tuberías (Beggs & Brill, Duns & Ros).
-* **Sprint 4 — Módulo 4:** Integración gradiente de presión completa (para estimador Pwf).
-* **Sprint 5:** Integración de módulos + validación con dataset real + dashboards en Streamlit.
-
----
-
-## ✍️ Créditos
-
-Proyecto académico RTA – Sprint 1.
-Correlaciones: **Standing (1947/1981)** y **Beggs & Robinson (1975)**.
+no romper módulos existentes;
+no borrar scripts funcionales;
+mantener compatibilidad hacia atrás;
+separar UI de lógica de cálculo;
+evitar fórmulas no validadas;
+marcar datos demo como demo;
+agregar pruebas antes de integrar features complejas.
