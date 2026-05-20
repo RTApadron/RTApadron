@@ -1,0 +1,377 @@
+"""Service for computing RTA transformed variables from enriched well history.
+
+This module produces physically meaningful RTA points for each supported method
+(Fetkovich, Palacio-Blasingame, Agarwal-Gardner) from an enriched history CSV.
+
+It does NOT perform matching, curve digitization, or reservoir parameter
+estimation. It only computes the transformed axes needed to overlay real
+well data on type curves.
+
+Key output columns per point:
+    well_id               - well identifier
+    date                  - production date (ISO string)
+    method                - RTATypeCurveMethod value
+    x                     - transformed x-axis value (positive, log-log safe)
+    y                     - transformed y-axis value (positive, log-log safe)
+    x_label               - physical label for x axis
+    y_label               - physical label for y axis
+    qo_stb_d              - oil rate used (STB/d)
+    pwf_used_psia         - flowing bottomhole pressure used (psia)
+    delta_p_psia          - pressure drawdown: pi - pwf  (psia)
+    normalized_rate       - qo / delta_p  (STB/d/psi)
+    material_balance_time - cumulative oil / current rate  (days)
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Sequence
+
+import pandas as pd
+
+from src.rta_type_curves.models import RTATypeCurveMethod
+from src.rta_type_curves.overlay import RTAOverlayPoint
+
+
+# ---------------------------------------------------------------------------
+# Domain dataclass
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class RTATransformPoint:
+    """One row of RTA-transformed data, ready for overlay on type curves."""
+
+    well_id: str
+    date: str
+    method: RTATypeCurveMethod
+    x: float
+    y: float
+    x_label: str
+    y_label: str
+    qo_stb_d: float
+    pwf_used_psia: float
+    delta_p_psia: float
+    normalized_rate: float
+    material_balance_time: float
+
+    def to_overlay_point(self) -> RTAOverlayPoint:
+        """Convert to an RTAOverlayPoint for use with the existing overlay engine."""
+        return RTAOverlayPoint(
+            x=self.x,
+            y=self.y,
+            label=self.well_id,
+            date=self.date,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Required column names in the enriched history CSV
+# ---------------------------------------------------------------------------
+
+_REQUIRED_COLUMNS = {
+    "well_id",
+    "date",
+    "qo_stb_d",
+    "pwf_used_psia",
+}
+
+
+# ---------------------------------------------------------------------------
+# Internal helpers
+# ---------------------------------------------------------------------------
+
+def _validate_history(dataframe: pd.DataFrame, source: str) -> None:
+    missing = _REQUIRED_COLUMNS - set(dataframe.columns)
+    if missing:
+        raise ValueError(
+            f"Enriched history from '{source}' is missing required columns: "
+            f"{sorted(missing)}. "
+            "Run the M1-M2 pipeline to produce a complete enriched history."
+        )
+
+
+def _load_and_validate(path: Path) -> pd.DataFrame:
+    if not path.exists():
+        raise FileNotFoundError(f"Enriched history CSV not found: {path}")
+
+    df = pd.read_csv(path)
+
+    if df.empty:
+        raise ValueError(f"Enriched history CSV is empty: {path}")
+
+    _validate_history(df, str(path))
+    return df
+
+
+def _coerce_numeric(df: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
+    """Return a copy of df with the given columns coerced to float."""
+    df = df.copy()
+    for col in columns:
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+    return df
+
+
+def _compute_base_columns(df: pd.DataFrame, pi_psia: float) -> pd.DataFrame:
+    """Add delta_p, normalized_rate, and material_balance_time columns."""
+    df = _coerce_numeric(df, ["qo_stb_d", "pwf_used_psia"])
+
+    # Keep only rows where both rate and Pwf are positive
+    df = df.dropna(subset=["qo_stb_d", "pwf_used_psia"])
+    df = df[(df["qo_stb_d"] > 0) & (df["pwf_used_psia"] > 0)]
+
+    if df.empty:
+        raise ValueError(
+            "No rows with positive qo_stb_d and pwf_used_psia found after cleaning."
+        )
+
+    df = df.copy()
+
+    # Pressure drawdown: pi - pwf
+    df["delta_p_psia"] = pi_psia - df["pwf_used_psia"]
+
+    # Guard: if drawdown is zero or negative the normalized rate is undefined
+    df = df[df["delta_p_psia"] > 0]
+
+    if df.empty:
+        raise ValueError(
+            f"No rows with positive pressure drawdown (pi={pi_psia} psia). "
+            "Check that pi_psia is greater than all Pwf values."
+        )
+
+    # Normalized rate: q / Δp
+    df["normalized_rate"] = df["qo_stb_d"] / df["delta_p_psia"]
+
+    # Cumulative oil production (trapezoidal integration over time)
+    df = df.sort_values("date").reset_index(drop=True)
+    df["date_dt"] = pd.to_datetime(df["date"], errors="coerce")
+    df = df.dropna(subset=["date_dt"])
+
+    if len(df) < 1:
+        raise ValueError("No rows with valid dates after parsing.")
+
+    # Days elapsed from first production date
+    df["t_days"] = (df["date_dt"] - df["date_dt"].iloc[0]).dt.total_seconds() / 86400.0
+
+    # Cumulative oil via trapezoidal rule (STB)
+    df["Np_stb"] = 0.0
+    if len(df) > 1:
+        cumulative = [0.0]
+        for i in range(1, len(df)):
+            dt = df["t_days"].iloc[i] - df["t_days"].iloc[i - 1]
+            avg_q = (df["qo_stb_d"].iloc[i] + df["qo_stb_d"].iloc[i - 1]) / 2.0
+            cumulative.append(cumulative[-1] + avg_q * dt)
+        df["Np_stb"] = cumulative
+
+    # Material balance time: Np / q  (days)
+    df["material_balance_time"] = df["Np_stb"] / df["qo_stb_d"]
+
+    return df
+
+
+# ---------------------------------------------------------------------------
+# Per-method transform functions
+# ---------------------------------------------------------------------------
+
+def _transform_fetkovich(df: pd.DataFrame) -> list[RTATransformPoint]:
+    """Fetkovich type curve axes.
+
+    X = material balance time  (days)
+    Y = normalized rate  qo / Δp  (STB/d/psi)
+
+    Physical basis: Fetkovich (1980) combines transient and boundary-dominated
+    decline on log-log axes. The normalized rate vs. MBT plot is the standard
+    presentation for field data matching.
+    """
+    points = []
+    for _, row in df.iterrows():
+        mbt = float(row["material_balance_time"])
+        nr = float(row["normalized_rate"])
+        if mbt > 0 and nr > 0:
+            points.append(
+                RTATransformPoint(
+                    well_id=str(row["well_id"]),
+                    date=str(row["date"]),
+                    method=RTATypeCurveMethod.FETKOVICH,
+                    x=mbt,
+                    y=nr,
+                    x_label="Material balance time (days)",
+                    y_label="Normalized rate qo/Δp (STB/d/psi)",
+                    qo_stb_d=float(row["qo_stb_d"]),
+                    pwf_used_psia=float(row["pwf_used_psia"]),
+                    delta_p_psia=float(row["delta_p_psia"]),
+                    normalized_rate=nr,
+                    material_balance_time=mbt,
+                )
+            )
+    return points
+
+
+def _transform_palacio_blasingame(df: pd.DataFrame) -> list[RTATransformPoint]:
+    """Palacio-Blasingame type curve axes.
+
+    X = material balance time  (days)
+    Y = normalized rate  qo / Δp  (STB/d/psi)
+
+    Physical basis: Palacio & Blasingame (1993) showed that variable-rate/
+    variable-pressure data collapse onto Fetkovich-style decline curves when
+    plotted using material balance time. The axes are the same as Fetkovich;
+    the distinction lies in how matching parameters map to reservoir properties.
+
+    Note: A full Blasingame plot also includes the normalized rate integral
+    and its derivative. Those require denser, smoother histories than typical
+    field data and are deferred to a later sprint.
+    """
+    points = []
+    for _, row in df.iterrows():
+        mbt = float(row["material_balance_time"])
+        nr = float(row["normalized_rate"])
+        if mbt > 0 and nr > 0:
+            points.append(
+                RTATransformPoint(
+                    well_id=str(row["well_id"]),
+                    date=str(row["date"]),
+                    method=RTATypeCurveMethod.PALACIO_BLASINGAME,
+                    x=mbt,
+                    y=nr,
+                    x_label="Material balance time (days)",
+                    y_label="Normalized rate qo/Δp (STB/d/psi)",
+                    qo_stb_d=float(row["qo_stb_d"]),
+                    pwf_used_psia=float(row["pwf_used_psia"]),
+                    delta_p_psia=float(row["delta_p_psia"]),
+                    normalized_rate=nr,
+                    material_balance_time=mbt,
+                )
+            )
+    return points
+
+
+def _transform_agarwal_gardner(df: pd.DataFrame) -> list[RTATransformPoint]:
+    """Agarwal-Gardner type curve axes.
+
+    X = material balance time  (days)
+    Y = normalized rate  qo / Δp  (STB/d/psi)
+
+    Physical basis: Agarwal, Gardner et al. (1999) extended the Blasingame
+    approach with additional auxiliary functions. For the primary rate plot
+    the axes are identical; the diagnostic power comes from the derivative
+    and integral overlays, which are also deferred to a later sprint.
+    """
+    points = []
+    for _, row in df.iterrows():
+        mbt = float(row["material_balance_time"])
+        nr = float(row["normalized_rate"])
+        if mbt > 0 and nr > 0:
+            points.append(
+                RTATransformPoint(
+                    well_id=str(row["well_id"]),
+                    date=str(row["date"]),
+                    method=RTATypeCurveMethod.AGARWAL_GARDNER,
+                    x=mbt,
+                    y=nr,
+                    x_label="Material balance time (days)",
+                    y_label="Normalized rate qo/Δp (STB/d/psi)",
+                    qo_stb_d=float(row["qo_stb_d"]),
+                    pwf_used_psia=float(row["pwf_used_psia"]),
+                    delta_p_psia=float(row["delta_p_psia"]),
+                    normalized_rate=nr,
+                    material_balance_time=mbt,
+                )
+            )
+    return points
+
+
+# ---------------------------------------------------------------------------
+# Dispatch table
+# ---------------------------------------------------------------------------
+
+_TRANSFORM_DISPATCH = {
+    RTATypeCurveMethod.FETKOVICH: _transform_fetkovich,
+    RTATypeCurveMethod.PALACIO_BLASINGAME: _transform_palacio_blasingame,
+    RTATypeCurveMethod.AGARWAL_GARDNER: _transform_agarwal_gardner,
+}
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
+def compute_rta_transforms(
+    *,
+    dataframe: pd.DataFrame,
+    pi_psia: float,
+    methods: Sequence[RTATypeCurveMethod] | None = None,
+) -> list[RTATransformPoint]:
+    """Compute RTA-transformed points from an enriched history DataFrame.
+
+    Args:
+        dataframe:  Enriched history from the M1-M2 pipeline. Must contain
+                    at minimum: well_id, date, qo_stb_d, pwf_used_psia.
+        pi_psia:    Initial reservoir pressure (psia). Used to compute Δp.
+        methods:    Which methods to compute. Defaults to all three.
+
+    Returns:
+        List of RTATransformPoint, one per valid row per method.
+        Empty rows (zero/negative rate or Pwf, or negative drawdown) are
+        silently dropped — the caller should check the count.
+    """
+    if pi_psia <= 0:
+        raise ValueError(f"pi_psia must be positive, got {pi_psia}.")
+
+    _validate_history(dataframe, source="<dataframe>")
+
+    active_methods = list(methods) if methods is not None else list(RTATypeCurveMethod)
+
+    base_df = _compute_base_columns(dataframe, pi_psia)
+
+    all_points: list[RTATransformPoint] = []
+
+    for method in active_methods:
+        transform_fn = _TRANSFORM_DISPATCH[method]
+        method_points = transform_fn(base_df)
+        all_points.extend(method_points)
+
+    return all_points
+
+
+def compute_rta_transforms_from_csv(
+    *,
+    path: Path | str,
+    pi_psia: float,
+    methods: Sequence[RTATypeCurveMethod] | None = None,
+) -> list[RTATransformPoint]:
+    """Load an enriched history CSV and compute RTA transforms.
+
+    Thin wrapper around compute_rta_transforms for filesystem-based workflows.
+    """
+    df = _load_and_validate(Path(path))
+    return compute_rta_transforms(dataframe=df, pi_psia=pi_psia, methods=methods)
+
+
+def rta_points_to_dataframe(points: list[RTATransformPoint]) -> pd.DataFrame:
+    """Convert a list of RTATransformPoint to a tidy DataFrame.
+
+    Useful for inspection, CSV export, and Streamlit display.
+    """
+    if not points:
+        return pd.DataFrame()
+
+    return pd.DataFrame(
+        [
+            {
+                "well_id": p.well_id,
+                "date": p.date,
+                "method": p.method.value,
+                "x": p.x,
+                "y": p.y,
+                "x_label": p.x_label,
+                "y_label": p.y_label,
+                "qo_stb_d": p.qo_stb_d,
+                "pwf_used_psia": p.pwf_used_psia,
+                "delta_p_psia": p.delta_p_psia,
+                "normalized_rate": p.normalized_rate,
+                "material_balance_time": p.material_balance_time,
+            }
+            for p in points
+        ]
+    )
