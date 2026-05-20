@@ -7,6 +7,8 @@ Run from the project root with:
 
 from __future__ import annotations
 
+import io
+import json
 import math
 import sys
 from pathlib import Path
@@ -31,6 +33,11 @@ from src.services.rta_overlay_points_service import (
     build_overlay_points_from_dataframe,
     list_positive_numeric_columns,
     load_history_for_overlay,
+)
+from src.services.rta_export_service import (
+    build_match_summary,
+    save_match_summary,
+    save_overlay_png,
 )
 from src.services.rta_match_params_service import compute_match_params
 from src.services.rta_scenario_service import (
@@ -385,7 +392,7 @@ def _plot_all_curves_streamlit(
     y_multiplier: float,
     method_label: str,
     selected_curve_id: str | None = None,
-) -> None:
+) -> bytes:
     """Plot the full type-curve family + data cloud on one log-log figure."""
     from src.rta_type_curves.models import TypeCurve  # local to avoid circular
 
@@ -472,8 +479,14 @@ def _plot_all_curves_streamlit(
     except Exception:
         pass
 
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=150, bbox_inches="tight")
+    buf.seek(0)
+    png_bytes = buf.getvalue()
+
     st.pyplot(fig, width="stretch")
     plt.close(fig)
+    return png_bytes
 
 
 def _read_uploaded_csv(uploaded_file: Any) -> pd.DataFrame:
@@ -600,6 +613,8 @@ def main() -> None:
         return
 
     reservoir_config = _render_reservoir_config()
+
+    _latest_png_bytes: bytes | None = None
 
     left_col, right_col, params_col = st.columns([1, 2.2, 0.9])
 
@@ -866,7 +881,7 @@ def main() -> None:
                 ),
             )
 
-            _plot_all_curves_streamlit(
+            _latest_png_bytes = _plot_all_curves_streamlit(
                 type_curves=all_method_curves,
                 raw_points=rta_points,
                 x_multiplier=match_config.effective_x_multiplier,
@@ -886,7 +901,7 @@ def main() -> None:
                 "step_factor": _current_step_factor(),
                 "points_count": len(rta_points),
                 "method": method.value,
-                "curve_id": curve_id,
+                "curve_id": ref_curve_id,
                 "anchor_enabled": st.session_state["use_anchor"],
             }
             if use_rta_transforms:
@@ -912,6 +927,7 @@ def main() -> None:
         def _fmt(val: float | None, dec: int = 2) -> str:
             return f"{val:.{dec}f}" if val is not None else "—"
 
+        _mp = None
         try:
             _mp = compute_match_params(
                 config=reservoir_config,
@@ -947,6 +963,45 @@ def main() -> None:
 
         except Exception as exc:
             st.error(str(exc))
+
+        # --- Export section ---
+        if _mp is not None and _latest_png_bytes is not None:
+            st.divider()
+            with st.expander("Exportar", expanded=False):
+                _summary = build_match_summary(
+                    match_params=_mp,
+                    ref_curve_id=ref_curve_id,
+                    config=reservoir_config,
+                )
+                _summary_bytes = json.dumps(
+                    _summary, indent=2, ensure_ascii=False
+                ).encode("utf-8")
+
+                st.download_button(
+                    "⬇ JSON",
+                    data=_summary_bytes,
+                    file_name=f"{reservoir_config.well_id}_rta_match_summary.json",
+                    mime="application/json",
+                    use_container_width=True,
+                )
+                st.download_button(
+                    "⬇ PNG",
+                    data=_latest_png_bytes,
+                    file_name=f"{reservoir_config.well_id}_rta_overlay.png",
+                    mime="image/png",
+                    use_container_width=True,
+                )
+                if st.button("💾 Guardar en output/", use_container_width=True):
+                    try:
+                        saved_json = save_match_summary(_summary, output_dir=OUTPUT_DIR)
+                        saved_png = save_overlay_png(
+                            _latest_png_bytes, reservoir_config.well_id, output_dir=OUTPUT_DIR
+                        )
+                        st.success(
+                            f"`{saved_json.name}`  \n`{saved_png.name}`"
+                        )
+                    except Exception as exc:
+                        st.error(f"Error al exportar: {exc}")
 
 
 if __name__ == "__main__":
