@@ -22,17 +22,35 @@ import matplotlib.ticker as mticker
 import pandas as pd
 import streamlit as st
 
+from src.rta.models import RTAConfig
 from src.rta_type_curves.loader import TypeCurveLoader
-from src.rta_type_curves.overlay import ManualMatchConfig, build_overlay
+from src.rta_type_curves.overlay import ManualMatchConfig, RTAOverlayPoint, build_overlay
 from src.rta_type_curves.registry import TypeCurveRegistry
 from src.services.rta_overlay_points_service import (
     build_overlay_points_from_dataframe,
     list_positive_numeric_columns,
     load_history_for_overlay,
 )
+from src.services.rta_scenario_service import (
+    load_rta_scenario,
+    save_rta_scenario,
+    scenario_path,
+)
+from src.services.rta_transform_service import (
+    RTATransformPoint,
+    compute_rta_transforms,
+)
 
 MIN_MULTIPLIER = 1e-12
 MAX_MULTIPLIER = 1e12
+
+OUTPUT_DIR = PROJECT_ROOT / "output"
+
+_RTA_TRANSFORM_REQUIRED_COLS = {"well_id", "date", "qo_stb_d", "pwf_used_psia"}
+
+
+def _has_rta_transform_columns(df: pd.DataFrame) -> bool:
+    return _RTA_TRANSFORM_REQUIRED_COLS.issubset(set(df.columns))
 
 
 def _inject_arcade_css() -> None:
@@ -90,6 +108,176 @@ def _inject_arcade_css() -> None:
         """,
         unsafe_allow_html=True,
     )
+
+
+def _transform_points_to_overlay(
+    points: list[RTATransformPoint],
+) -> list[RTAOverlayPoint]:
+    return [p.to_overlay_point() for p in points]
+
+
+def _init_reservoir_config_state(config: RTAConfig | None) -> None:
+    """Populate session state with RTAConfig values (only if not already set)."""
+    defaults = config or RTAConfig(well_id="W-001")
+    _ss_defaults: dict[str, object] = {
+        "rta_well_id": defaults.well_id,
+        "rta_pi_psia": defaults.pi_psia,
+        "rta_phi_frac": defaults.phi_frac,
+        "rta_h_ft": defaults.h_ft,
+        "rta_ct_1psi": defaults.ct_1psi,
+        "rta_rw_ft": defaults.rw_ft,
+        "rta_re_ft": defaults.re_ft or 0.0,
+        "rta_area_acres": defaults.area_acres or 0.0,
+        "rta_Bo_rb_stb": defaults.Bo_rb_stb,
+        "rta_mu_o_cp": defaults.mu_o_cp,
+        "rta_CA": defaults.CA,
+    }
+    for key, value in _ss_defaults.items():
+        if key not in st.session_state:
+            st.session_state[key] = value
+
+
+def _current_rta_config() -> RTAConfig:
+    """Build RTAConfig from current session state values."""
+    re_ft_val = float(st.session_state["rta_re_ft"])
+    area_val = float(st.session_state["rta_area_acres"])
+    return RTAConfig(
+        well_id=str(st.session_state["rta_well_id"]).strip() or "W-001",
+        pi_psia=float(st.session_state["rta_pi_psia"]),
+        phi_frac=float(st.session_state["rta_phi_frac"]),
+        h_ft=float(st.session_state["rta_h_ft"]),
+        ct_1psi=float(st.session_state["rta_ct_1psi"]),
+        rw_ft=float(st.session_state["rta_rw_ft"]),
+        re_ft=re_ft_val if re_ft_val > 0 else None,
+        area_acres=area_val if area_val > 0 else None,
+        Bo_rb_stb=float(st.session_state["rta_Bo_rb_stb"]),
+        mu_o_cp=float(st.session_state["rta_mu_o_cp"]),
+        CA=float(st.session_state["rta_CA"]),
+    )
+
+
+def _render_reservoir_config() -> RTAConfig:
+    """Render the reservoir/fluid configuration panel and return current config."""
+    with st.expander("Parámetros de yacimiento / fluidos", expanded=False):
+        st.caption(
+            "Estos valores alimentan el cálculo de variables RTA físicas "
+            "(Δp, tasa normalizada, MBT) y, en el próximo commit, los parámetros "
+            "de yacimiento desde el match point (kh, k, OOIP)."
+        )
+
+        col_a, col_b = st.columns(2)
+
+        with col_a:
+            st.text_input("ID del pozo", key="rta_well_id")
+            st.number_input(
+                "pi — Presión inicial (psia)",
+                min_value=100.0,
+                max_value=20000.0,
+                step=50.0,
+                format="%.1f",
+                key="rta_pi_psia",
+            )
+            st.number_input(
+                "φ — Porosidad (fracción)",
+                min_value=0.001,
+                max_value=0.999,
+                step=0.005,
+                format="%.4f",
+                key="rta_phi_frac",
+            )
+            st.number_input(
+                "h — Espesor neto (ft)",
+                min_value=0.1,
+                max_value=5000.0,
+                step=1.0,
+                format="%.1f",
+                key="rta_h_ft",
+            )
+            st.number_input(
+                "ct — Compresibilidad total (1/psi)",
+                min_value=1e-7,
+                max_value=1e-2,
+                step=1e-6,
+                format="%.2e",
+                key="rta_ct_1psi",
+            )
+
+        with col_b:
+            st.number_input(
+                "rw — Radio de pozo (ft)",
+                min_value=0.01,
+                max_value=5.0,
+                step=0.01,
+                format="%.4f",
+                key="rta_rw_ft",
+            )
+            st.number_input(
+                "re — Radio de drene (ft, 0 = no definido)",
+                min_value=0.0,
+                max_value=50000.0,
+                step=10.0,
+                format="%.1f",
+                key="rta_re_ft",
+            )
+            st.number_input(
+                "Área de drene (acres, 0 = no definida)",
+                min_value=0.0,
+                max_value=100000.0,
+                step=5.0,
+                format="%.2f",
+                key="rta_area_acres",
+            )
+            st.number_input(
+                "Bo — Factor volumétrico de aceite (RB/STB)",
+                min_value=0.5,
+                max_value=5.0,
+                step=0.01,
+                format="%.4f",
+                key="rta_Bo_rb_stb",
+            )
+            st.number_input(
+                "μo — Viscosidad de aceite (cp)",
+                min_value=0.1,
+                max_value=1000.0,
+                step=0.1,
+                format="%.3f",
+                key="rta_mu_o_cp",
+            )
+            st.number_input(
+                "CA — Factor de forma Dietz",
+                min_value=0.1,
+                max_value=100.0,
+                step=0.1,
+                format="%.4f",
+                help="31.62 = drene circular (default). Ver Tabla B-1, Earlougher 1977.",
+                key="rta_CA",
+            )
+
+        try:
+            config = _current_rta_config()
+        except Exception as exc:
+            st.error(f"Configuración inválida: {exc}")
+            config = RTAConfig(well_id="W-001")
+
+        save_col, status_col = st.columns([1, 3])
+        with save_col:
+            if st.button("Guardar escenario", type="primary"):
+                try:
+                    saved_path = save_rta_scenario(config, output_dir=OUTPUT_DIR)
+                    st.session_state["rta_scenario_saved"] = str(saved_path)
+                except Exception as exc:
+                    st.error(f"No se pudo guardar: {exc}")
+
+        with status_col:
+            saved = st.session_state.get("rta_scenario_saved")
+            if saved:
+                st.success(f"Guardado: `{Path(saved).name}`")
+            else:
+                saved_file = scenario_path(config.well_id, output_dir=OUTPUT_DIR)
+                if saved_file.exists():
+                    st.info(f"Escenario previo en disco: `{saved_file.name}`")
+
+    return config
 
 
 def _load_registry() -> TypeCurveRegistry:
@@ -241,6 +429,13 @@ def _reset_match() -> None:
 def main() -> None:
     """Run the standalone M4 overlay screen."""
     st.set_page_config(page_title="M4 RTA Type-Curve Overlay", layout="wide")
+
+    # Pre-load saved scenario (if any) to seed reservoir config defaults.
+    if "rta_scenario_loaded" not in st.session_state:
+        existing = load_rta_scenario("W-001", output_dir=OUTPUT_DIR)
+        _init_reservoir_config_state(existing)
+        st.session_state["rta_scenario_loaded"] = True
+
     _init_match_state()
     _inject_arcade_css()
 
@@ -265,6 +460,8 @@ def main() -> None:
     if not available_methods:
         st.error("No hay curvas tipo disponibles.")
         return
+
+    reservoir_config = _render_reservoir_config()
 
     left_col, right_col = st.columns([1, 2])
 
@@ -317,28 +514,57 @@ def main() -> None:
             st.error(f"No fue posible leer el CSV cargado: {exc}")
             return
 
-        numeric_columns = list_positive_numeric_columns(history_df)
+        # --- Determine overlay source ---
+        # If the CSV has qo_stb_d + pwf_used_psia, compute physically-meaningful
+        # RTA transforms using pi_psia from the reservoir config panel.
+        # Otherwise fall back to arbitrary column selection.
+        use_rta_transforms = _has_rta_transform_columns(history_df)
 
-        if not numeric_columns:
-            st.error("El CSV no tiene columnas numéricas positivas para log-log.")
-            return
+        rta_transform_points: list[RTATransformPoint] = []
+        x_column: str = ""
+        y_column: str = ""
+        label_column: str | None = "date" if "date" in history_df.columns else None
 
-        default_x_index = 0
-        default_y_index = 1 if len(numeric_columns) > 1 else 0
+        if use_rta_transforms:
+            st.success(
+                "CSV con columnas RTA detectadas (`qo_stb_d`, `pwf_used_psia`). "
+                "Usando pi = **{:.0f} psia** del panel de configuración.".format(
+                    reservoir_config.pi_psia
+                )
+            )
+            try:
+                rta_transform_points = compute_rta_transforms(
+                    dataframe=history_df,
+                    pi_psia=reservoir_config.pi_psia,
+                )
+            except Exception as exc:
+                st.error(f"Error al calcular variables RTA: {exc}")
+                return
+        else:
+            st.info(
+                "CSV sin columnas RTA estándar. Selecciona columnas X/Y manualmente. "
+                "Para usar variables físicas (MBT, tasa normalizada), el CSV debe "
+                "incluir `well_id`, `date`, `qo_stb_d`, `pwf_used_psia`."
+            )
+            numeric_columns = list_positive_numeric_columns(history_df)
 
-        x_column = st.selectbox(
-            "Columna X para puntos RTA",
-            options=numeric_columns,
-            index=default_x_index,
-        )
+            if not numeric_columns:
+                st.error("El CSV no tiene columnas numéricas positivas para log-log.")
+                return
 
-        y_column = st.selectbox(
-            "Columna Y para puntos RTA",
-            options=numeric_columns,
-            index=default_y_index,
-        )
+            default_x_index = 0
+            default_y_index = 1 if len(numeric_columns) > 1 else 0
 
-        label_column = "date" if "date" in history_df.columns else None
+            x_column = st.selectbox(
+                "Columna X para puntos RTA",
+                options=numeric_columns,
+                index=default_x_index,
+            )
+            y_column = st.selectbox(
+                "Columna Y para puntos RTA",
+                options=numeric_columns,
+                index=default_y_index,
+            )
 
         st.subheader("Matching manual")
 
@@ -446,13 +672,35 @@ def main() -> None:
         st.subheader("Overlay log-log")
 
         try:
-            rta_points = build_overlay_points_from_dataframe(
-                dataframe=history_df,
-                x_column=x_column,
-                y_column=y_column,
-                label_column=label_column,
-                date_column="date",
-            )
+            if use_rta_transforms and rta_transform_points:
+                # Filter to the selected method and convert to overlay points
+                from src.rta_type_curves.models import RTATypeCurveMethod
+                method_map = {m.value: m for m in RTATypeCurveMethod}
+                selected_method_enum = method_map.get(method.value, method)
+                method_points = [
+                    p for p in rta_transform_points
+                    if p.method == selected_method_enum
+                ]
+                if not method_points:
+                    st.warning(
+                        f"Sin puntos para el método {method.value} con el CSV cargado."
+                    )
+                    return
+                rta_points = _transform_points_to_overlay(method_points)
+                if method_points:
+                    st.caption(
+                        f"Ejes: **{method_points[0].x_label}** (X) · "
+                        f"**{method_points[0].y_label}** (Y) · "
+                        f"{len(method_points)} puntos válidos"
+                    )
+            else:
+                rta_points = build_overlay_points_from_dataframe(
+                    dataframe=history_df,
+                    x_column=x_column,
+                    y_column=y_column,
+                    label_column=label_column,
+                    date_column="date",
+                )
 
             anchor_data_x = (
                 float(st.session_state["anchor_data_x"])
@@ -494,26 +742,26 @@ def main() -> None:
 
             st.subheader("Multiplicadores efectivos")
 
-            st.json(
-                {
-                    "x_multiplier_input": match_config.x_multiplier,
-                    "y_multiplier_input": match_config.y_multiplier,
-                    "effective_x_multiplier": match_config.effective_x_multiplier,
-                    "effective_y_multiplier": match_config.effective_y_multiplier,
-                    "min_multiplier": MIN_MULTIPLIER,
-                    "max_multiplier": MAX_MULTIPLIER,
-                    "sensitivity_decades": st.session_state[
-                        "match_sensitivity_decades"
-                    ],
-                    "step_factor": _current_step_factor(),
-                    "points_count": len(rta_points),
-                    "method": method.value,
-                    "curve_id": curve_id,
-                    "x_column": x_column,
-                    "y_column": y_column,
-                    "anchor_enabled": st.session_state["use_anchor"],
-                }
-            )
+            match_info: dict[str, object] = {
+                "x_multiplier_input": match_config.x_multiplier,
+                "y_multiplier_input": match_config.y_multiplier,
+                "effective_x_multiplier": match_config.effective_x_multiplier,
+                "effective_y_multiplier": match_config.effective_y_multiplier,
+                "sensitivity_decades": st.session_state["match_sensitivity_decades"],
+                "step_factor": _current_step_factor(),
+                "points_count": len(rta_points),
+                "method": method.value,
+                "curve_id": curve_id,
+                "anchor_enabled": st.session_state["use_anchor"],
+            }
+            if use_rta_transforms:
+                match_info["data_source"] = "rta_transform_service"
+                match_info["pi_psia"] = reservoir_config.pi_psia
+            else:
+                match_info["data_source"] = "manual_column_selection"
+                match_info["x_column"] = x_column
+                match_info["y_column"] = y_column
+            st.json(match_info)
 
             with st.expander("Vista previa de datos"):
                 st.dataframe(history_df.head(50), width="stretch")
