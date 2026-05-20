@@ -41,13 +41,13 @@ producción en los Llanos Orientales."
 
 | Módulo | Descripción | Estado |
 |--------|-------------|--------|
-| M1 | Info de pozo, historia de producción, estimación Pwf | Implementado parcialmente |
-| M2 | PVT: Bo, Rs, μo, correlaciones Standing/Beggs-Robinson | Implementado parcialmente |
+| M1 | Info de pozo, historia de producción, Pwf v2 (D-W), esquema mecánico + QC | Funcional |
+| M2 | PVT: Rs/Bo/μo/ρo — Standing (1947), Vasquez-Beggs (1980), Beggs-Robinson (1975) | Funcional |
 | M3 | DCA: curvas de declinación Arps | Funcional con pruebas |
 | M4 | RTA mediante curvas tipo | En desarrollo activo |
 | M5 | Resultados integrados del pozo | Pendiente |
 
-Tests: `pytest` debe pasar en verde antes de cualquier commit. Último estado: 27 passed.
+Tests: `pytest` debe pasar en verde antes de cualquier commit. Último estado: 296 passed.
 
 ---
 
