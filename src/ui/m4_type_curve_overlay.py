@@ -54,55 +54,68 @@ def _has_rta_transform_columns(df: pd.DataFrame) -> bool:
 
 
 def _inject_arcade_css() -> None:
-    """Inject lightweight arcade-inspired CSS for the joystick section."""
+    """Inject arcade-inspired CSS for the joystick section."""
     st.markdown(
         """
         <style>
         .arcade-panel {
-            background: linear-gradient(180deg, #17112b 0%, #0d0a1a 100%);
-            border: 2px solid #ff4fd8;
-            border-radius: 14px;
-            padding: 14px 16px 10px 16px;
+            background: #07050f;
+            border: 1.5px solid #5b21b6;
+            border-radius: 18px;
+            padding: 16px 18px 14px 18px;
             box-shadow:
-                0 0 10px rgba(255, 79, 216, 0.35),
-                0 0 18px rgba(0, 255, 255, 0.18);
+                0 0 0 1px rgba(91, 33, 182, 0.4),
+                0 0 24px rgba(91, 33, 182, 0.22),
+                0 0 48px rgba(0, 210, 255, 0.06),
+                inset 0 1px 0 rgba(255, 255, 255, 0.04);
             margin-top: 0.5rem;
             margin-bottom: 1rem;
         }
 
         .arcade-title {
-            color: #00f7ff;
-            font-weight: 800;
-            letter-spacing: 1px;
-            font-size: 1.05rem;
+            color: #a78bfa;
+            font-weight: 700;
+            letter-spacing: 2.5px;
+            font-size: 0.78rem;
             text-transform: uppercase;
-            margin-bottom: 0.35rem;
-            text-shadow: 0 0 8px rgba(0, 247, 255, 0.6);
+            margin-bottom: 0.15rem;
+            text-shadow: 0 0 12px rgba(167, 139, 250, 0.7);
         }
 
         .arcade-subtitle {
-            color: #ffd166;
-            font-size: 0.92rem;
-            margin-bottom: 0.7rem;
+            color: rgba(200, 190, 230, 0.45);
+            font-size: 0.78rem;
+            margin-bottom: 0.9rem;
+            letter-spacing: 0.3px;
         }
 
         div[data-testid="stButton"] > button {
-            border-radius: 12px;
-            border: 2px solid #00f7ff;
-            background: linear-gradient(180deg, #2a1e56 0%, #191233 100%);
-            color: #ffffff;
-            font-weight: 800;
+            border-radius: 10px;
+            border: 1.5px solid rgba(167, 139, 250, 0.5);
+            background: linear-gradient(160deg, #1e1333 0%, #110c22 100%);
+            color: #c4b5fd;
+            font-weight: 700;
+            font-size: 1.1rem;
+            letter-spacing: 0.5px;
+            transition: all 0.12s ease;
             box-shadow:
-                0 0 8px rgba(0, 247, 255, 0.20),
-                inset 0 0 6px rgba(255, 79, 216, 0.10);
+                0 0 6px rgba(139, 92, 246, 0.15),
+                inset 0 1px 0 rgba(255, 255, 255, 0.05);
         }
 
         div[data-testid="stButton"] > button:hover {
-            border-color: #ffd166;
-            color: #ffd166;
+            border-color: #a78bfa;
+            color: #ede9fe;
+            background: linear-gradient(160deg, #2d1f50 0%, #1a1238 100%);
             box-shadow:
-                0 0 12px rgba(255, 209, 102, 0.30),
-                inset 0 0 8px rgba(255, 79, 216, 0.14);
+                0 0 14px rgba(167, 139, 250, 0.35),
+                inset 0 1px 0 rgba(255, 255, 255, 0.08);
+            transform: translateY(-1px);
+        }
+
+        div[data-testid="stButton"] > button:active {
+            transform: translateY(1px);
+            box-shadow: 0 0 4px rgba(139, 92, 246, 0.2);
         }
         </style>
         """,
@@ -570,28 +583,28 @@ def main() -> None:
 
         st.markdown('<div class="arcade-panel">', unsafe_allow_html=True)
         st.markdown(
-            '<div class="arcade-title">Arcade Match Control</div>',
+            '<div class="arcade-title">Match Control</div>',
             unsafe_allow_html=True,
         )
         st.markdown(
             '<div class="arcade-subtitle">'
-            "Joystick logarítmico para mover la nube de puntos"
+            "joystick logarítmico · mueve la nube de puntos sobre la curva tipo"
             "</div>",
             unsafe_allow_html=True,
         )
 
         st.select_slider(
-            "Sensibilidad logarítmica (décadas por paso)",
+            "Sensibilidad",
             options=[0.01, 0.05, 0.1, 0.25, 0.5, 1.0],
             key="match_sensitivity_decades",
-            format_func=lambda value: f"{value:g} décadas/paso",
+            format_func=lambda value: f"{value:g}",
         )
 
         multiplier_col1, multiplier_col2 = st.columns(2)
 
         with multiplier_col1:
             st.number_input(
-                "x_multiplier",
+                "Escala X",
                 min_value=MIN_MULTIPLIER,
                 max_value=MAX_MULTIPLIER,
                 format="%.6g",
@@ -600,7 +613,7 @@ def main() -> None:
 
         with multiplier_col2:
             st.number_input(
-                "y_multiplier",
+                "Escala Y",
                 min_value=MIN_MULTIPLIER,
                 max_value=MAX_MULTIPLIER,
                 format="%.6g",
@@ -608,26 +621,24 @@ def main() -> None:
             )
 
         st.caption(
-            "Cada pulsación aplica un factor multiplicativo de "
-            f"{_current_step_factor():.6g} "
-            f"(10^{st.session_state['match_sensitivity_decades']})."
+            f"Paso actual: ×{_current_step_factor():.6g} por pulsación"
         )
 
         up_cols = st.columns([1, 1, 1])
         with up_cols[1]:
-            st.button("⬆ UP", width="stretch", on_click=_move_up)
+            st.button("▲", width="stretch", on_click=_move_up)
 
         mid_cols = st.columns([1, 1, 1])
         with mid_cols[0]:
-            st.button("⬅ LEFT", width="stretch", on_click=_move_left)
+            st.button("◀", width="stretch", on_click=_move_left)
         with mid_cols[1]:
-            st.button("RESET", width="stretch", on_click=_reset_match)
+            st.button("⟳", width="stretch", on_click=_reset_match)
         with mid_cols[2]:
-            st.button("RIGHT ➡", width="stretch", on_click=_move_right)
+            st.button("▶", width="stretch", on_click=_move_right)
 
         down_cols = st.columns([1, 1, 1])
         with down_cols[1]:
-            st.button("⬇ DOWN", width="stretch", on_click=_move_down)
+            st.button("▼", width="stretch", on_click=_move_down)
 
         st.markdown("</div>", unsafe_allow_html=True)
 
