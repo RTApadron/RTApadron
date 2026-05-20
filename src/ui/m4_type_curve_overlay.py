@@ -7,6 +7,7 @@ Run from the project root with:
 
 from __future__ import annotations
 
+import math
 import sys
 from pathlib import Path
 from tempfile import NamedTemporaryFile
@@ -170,6 +171,27 @@ def _current_rta_config() -> RTAConfig:
     )
 
 
+_FT2_PER_ACRE = 43_560.0
+
+
+def _on_re_ft_change() -> None:
+    """Sync area when user edits drainage radius."""
+    re = float(st.session_state.get("rta_re_ft", 0.0))
+    if re > 0:
+        st.session_state["rta_area_acres"] = round(
+            math.pi * re ** 2 / _FT2_PER_ACRE, 4
+        )
+
+
+def _on_area_change() -> None:
+    """Sync radius when user edits drainage area."""
+    area = float(st.session_state.get("rta_area_acres", 0.0))
+    if area > 0:
+        st.session_state["rta_re_ft"] = round(
+            math.sqrt(area * _FT2_PER_ACRE / math.pi), 2
+        )
+
+
 def _render_reservoir_config() -> RTAConfig:
     """Render the reservoir/fluid configuration panel and return current config."""
     with st.expander("Parámetros de yacimiento / fluidos", expanded=False):
@@ -226,20 +248,24 @@ def _render_reservoir_config() -> RTAConfig:
                 key="rta_rw_ft",
             )
             st.number_input(
-                "re — Radio de drene (ft, 0 = no definido)",
+                "re — Radio de drene (ft)",
                 min_value=0.0,
                 max_value=50000.0,
                 step=10.0,
                 format="%.1f",
                 key="rta_re_ft",
+                on_change=_on_re_ft_change,
+                help="Al cambiar re, el área se recalcula automáticamente.",
             )
             st.number_input(
-                "Área de drene (acres, 0 = no definida)",
+                "Área de drene (acres)",
                 min_value=0.0,
                 max_value=100000.0,
-                step=5.0,
-                format="%.2f",
+                step=1.0,
+                format="%.3f",
                 key="rta_area_acres",
+                on_change=_on_area_change,
+                help="Al cambiar el área, re se recalcula automáticamente.",
             )
             st.number_input(
                 "Bo — Factor volumétrico de aceite (RB/STB)",
@@ -575,7 +601,7 @@ def main() -> None:
 
     reservoir_config = _render_reservoir_config()
 
-    left_col, right_col = st.columns([1, 2])
+    left_col, right_col, params_col = st.columns([1, 2.2, 0.9])
 
     with left_col:
         st.subheader("Curva tipo")
@@ -872,50 +898,55 @@ def main() -> None:
                 match_info["y_column"] = y_column
             st.json(match_info)
 
-            # --- Match parameters panel ---
-            st.subheader("Parámetros del match (DEMO)")
-            try:
-                match_params = compute_match_params(
-                    config=reservoir_config,
-                    effective_x_multiplier=match_config.effective_x_multiplier,
-                    effective_y_multiplier=match_config.effective_y_multiplier,
-                    method=method.value,
-                )
-
-                if match_params.warnings:
-                    for w in match_params.warnings:
-                        st.warning(w)
-
-                param_cols = st.columns(3)
-                with param_cols[0]:
-                    st.metric(
-                        "kh (mD·ft)",
-                        f"{match_params.kh_md_ft:.1f}" if match_params.kh_md_ft else "—",
-                    )
-                with param_cols[1]:
-                    st.metric(
-                        "k (mD)",
-                        f"{match_params.k_md:.3f}" if match_params.k_md else "—",
-                    )
-                with param_cols[2]:
-                    n_mm = (
-                        f"{match_params.n_vol_stb / 1e6:.2f} MM STB"
-                        if match_params.n_vol_stb
-                        else "—"
-                    )
-                    st.metric("N vol. (OOIP)", n_mm)
-
-                with st.expander("Detalle parámetros match"):
-                    st.json(match_params.as_dict())
-
-            except Exception as exc:
-                st.error(f"Error al calcular parámetros del match: {exc}")
-
             with st.expander("Vista previa de datos"):
                 st.dataframe(history_df.head(50), width="stretch")
 
         except Exception as exc:
             st.error(f"No fue posible construir el overlay: {exc}")
+
+    # --- Parameters panel — always rendered next to the plot ---
+    with params_col:
+        st.subheader("Parámetros")
+        st.caption("DEMO")
+
+        def _fmt(val: float | None, dec: int = 2) -> str:
+            return f"{val:.{dec}f}" if val is not None else "—"
+
+        try:
+            _mp = compute_match_params(
+                config=reservoir_config,
+                effective_x_multiplier=_clamp_multiplier(
+                    st.session_state.get("x_multiplier", 1.0)
+                ),
+                effective_y_multiplier=_clamp_multiplier(
+                    st.session_state.get("y_multiplier", 1.0)
+                ),
+                method=method.value,
+            )
+            st.metric("kh (mD·ft)", _fmt(_mp.kh_md_ft, 1))
+            st.metric("k (mD)", _fmt(_mp.k_md, 3))
+            st.metric(
+                "N vol. (MM STB)",
+                f"{_mp.n_vol_stb / 1e6:.3f}" if _mp.n_vol_stb else "—",
+            )
+            st.divider()
+            st.metric("re (ft)", _fmt(_mp.re_ft, 0))
+            st.metric("Área (acres)", _fmt(_mp.area_acres, 1))
+            st.metric("ln(re/rw)−½", _fmt(_mp.ln_re_rw_term, 3))
+            st.divider()
+            st.caption(f"Escala X: {st.session_state.get('x_multiplier', 1.0):.4g}")
+            st.caption(f"Escala Y: {st.session_state.get('y_multiplier', 1.0):.4g}")
+
+            if _mp.warnings:
+                with st.expander("⚠ Advertencias", expanded=False):
+                    for w in _mp.warnings:
+                        st.warning(w, icon="⚠")
+
+            with st.expander("JSON", expanded=False):
+                st.json(_mp.as_dict())
+
+        except Exception as exc:
+            st.error(str(exc))
 
 
 if __name__ == "__main__":
