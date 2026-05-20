@@ -24,10 +24,33 @@ class RTAConfig(BaseModel):
     phi_frac: float = Field(0.18, gt=0.0, le=1.0, description="Porosity fraction.")
     h_ft: float = Field(50.0, gt=0.0, description="Net pay thickness.")
     rw_ft: float = Field(0.328, gt=0.0, description="Wellbore radius.")
+    re_ft: float | None = Field(
+        default=None,
+        gt=0.0,
+        description="Drainage radius (ft). Leave blank if area_acres is provided.",
+    )
     area_acres: float | None = Field(
         default=None,
         gt=0.0,
-        description="Optional drainage area.",
+        description="Drainage area (acres). Used by Agarwal-Gardner (tDA).",
+    )
+    Bo_rb_stb: float = Field(
+        1.20,
+        gt=0.0,
+        description="Average oil formation volume factor (RB/STB).",
+    )
+    mu_o_cp: float = Field(
+        2.0,
+        gt=0.0,
+        description="Average oil viscosity (cp).",
+    )
+    CA: float = Field(
+        31.62,
+        gt=0.0,
+        description=(
+            "Dietz shape factor. Default 31.62 for circular drainage (Table B-1, "
+            "Earlougher 1977). Used in Blasingame bpss calculation."
+        ),
     )
     swi_frac: float | None = Field(
         default=None,
@@ -38,7 +61,7 @@ class RTAConfig(BaseModel):
     notes: str | None = Field(
         default="Defaults iniciales M4. Revisar con datos reales del pozo.",
     )
-    rta_model_version: str = "m4-rta-config-0.1"
+    rta_model_version: str = "m4-rta-config-0.2"
 
     @field_validator("well_id")
     @classmethod
@@ -57,7 +80,11 @@ class RTAConfig(BaseModel):
             "phi_frac": self.phi_frac,
             "h_ft": self.h_ft,
             "rw_ft": self.rw_ft,
+            "re_ft": self.re_ft,
             "area_acres": self.area_acres,
+            "Bo_rb_stb": self.Bo_rb_stb,
+            "mu_o_cp": self.mu_o_cp,
+            "CA": self.CA,
             "swi_frac": self.swi_frac,
             "rta_model_version": self.rta_model_version,
         }
