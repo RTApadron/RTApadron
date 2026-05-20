@@ -1,0 +1,5 @@
+method,curve_id,curve_family,x,y,x_label,y_label,source,status,notes
+agarwal_gardner,agarwal_gardner_demo_radial,combined_decline_type_curve_demo,0.01,0.97,tD,qD,internal_demo,demo,Placeholder only. Replace with validated Agarwal-Gardner table or digitized curve.
+agarwal_gardner,agarwal_gardner_demo_radial,combined_decline_type_curve_demo,0.1,0.76,tD,qD,internal_demo,demo,Placeholder only. Replace with validated Agarwal-Gardner table or digitized curve.
+agarwal_gardner,agarwal_gardner_demo_radial,combined_decline_type_curve_demo,1.0,0.33,tD,qD,internal_demo,demo,Placeholder only. Replace with validated Agarwal-Gardner table or digitized curve.
+agarwal_gardner,agarwal_gardner_demo_radial,combined_decline_type_curve_demo,10.0,0.08,tD,qD,internal_demo,demo,Placeholder only. Replace with validated Agarwal-Gardner table or digitized curve.

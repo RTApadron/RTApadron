@@ -1,0 +1,5 @@
+method,curve_id,curve_family,x,y,x_label,y_label,source,status,notes
+fetkovich,fetkovich_demo_b_0_0,arps_decline_demo,0.01,0.99,tDd,qDd,internal_demo,demo,Placeholder only. Replace with validated Fetkovich table or digitized curve.
+fetkovich,fetkovich_demo_b_0_0,arps_decline_demo,0.1,0.91,tDd,qDd,internal_demo,demo,Placeholder only. Replace with validated Fetkovich table or digitized curve.
+fetkovich,fetkovich_demo_b_0_0,arps_decline_demo,1.0,0.5,tDd,qDd,internal_demo,demo,Placeholder only. Replace with validated Fetkovich table or digitized curve.
+fetkovich,fetkovich_demo_b_0_0,arps_decline_demo,10.0,0.09,tDd,qDd,internal_demo,demo,Placeholder only. Replace with validated Fetkovich table or digitized curve.
