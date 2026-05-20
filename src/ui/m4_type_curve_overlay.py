@@ -45,6 +45,10 @@ from src.services.rta_scenario_service import (
     save_rta_scenario,
     scenario_path,
 )
+from src.services.rta_qc_service import (
+    run_rta_qc,
+    qc_severity_level,
+)
 from src.services.rta_transform_service import (
     RTATransformPoint,
     compute_rta_transforms,
@@ -632,6 +636,8 @@ def main() -> None:
     reservoir_config = _render_reservoir_config()
 
     _latest_png_bytes: bytes | None = None
+    # Will be populated inside right_col when RTA transforms are active
+    _qc_transform_points: list[RTATransformPoint] = []
 
     left_col, right_col, params_col = st.columns([1, 2.2, 0.9])
 
@@ -862,6 +868,7 @@ def main() -> None:
                 if not method_points:
                     st.warning(f"Sin puntos para el método {method.value}.")
                     return
+                _qc_transform_points = method_points   # expose to params_col QC section
                 rta_points = _transform_points_to_overlay(method_points)
                 st.caption(
                     f"Ejes: **{method_points[0].x_label}** (X) · "
@@ -1005,6 +1012,34 @@ def main() -> None:
                 with st.expander("⚠ Advertencias", expanded=False):
                     for w in _mp.warnings:
                         st.warning(w, icon="⚠")
+
+            # --- QC técnico M4 ---
+            if _qc_transform_points:
+                _qc_x = _clamp_multiplier(
+                    st.session_state.get("x_multiplier", 1.0)
+                )
+                _qc_y = _clamp_multiplier(
+                    st.session_state.get("y_multiplier", 1.0)
+                )
+                _qc_results = run_rta_qc(
+                    points=_qc_transform_points,
+                    effective_x_multiplier=_qc_x,
+                    effective_y_multiplier=_qc_y,
+                )
+                _qc_level = qc_severity_level(_qc_results)
+                _qc_header = {
+                    "ok": "✅ QC técnico",
+                    "warning": "⚠️ QC técnico",
+                    "error": "🔴 QC técnico",
+                }.get(_qc_level, "QC técnico")
+                with st.expander(_qc_header, expanded=_qc_level != "ok"):
+                    for _r in _qc_results:
+                        if _r.severity == "error":
+                            st.error(f"**{_r.title}**  \n{_r.detail}", icon="🔴")
+                        elif _r.severity == "warning":
+                            st.warning(f"**{_r.title}**  \n{_r.detail}", icon="⚠️")
+                        else:
+                            st.success(f"**{_r.title}**  \n{_r.detail}", icon="✅")
 
             with st.expander("JSON", expanded=False):
                 st.json(_mp.as_dict())
