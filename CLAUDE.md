@@ -46,9 +46,9 @@ producción en los Llanos Orientales."
 | M2 | PVT: Rs/Bo/μo/ρo — Standing (1947), Vasquez-Beggs (1980), Beggs-Robinson (1975) | ✅ Funcional | `test_pvt_correlations.py` (46) |
 | M3 | DCA: curvas de declinación Arps | ✅ Funcional | varios |
 | M4 | RTA curvas tipo (Fetkovich, Blasingame, Agarwal-Gardner), match manual, QC | 🔧 Activo | varios |
-| M5 | Resultados integrados, dashboard comparativo, reporte tesis | ⏳ Pendiente | — |
+| M5 | Resultados integrados, dashboard comparativo, exportación CSV/JSON/Excel/PDF | ✅ Funcional | `test_m5_aggregator_service.py` (29) + `test_m5_export_service.py` (26) |
 
-**Tests totales: 296 passed, 1 warning (Pydantic v1 @validator en `src/well_mod/models.py`)**
+**Tests totales: 351 passed, 1 warning (Pydantic v1 @validator en `src/well_mod/models.py`)**
 
 ---
 
@@ -72,7 +72,8 @@ src/
 ├── ui/
 │   ├── m1_well_editor.py          — Editor estado mecánico + esquema + Pwf
 │   ├── m2_pvt_editor.py           — PVT interactivo: curvas, comparación corrs., lab manual/CSV
-│   └── m4_type_curve_overlay.py   — Overlay curvas tipo, match arcade log-log, QC
+│   ├── m4_type_curve_overlay.py   — Overlay curvas tipo, match arcade log-log, QC
+│   └── m5_results_dashboard.py    — Dashboard M5: 6 pestañas (Resumen/PVT/DCA/RTA/Comparativo/Exportar)
 ├── well_mod/
 │   ├── pwf.py                     — estimate_pwf_v1 (legacy), estimate_pwf_v2 (D-W/Churchill)
 │   ├── schematic.py               — draw_well_schematic(), schematic_to_png_bytes()
@@ -84,7 +85,8 @@ src/
 │   ├── m2_pvt_adapter.py          — build_pvt_table() estático, NO tocar (lo usan tests integración)
 │   └── m1_loader_adapter.py
 ├── domain/
-│   └── models.py                  — WellStatic, HistoryPoint, PVTConfig, PVTPoint, EnrichedHistoryPoint
+│   ├── models.py                  — WellStatic, HistoryPoint, PVTConfig, PVTPoint, EnrichedHistoryPoint
+│   └── m5_models.py               — WellResultsSummary, WellInfoSummary, PVTSummary, DCASummary, RTASummary
 ├── rta_type_curves/
 │   ├── overlay.py                 — ManualMatchConfig, build_overlay()
 │   └── models.py                  — RTATypeCurveMethod, TypeCurve, CurveDataStatus
@@ -186,12 +188,12 @@ Parámetros desde match:
 - [ ] Exportación M4: `output/<well_id>_rta_results.csv`, `_match_summary.json`, PNG
 - [ ] Pulido UI M4
 
-### M5 — pendiente (todo)
-- [ ] Modelo común de resultados (unificar M1–M4)
-- [ ] Dashboard comparativo (EUR DCA vs volumen contactado RTA vs OOIP)
-- [ ] Reporte exportable (CSV/JSON consolidado)
-- [ ] QC final y trazabilidad
-- [ ] Tabla para tesis (comparación vs Harmony)
+### M5 — pendiente
+- [ ] QC final y trazabilidad (badges medido/estimado/calculado en UI)
+- [ ] Tabla para tesis (comparación vs Harmony IHS/Fekete)
+- [x] Modelo común de resultados (WellResultsSummary — commit 1e18d48)
+- [x] Dashboard comparativo EUR DCA vs OOIP volumétrico (commit 1e18d48)
+- [x] Exportación consolidada CSV/JSON/Excel/PDF (commit 2423e60)
 
 ---
 
@@ -233,5 +235,6 @@ pytest tests/test_well_mech_qc_service.py -v               # solo mecánico M1
 python -m streamlit run src/ui/m1_well_editor.py            # UI M1 estado mecánico
 python -m streamlit run src/ui/m2_pvt_editor.py            # UI M2 PVT
 python -m streamlit run src/ui/m4_type_curve_overlay.py    # UI M4 RTA
+python -m streamlit run src/ui/m5_results_dashboard.py     # UI M5 resultados integrados
 python src/pipeline/run_full_workflow.py                    # pipeline M1-M2-M3
 ```
