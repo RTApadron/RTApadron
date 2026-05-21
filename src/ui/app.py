@@ -4356,6 +4356,19 @@ def main() -> None:
     ui_pvt_config_json_path = get_active_pvt_config_path()
     pvt_config_json_path = ui_pvt_config_json_path or uploaded_pvt_config_json_path
 
+    # Si no hay config PVT, generar y guardar valores por defecto automáticamente.
+    # El pipeline siempre requiere --pvt-config-json; esto evita el error de argumento.
+    if pvt_config_json_path is None:
+        _default = default_pvt_config(inputs["well_id"])
+        pvt_config_json_path = save_pvt_config_from_ui(_default, inputs["well_id"])
+        st.warning(
+            f"⚠️ PVT no configurado — se usarán valores por defecto "
+            f"(**API {_default['api']}°**, T {_default['temp_f']} °F, "
+            f"correlación: `{_default['oil_corr']}`).  \n"
+            "Ajusta los parámetros reales del pozo en el tab **M2 PVT** "
+            "antes de interpretar los resultados."
+        )
+
     if history_csv_path is not None:
         st.caption(f"Historia usada por el workflow: `{history_csv_path}`")
 
