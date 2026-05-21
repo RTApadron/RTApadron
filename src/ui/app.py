@@ -80,6 +80,28 @@ SESSION_RTA_POINT_SELECTION_PATH = "rta_point_selection_ui_path"
 SESSION_RTA_MATCH_ANCHOR_X = "rta_match_anchor_x"
 SESSION_RTA_MATCH_ANCHOR_Y = "rta_match_anchor_y"
 SESSION_ACTIVE_MODULE = "active_module"
+SESSION_HISTORY_MAPPER_ACTIVE = "history_mapper_active"
+SESSION_HISTORY_MAPPED_PATH = "history_mapped_csv_path"
+SESSION_HISTORY_RAW_PATH = "history_raw_csv_path"
+
+# ---------------------------------------------------------------------------
+# Column mapping — required / optional columns for the history CSV
+# ---------------------------------------------------------------------------
+
+# Each entry: (target_col, human description, list of aliases for auto-detection)
+_REQUIRED_HISTORY_COLS: list[tuple[str, str, list[str]]] = [
+    ("date",          "Fecha de medición",          ["date", "fecha", "Date", "Fecha", "timestamp", "Time", "FECHA"]),
+    ("qo_stb_d",      "Caudal aceite [STB/d]",      ["qo_stb_d", "Qo", "qo", "qo_bbl_d", "aceite_bbl_d", "oil_rate", "q_oil", "QO"]),
+    ("qg_mscf_d",     "Caudal gas [MSCF/d]",        ["qg_mscf_d", "Qg", "qg", "gas_rate", "qg_mscfd", "q_gas", "QG"]),
+    ("qw_stb_d",      "Caudal agua [STB/d]",        ["qw_stb_d", "Qw", "qw", "qw_bbl_d", "agua_bbl_d", "water_rate", "q_water", "QW"]),
+    ("whp_psia",      "Presión cabeza [psia]",       ["whp_psia", "whp", "WHP", "p_cabeza", "presion_cabeza", "wh_pressure", "CHP"]),
+    ("t_wh_f",        "Temp. cabeza [°F]",           ["t_wh_f", "T_wh", "twh", "temp_wh", "Twh", "WHT", "t_cab_f"]),
+]
+
+_OPTIONAL_HISTORY_COLS: list[tuple[str, str, list[str]]] = [
+    ("pwf_measured_psia", "Pwf medido (gauge fondo) [psia]", ["pwf_measured_psia", "pwf", "Pwf", "p_fondo", "BHP", "bhp_psia", "pwf_psia"]),
+    ("well_id",           "ID del pozo (se infiere si falta)", ["well_id", "pozo", "Pozo", "well", "WELL_ID", "ID"]),
+]
 
 GEOMETRY_FIELDS = {
     "well_id": "",
@@ -4038,6 +4060,138 @@ def render_interactive_dca_final_plots(artifacts: WorkflowArtifacts) -> None:
             )
 
 
+def _auto_detect_mapping(csv_cols: list[str]) -> dict[str, str | None]:
+    """Case-insensitive auto-detection of target columns from CSV headers."""
+    csv_lower = {c.lower(): c for c in csv_cols}
+    result: dict[str, str | None] = {}
+    all_cols = _REQUIRED_HISTORY_COLS + _OPTIONAL_HISTORY_COLS
+    for target_col, _, aliases in all_cols:
+        matched: str | None = None
+        for alias in aliases:
+            if alias in csv_cols:          # exact match first
+                matched = alias
+                break
+            if alias.lower() in csv_lower: # case-insensitive fallback
+                matched = csv_lower[alias.lower()]
+                break
+        result[target_col] = matched
+    return result
+
+
+def render_history_column_mapper(raw_csv_path: Path, well_id: str) -> None:
+    """Full-page column mapper shown in the main area when a raw upload needs mapping."""
+    st.subheader("🗂 Mapeo de columnas del CSV")
+    st.caption(
+        "Asigna las columnas de tu archivo a las variables que espera ecoRTA. "
+        "El sistema detectó las más probables automáticamente — revisa y ajusta si es necesario."
+    )
+
+    try:
+        df = pd.read_csv(raw_csv_path)
+    except Exception as exc:
+        st.error(f"Error leyendo el CSV: {exc}")
+        return
+
+    csv_cols = list(df.columns)
+    auto_map = _auto_detect_mapping(csv_cols)
+
+    with st.expander(
+        f"📄 Vista previa — {len(df):,} filas · {len(csv_cols)} columnas detectadas",
+        expanded=True,
+    ):
+        st.dataframe(df.head(8), use_container_width=True)
+
+    NONE_OPT = "— (columna no disponible)"
+    options = [NONE_OPT] + csv_cols
+
+    st.divider()
+    req_col, opt_col = st.columns(2)
+    mapping: dict[str, str | None] = {}
+
+    with req_col:
+        st.markdown("**Columnas obligatorias** *(todas deben asignarse)*")
+        for target_col, description, _ in _REQUIRED_HISTORY_COLS:
+            auto = auto_map.get(target_col)
+            idx = options.index(auto) if auto in options else 0
+            icon = "✅" if auto is not None else "⚠️"
+            selected = st.selectbox(
+                f"{icon} `{target_col}` — {description}",
+                options=options,
+                index=idx,
+                key=f"colmap_{target_col}",
+            )
+            mapping[target_col] = None if selected == NONE_OPT else selected
+
+    with opt_col:
+        st.markdown("**Columnas opcionales** *(deja vacías si no las tienes)*")
+        for target_col, description, _ in _OPTIONAL_HISTORY_COLS:
+            auto = auto_map.get(target_col)
+            idx = options.index(auto) if auto in options else 0
+            selected = st.selectbox(
+                f"📋 `{target_col}` — {description}",
+                options=options,
+                index=idx,
+                key=f"colmap_{target_col}",
+            )
+            mapping[target_col] = None if selected == NONE_OPT else selected
+
+    missing_req = [c for c, _, _ in _REQUIRED_HISTORY_COLS if not mapping.get(c)]
+
+    st.divider()
+    if missing_req:
+        st.warning(
+            f"⚠️ {len(missing_req)} columna(s) obligatoria(s) sin asignar: "
+            + ", ".join(f"`{c}`" for c in missing_req)
+        )
+    else:
+        st.success("✅ Todas las columnas obligatorias están asignadas.")
+
+    btn_confirm, btn_skip = st.columns([3, 1])
+
+    if btn_confirm.button(
+        "✅ Confirmar mapeo y preparar CSV",
+        type="primary",
+        disabled=bool(missing_req),
+        use_container_width=True,
+    ):
+        rename = {v: k for k, v in mapping.items() if v is not None}
+        mapped_df = df.rename(columns=rename)
+        target = UI_INPUT_DIR / f"{well_id}_history_mapped.csv"
+        mapped_df.to_csv(target, index=False)
+        st.session_state[SESSION_HISTORY_MAPPED_PATH] = str(target)
+        st.session_state[SESSION_HISTORY_MAPPER_ACTIVE] = False
+        st.rerun()
+
+    if btn_skip.button(
+        "Usar sin mapear",
+        use_container_width=True,
+        help="Usa el CSV tal como está sin cambiar nombres de columnas.",
+    ):
+        st.session_state[SESSION_HISTORY_MAPPED_PATH] = str(raw_csv_path)
+        st.session_state[SESSION_HISTORY_MAPPER_ACTIVE] = False
+        st.rerun()
+
+
+def clear_all_analysis(well_id: str) -> int:
+    """Delete all output and upload files for well_id. Returns count deleted."""
+    import glob
+    safe = well_id.strip()
+    count = 0
+    for pattern in [
+        str(OUTPUT_DIR / f"{safe}_*.csv"),
+        str(OUTPUT_DIR / f"{safe}_*.json"),
+        str(OUTPUT_DIR / f"{safe}_*.png"),
+        str(OUTPUT_DIR / f"{safe}_*.xlsx"),
+        str(OUTPUT_DIR / f"{safe}_*.pdf"),
+        str(UI_INPUT_DIR / f"{safe}_*.csv"),
+        str(UI_INPUT_DIR / f"{safe}_*.json"),
+    ]:
+        for fpath in glob.glob(pattern):
+            Path(fpath).unlink(missing_ok=True)
+            count += 1
+    return count
+
+
 def render_sidebar_nav() -> dict[str, Any]:
     """Sidebar redesigned as module navigator with traffic-light status indicators.
 
@@ -4214,6 +4368,41 @@ def render_sidebar_nav() -> dict[str, Any]:
             step=1.0,
             help="Tasa económica o técnica de abandono.",
         )
+
+    # ── Limpiar análisis (zona de peligro) ────────────────────────────────
+    st.sidebar.divider()
+    with st.sidebar.expander("🗑 Limpiar análisis", expanded=False):
+        st.warning(
+            "Elimina **todos** los resultados y archivos del workflow para "
+            f"el pozo **{well_id or '(sin ID)'}**. Esta acción es irreversible."
+        )
+        _confirm_clear = st.checkbox(
+            f"Confirmo que quiero borrar todo para `{well_id or '(sin ID)'}`",
+            key="confirm_clear_checkbox",
+        )
+        if st.button(
+            "🗑 Borrar todo",
+            type="primary",
+            disabled=not _confirm_clear or not well_id,
+            use_container_width=True,
+        ):
+            _deleted = clear_all_analysis(well_id)
+            # Clear relevant session state
+            for _key in [
+                SESSION_HISTORY_MAPPED_PATH,
+                SESSION_HISTORY_RAW_PATH,
+                SESSION_HISTORY_MAPPER_ACTIVE,
+                SESSION_EDITED_HISTORY_PATH,
+                SESSION_PVT_CONFIG_PATH,
+                SESSION_RTA_CONFIG_PATH,
+                SESSION_RTA_MATCH_CONFIG_PATH,
+                SESSION_RTA_POINT_SELECTION_PATH,
+                f"m5_summary_{well_id}",
+            ]:
+                st.session_state.pop(_key, None)
+            st.session_state["confirm_clear_checkbox"] = False
+            st.toast(f"✅ {_deleted} archivo(s) eliminados para `{well_id}`.", icon="🗑")
+            st.rerun()
 
     return {
         "history_upload": history_upload,
@@ -4603,7 +4792,39 @@ def main() -> None:
         f"{inputs['well_id']}_history_upload.csv",
     )
     edited_history_csv_path = get_active_edited_history_path()
-    history_csv_path = edited_history_csv_path or uploaded_history_csv_path
+
+    # ── Column mapper — detect new upload and trigger mapping UI ──────────
+    if uploaded_history_csv_path is not None:
+        _last_raw = st.session_state.get(SESSION_HISTORY_RAW_PATH)
+        if str(uploaded_history_csv_path) != _last_raw:
+            # New file uploaded: reset mapping and trigger mapper
+            st.session_state[SESSION_HISTORY_RAW_PATH] = str(uploaded_history_csv_path)
+            st.session_state[SESSION_HISTORY_MAPPER_ACTIVE] = True
+            st.session_state.pop(SESSION_HISTORY_MAPPED_PATH, None)
+
+    # Show mapper if active (new upload hasn't been mapped yet)
+    if st.session_state.get(SESSION_HISTORY_MAPPER_ACTIVE) and uploaded_history_csv_path is not None:
+        render_history_column_mapper(uploaded_history_csv_path, inputs["well_id"])
+        st.divider()
+        render_artifacts(inputs["well_id"])
+        return
+
+    # Determine which CSV to use for the workflow:
+    # priority: edited history > mapped upload > raw upload
+    _mapped_str = st.session_state.get(SESSION_HISTORY_MAPPED_PATH)
+    _mapped_path = Path(_mapped_str) if _mapped_str else None
+    if _mapped_path and _mapped_path.exists():
+        history_csv_path = _mapped_path
+    else:
+        history_csv_path = edited_history_csv_path or uploaded_history_csv_path
+
+    # Show "re-map" option when a mapped file is active
+    if _mapped_path and _mapped_path.exists() and uploaded_history_csv_path is not None:
+        st.caption(f"Historia mapeada activa: `{_mapped_path.name}`")
+        if st.button("🔄 Re-mapear columnas del CSV", use_container_width=False):
+            st.session_state[SESSION_HISTORY_MAPPER_ACTIVE] = True
+            st.session_state.pop(SESSION_HISTORY_MAPPED_PATH, None)
+            st.rerun()
 
     uploaded_pvt_config_json_path = save_uploaded_file(
         inputs["pvt_config_upload"],
