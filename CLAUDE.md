@@ -38,21 +38,52 @@ producción en los Llanos Orientales."
 
 ---
 
-## Estado de módulos (actualizado 2026-05-21)
+## Estado de módulos (actualizado 2026-05-21 — sesión tarde)
 
 | Módulo | Descripción | Estado | Tests |
 |--------|-------------|--------|-------|
-| M1 | Historia de producción, Pwf v2 Darcy-Weisbach, esquema mecánico + 9 QC checks | ✅ Funcional | `test_well_mech_qc_service.py` (51) |
-| M2 | PVT: Rs/Bo/μo/ρo — Standing (1947), Vasquez-Beggs (1980), Beggs-Robinson (1975) | ✅ Funcional | `test_pvt_correlations.py` (46) |
-| M3 | DCA: curvas de declinación Arps | ✅ Funcional | varios |
-| M4 | RTA curvas tipo (Fetkovich, Blasingame, Agarwal-Gardner), match manual, kh/k/OOIP, export | ✅ Funcional + integrado en hub | varios |
-| M5 | Resultados integrados, dashboard 7 pestañas, exportación, tabla comparativa | ✅ Funcional + integrado en hub | `test_m5_aggregator_service.py` (29) + `test_m5_export_service.py` (26) + `test_m5_comparison_service.py` (36) |
+| M1 | Historia + Pwf v2 D-W + esquema mecánico + 9 QC checks + editor embebido en hub | ✅ Funcional | `test_well_mech_qc_service.py` (51) |
+| M2 | PVT: Rs/Bo/μo/ρo — Standing, Vasquez-Beggs, Beggs-Robinson; fix bug gráficas | ✅ Funcional | `test_pvt_correlations.py` (46) |
+| M3 | DCA multi-método Arps (exp/hip/arm) con sliders Di/b, EUR, colores, semáforo OK | ✅ Funcional | varios |
+| M4 | RTA curvas tipo, match manual joystick con sensibilidad Grueso/Medio/Fino | ✅ Funcional + integrado | varios |
+| M5 | Resultados integrados, dashboard 7 pestañas, exportación, tabla comparativa | ✅ Funcional + integrado | varios |
+| Inicio | Pantalla bienvenida: well_id, botones acción, tarjetas M1→M5, semáforo, GPL-3 | ✅ Nuevo 2026-05-21 | — |
 
 **Tests totales: 387 passed, 1 warning (Pydantic v1 @validator en `src/well_mod/models.py`)**
 
 ---
 
 ## Historial de commits relevantes (más recientes primero)
+
+### Sprint UX tarde — 2026-05-21 (commits 8dc3b8d → 2f957ed)
+
+**`8dc3b8d` — fix(m4): sensibilidad joystick Grueso/Medio/Fino**
+- `select_slider` numérico → `radio` con etiquetas descriptivas
+- Grueso ×3.2/click · Medio ×1.26/click · Fino ×1.05/click
+- `match_sensitivity_decades` float sigue siendo fuente de verdad
+
+**`83d1295` — fix(m3): semáforo, multi-método DCA, sliders Di/b, colores**
+- `st.rerun()` post-éxito: sidebar actualiza semáforo M3 correctamente
+- Multi-método: checkboxes Exp🔴 / Hip🔵 / Arm🟠 — curvas simultáneas
+- Sliders Di (%/año efectivo) y b por método; conversión correcta a nominal/día
+- Panel EUR por método (MSTB / MM STB) debajo de la gráfica
+- Excluye `forecast_start_rate` / `abandonment_rate` de curvas overlay
+- Checklist visible solo en M1; M2 semáforo 🟡 con defaults / 🟢 si usuario guardó
+- PVT defaults escritos a `_pvt_config_default.json` (separado de `_pvt_config_ui.json`)
+
+**`981f310` — fix(m1): uploader Historia, survey import, editor embebido**
+- CSV uploader movido de sidebar → M1 pestaña Historia (2-col: carga + status)
+- Importador survey CSV/XLSX: calcula `inclination_deg = arccos(ΔTVD/ΔMD)`
+- `render_m1_editor_embedded(well_id)` en `m1_well_editor.py`: casing/tubing/ESP/
+  perforaciones + esquema matplotlib + QC mecánico; guarda a `_well_geometry.json`
+- `main()` lee upload desde `st.session_state["m1_hist_uploader"]`
+- Botón "🔄 Actualizar Historia" deshabilitado sin geometría configurada
+
+**`2f957ed` — fix(m2): gráficas PVT + feat(inicio): pantalla bienvenida**
+- Fix bug: `_lab_pair = df[["P_psia", col]].dropna()` evita error x/y distintos tamaños
+- Pantalla Inicio: hero well_id, botones acción, tarjetas M1→M5 con flechas, semáforo,
+  disclaimer GPL-3; contacto: `robert.padron@ecopetrol.com.co`
+- Sidebar: 🏠 Inicio → M1-M5-Descargas → ❓ Ayuda; app abre en Inicio por defecto
 
 ### M4 integration bridges — 2026-05-21 (commit 64021b3)
 
@@ -125,7 +156,8 @@ src/
 │   └── integration_service.py
 ├── ui/
 │   ├── app.py                     — HUB PRINCIPAL (ver arquitectura abajo)
-│   ├── m1_well_editor.py          — Editor estado mecánico + esquema + Pwf (standalone)
+│   ├── m1_well_editor.py          — Editor estado mecánico + esquema + Pwf (standalone);
+│   │                                exporta render_m1_editor_embedded(well_id)
 │   ├── m2_pvt_editor.py           — PVT interactivo; exporta render_m2_embedded(well_id)
 │   ├── m4_type_curve_overlay.py   — Overlay curvas tipo; exporta render_m4_joystick_embedded(well_id, output_dir)
 │   └── m5_results_dashboard.py    — Dashboard M5; exporta render_m5_embedded(well_id, output_dir)
@@ -175,30 +207,48 @@ data/
 ```
 configure_page() → initialize_session_defaults() → apply_light_css() → ensure_dirs()
     ↓
-render_sidebar_nav()          ← devuelve inputs dict; muestra logo, nav M1-M5, uploaders,
-                                 DCA window, forecast, limpiar análisis
+Título "ecoRTA" + caption (ocultos si active == "Inicio")
     ↓
-save_uploaded_file()          ← guarda CSV/JSON en data/ui_uploads/
+render_sidebar_nav()
+  ← 🏠 Inicio | M1-M5 | Descargas | ❓ Ayuda
+  ← ID del pozo (text_input), PVT upload, DCA window, forecast, limpiar análisis
+  ← devuelve inputs dict (SIN history_upload — movido a M1 pestaña Historia)
+    ↓
+st.session_state.get("m1_hist_uploader") → _hist_upload_widget
+save_uploaded_file(_hist_upload_widget)  ← guarda CSV en data/ui_uploads/
     ↓
 Column mapper (si hay upload nuevo sin mapear)
   → render_history_column_mapper(): auto-sep, auto-fecha, normaliza a ISO YYYY-MM-DD
   → [early return con render_artifacts()]
     ↓
 Resolver history_csv_path (mapped > edited > raw)
-Resolver pvt_config_json_path (ui > uploaded > defaults auto-generados)
+Resolver pvt_config_json_path:
+  - ui_pvt_config_ui.json (guardado explícito M2) → 🟢
+  - uploaded_pvt_config.json (upload sidebar) → 🟢
+  - _pvt_config_default.json (auto-generado) → no modifica semáforo M2
     ↓
-Checklist 4 pasos (expanders):
-  Paso 1 — Historia (status + re-mapear)
-  Paso 2 — Estado mecánico/survey (context-aware, apunta a pestaña Geometría/Survey)
-  Paso 3 — PVT (warning defaults + botón → M2)
-  Paso 4 — ▶ Ejecutar M1-M2 (build_m1m2_command → --skip-dca)
+_show_checklist = (active == "M1")
+  if not _show_checklist:
+    - compact status bar (excepto Inicio/Ayuda)
+    - render_artifacts() → return
+  else (M1):
+    Checklist 4 pasos (expanders):
+      Paso 1 — Historia (status + re-mapear)
+      Paso 2 — Estado mecánico/survey (context-aware)
+      Paso 3 — PVT (warning defaults + botón → M2)
+      Paso 4 — 🔄 Actualizar Historia (disabled sin geometría; on success: st.rerun())
     ↓
 render_artifacts(well_id, inputs=inputs)
-  active == "M1"  → header + banner + tabs [📊 Historia | ⚙️ Geometría/Survey | ✏️ Edición Pwf]
-  active == "M2"  → render_m2_embedded(well_id)
-  active == "M3"  → ▶ Ejecutar M3 DCA (build_m3_command → --dca-only) + tabs DCA
-  active == "M4"  → render_m4_joystick_embedded(well_id, output_dir)
-  active == "M5"  → render_m5_embedded(well_id, output_dir)
+  active == "Inicio"    → hero + tarjetas M1→M5 + semáforo + GPL-3
+  active == "Ayuda"     → placeholder + contacto
+  active == "M1"        → tabs [📊 Historia (uploader + render_m1_summary) |
+                                 ⚙️ Geometría/Survey (render_m1_editor_embedded +
+                                                       render_m1_geometry_and_survey_panel) |
+                                 ✏️ Edición Pwf]
+  active == "M2"        → render_m2_embedded(well_id)
+  active == "M3"        → ▶ Ejecutar M3 DCA + ajuste interactivo multi-método
+  active == "M4"        → render_m4_joystick_embedded(well_id, output_dir)
+  active == "M5"        → render_m5_embedded(well_id, output_dir)
   active == "Descargas" → render_downloads_tab(artifacts)
 ```
 
@@ -216,13 +266,17 @@ build_full_workflow_command(...)   ← mantenido para compatibilidad, ya no se u
 
 ### Session state keys relevantes
 ```python
-SESSION_ACTIVE_MODULE          = "active_module"          # M1/M2/M3/M4/M5/Descargas
+SESSION_ACTIVE_MODULE          = "active_module"          # Inicio/M1/M2/M3/M4/M5/Descargas/Ayuda
 SESSION_HISTORY_MAPPER_ACTIVE  = "history_mapper_active"  # bool
 SESSION_HISTORY_MAPPED_PATH    = "history_mapped_csv_path"
 SESSION_HISTORY_RAW_PATH       = "history_raw_csv_path"
 SESSION_EDITED_HISTORY_PATH    = "edited_history_csv_path"
 SESSION_PVT_CONFIG_PATH        = "pvt_config_ui_path"
-# clear checkbox reset: "clear_checkbox_version" (int, versionado para evitar StreamlitAPIException)
+# Widget keys con estado persistente:
+"m1_hist_uploader"             # file_uploader en M1 pestaña Historia
+"m1_survey_import_upload"      # file_uploader importador survey en Geometría/Survey
+"inicio_confirm_clear"         # bool — confirmación limpiar desde Inicio
+"clear_checkbox_version"       # int — versión para evitar StreamlitAPIException
 ```
 
 ---
@@ -234,32 +288,70 @@ SESSION_PVT_CONFIG_PATH        = "pvt_config_ui_path"
 | `src/rta_pvt/pvt_tools.py` | `a_standing()` usa `(T_F - 460)` en vez de `T_F` — Pb incorrecto (~3× bajo) | ⚠️ Conocido, no corregido (legacy) |
 | `src/well_mod/models.py` | `@validator` de Pydantic v1 — genera deprecation warning | ⚠️ Conocido, no urgente |
 | Curvas tipo | Datos digitalizados son DEMO, no calibrados contra papers | ⏳ Pendiente digitalizar |
-| `m1_well_editor.py` | No tiene `render_m1_editor_embedded()` → el esquema mecánico (casings/tubing) no aparece en el hub | ⏳ Pendiente (chip de tarea generado) |
+| `app.py` M1 Geometría | Dos paneles de guardado en la misma pestaña (`render_m1_editor_embedded` + `render_m1_geometry_and_survey_panel`). Ambos escriben `_well_geometry.json` — el último en guardar gana. Revisar si unificar o eliminar uno. | ⚠️ Revisar mañana |
 
 **Regla:** usar siempre `src/services/pvt_correlations.py` para PVT nuevo, nunca `pvt_tools.py`.
 
 ---
 
-## Pending work por módulo
+## Pending work — para mañana (2026-05-22)
 
-### M4 — integración al workflow ✅ COMPLETADO (commit 64021b3)
+### 🔴 Prioridad alta
 
-- [x] Auto-carga `output/{well_id}_history_enriched.csv`; uploader como override
-- [x] Pre-populación `rta_Bo_rb_stb` / `rta_mu_o_cp` desde `{well_id}_pvt_config_ui.json`
-- [x] `rta_well_id` sembrado desde well_id del hub (no "W-001")
-- [x] Textos obsoletos corregidos (`st.info` y caption)
+1. **Unificar paneles de geometría en M1** — la pestaña ⚙️ Geometría/Survey tiene dos
+   secciones de guardado: `render_m1_editor_embedded` (casing/tubing visual) y
+   `render_m1_geometry_and_survey_panel` (formulario simple + survey editable). Decidir si:
+   - Opción A: eliminar el formulario simple y dejar solo el editor embebido + survey
+   - Opción B: hacer que el editor embebido actualice automáticamente los campos del formulario
+   - Opción C: separar en sub-pestañas: "Esquema visual" | "Formulario" | "Survey"
 
-### Hub / UX — pendiente
-- [ ] `render_m1_editor_embedded(well_id)` en `m1_well_editor.py` — para mostrar esquema
-      mecánico (casings, tubing, ESP) dentro del módulo M1 del hub sin set_page_config
-      (chip de tarea ya generado — ver deuda técnica)
-- [ ] QC final M5: badges medido/estimado/calculado/demo en UI
+2. **Validar workflow end-to-end con datos reales** — subir `Data W001 18May2026.xlsx`
+   o `history_W001.csv`, configurar geometría, correr M1-M2, correr M3 DCA, revisar
+   semáforos, revisar que M4 auto-carga historia enriquecida.
 
-### M5 — completado
-- [x] Modelo común de resultados (WellResultsSummary)
-- [x] Dashboard comparativo EUR DCA vs OOIP volumétrico
-- [x] Exportación consolidada CSV/JSON/Excel/PDF
-- [x] Tabla comparativa vs software comercial de referencia (semáforo match/close/diverge)
+3. **Feedback pendiente del usuario** — el usuario mencionó "varios feedback más" al cerrar
+   la sesión. Preguntar al inicio de la próxima sesión qué otros cambios quiere revisar.
+
+### 🟡 Prioridad media
+
+4. **M2 — guardar PVT activa el semáforo 🟢** — verificar que después de hacer clic en
+   "Guardar config PVT" en M2 el semáforo cambia a verde en tiempo real (sin refresh manual).
+   Puede requerir `st.rerun()` al guardar.
+
+5. **Pantalla Inicio — well_id prompt** — cuando `well_id` está vacío, la tarjeta verde
+   muestra "(sin definir)". Considerar mostrar un campo de texto prominente directamente
+   en Inicio para que el usuario lo defina ahí (actualmente solo está en el sidebar).
+
+6. **M3 — ajuste DCA desde pipeline vs interactivo** — el ajuste interactivo (sliders)
+   y el run del pipeline DCA son independientes. Revisar si hay forma de pre-cargar los
+   resultados del pipeline (Di, b, qi óptimos) como valores iniciales de los sliders.
+
+7. **Módulo Ayuda** — actualmente solo muestra "próximamente". Podría tener:
+   - Guía rápida de flujo M1→M5
+   - Tabla de unidades
+   - Referencia de correlaciones PVT usadas
+   - Contacto (ya está: robert.padron@ecopetrol.com.co)
+
+### 🟢 Prioridad baja / futuro
+
+8. **Exportar / Importar análisis** — botón "📥 Importar análisis" en pantalla Inicio
+   está en `disabled=True`. Requiere diseñar formato de exportación (.zip con JSONs
+   + CSVs de output) y servicio de importación.
+
+9. **Curvas tipo** — datos actuales son DEMO. Digitalizar curvas reales de los papers
+   para Fetkovich (SPE-4629), Blasingame (SPE-25909), Agarwal-Gardner (SPE-49222).
+
+10. **Pydantic v1 warning** — `@validator` en `src/well_mod/models.py` → migrar a
+    `@field_validator` de Pydantic v2 (baja urgencia, no rompe nada).
+
+### ✅ Completado sesión 2026-05-21 (mañana + tarde)
+- [x] M4 bridges: auto-carga historia, PVT pre-populate, well_id seeding
+- [x] M4 joystick: radio Grueso/Medio/Fino reemplaza select_slider numérico
+- [x] M3: multi-método checkboxes, sliders Di/b, EUR panel, semáforo fix, colores
+- [x] M1: CSV uploader movido a pestaña Historia, survey importer, editor embebido
+- [x] M2: fix bug gráficas PVT (dropna pareado), semáforo 🟡 con defaults / 🟢 con config
+- [x] Pantalla Inicio: hero, tarjetas M1→M5, semáforo, GPL-3, contacto
+- [x] Sidebar: 🏠 Inicio + ❓ Ayuda, app abre en Inicio por defecto
 
 ---
 
