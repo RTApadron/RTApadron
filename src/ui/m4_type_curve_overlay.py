@@ -555,11 +555,19 @@ def _clamp_multiplier(value: float) -> float:
     return min(max(float(value), MIN_MULTIPLIER), MAX_MULTIPLIER)
 
 
+_SENSITIVITY_LEVELS: dict[str, float] = {
+    "Grueso": 0.5,   # ×3.2 per click  — posicionamiento inicial rápido
+    "Medio":  0.1,   # ×1.26 per click — ajuste general (default)
+    "Fino":   0.02,  # ×1.05 per click — refinamiento de precisión
+}
+
+
 def _init_match_state() -> None:
     """Initialize session-state values for manual matching."""
     defaults = {
         "x_multiplier": 1.0,
         "y_multiplier": 1.0,
+        "match_sensitivity_label": "Medio",
         "match_sensitivity_decades": 0.1,
         "use_anchor": False,
         "anchor_data_x": 1.0,
@@ -618,6 +626,7 @@ def _reset_match() -> None:
     """Reset manual matching controls."""
     st.session_state["x_multiplier"] = 1.0
     st.session_state["y_multiplier"] = 1.0
+    st.session_state["match_sensitivity_label"] = "Medio"
     st.session_state["match_sensitivity_decades"] = 0.1
     st.session_state["use_anchor"] = False
     st.session_state["anchor_data_x"] = 1.0
@@ -828,12 +837,20 @@ def _run_m4_overlay(
             unsafe_allow_html=True,
         )
 
-        st.select_slider(
-            "Sensibilidad",
-            options=[0.01, 0.05, 0.1, 0.25, 0.5, 1.0],
-            key="match_sensitivity_decades",
-            format_func=lambda value: f"{value:g}",
+        _sens_label = st.radio(
+            "Sensibilidad del joystick",
+            options=list(_SENSITIVITY_LEVELS.keys()),
+            horizontal=True,
+            key="match_sensitivity_label",
         )
+        # Sync the numeric key used by _current_step_factor()
+        st.session_state["match_sensitivity_decades"] = _SENSITIVITY_LEVELS[_sens_label]
+        _sens_descs = {
+            "Grueso": "×3.2 por click — posicionamiento inicial",
+            "Medio":  "×1.26 por click — ajuste general",
+            "Fino":   "×1.05 por click — refinamiento de precisión",
+        }
+        st.caption(_sens_descs[_sens_label])
 
         multiplier_col1, multiplier_col2 = st.columns(2)
 
