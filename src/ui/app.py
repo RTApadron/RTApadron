@@ -79,6 +79,7 @@ SESSION_RTA_MATCH_CONFIG_PATH = "rta_match_config_ui_path"
 SESSION_RTA_POINT_SELECTION_PATH = "rta_point_selection_ui_path"
 SESSION_RTA_MATCH_ANCHOR_X = "rta_match_anchor_x"
 SESSION_RTA_MATCH_ANCHOR_Y = "rta_match_anchor_y"
+SESSION_ACTIVE_MODULE = "active_module"
 
 GEOMETRY_FIELDS = {
     "well_id": "",
@@ -154,6 +155,72 @@ def ensure_dirs() -> None:
     UI_INPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 
+def compute_module_status(well_id: str, output_dir: Path) -> dict[str, str]:
+    """Return status for each module: 'ok' | 'warning' | 'missing'.
+
+    Used by the sidebar navigation to show 🟢 / 🟡 / 🔴 indicators.
+    """
+    safe = well_id.strip()
+    status: dict[str, str] = {}
+
+    # M1 — historia enriquecida + QC
+    enriched = output_dir / f"{safe}_history_enriched.csv"
+    if enriched.exists():
+        qc_json = output_dir / f"{safe}_dca_qc_report.json"
+        has_warnings = False
+        if qc_json.exists():
+            try:
+                import json as _json
+                with open(qc_json, encoding="utf-8") as _f:
+                    _qc = _json.load(_f)
+                if isinstance(_qc.get("warnings"), list) and _qc["warnings"]:
+                    has_warnings = True
+            except Exception:
+                pass
+        status["M1"] = "warning" if has_warnings else "ok"
+    else:
+        status["M1"] = "missing"
+
+    # M2 — configuración PVT guardada por la UI
+    pvt_cfg = UI_INPUT_DIR / f"{safe}_pvt_config_ui.json"
+    status["M2"] = "ok" if pvt_cfg.exists() else "missing"
+
+    # M3 — resultados DCA
+    dca_fit = output_dir / f"{safe}_dca_fit_results.csv"
+    dca_qc = output_dir / f"{safe}_dca_qc_report.json"
+    if dca_fit.exists():
+        has_dca_warnings = False
+        if dca_qc.exists():
+            try:
+                import json as _json
+                with open(dca_qc, encoding="utf-8") as _f:
+                    _dqc = _json.load(_f)
+                sims = _dqc.get("models_with_similar_rmse", [])
+                if isinstance(sims, list) and len(sims) > 1:
+                    has_dca_warnings = True
+            except Exception:
+                pass
+        status["M3"] = "warning" if has_dca_warnings else "ok"
+    else:
+        status["M3"] = "missing"
+
+    # M4 — diagnósticos RTA + match
+    rta_diag = output_dir / f"{safe}_rta_diagnostics.csv"
+    rta_match = output_dir / f"{safe}_rta_match_summary.json"
+    if rta_match.exists():
+        status["M4"] = "ok"
+    elif rta_diag.exists():
+        status["M4"] = "warning"
+    else:
+        status["M4"] = "missing"
+
+    # M5 — al menos un módulo aguas arriba tiene datos
+    upstream_ok = any(v in ("ok", "warning") for v in list(status.values()))
+    status["M5"] = "ok" if upstream_ok else "missing"
+
+    return status
+
+
 def initialize_session_defaults() -> None:
     pending_window = st.session_state.pop(SESSION_PENDING_FIT_WINDOW, None)
     if pending_window is not None:
@@ -192,6 +259,7 @@ def initialize_session_defaults() -> None:
         SESSION_PWF_OVERRIDE_MODE,
         "prefer_measured_else_estimated",
     )
+    st.session_state.setdefault(SESSION_ACTIVE_MODULE, "M1")
 
 
 def apply_light_css() -> None:
@@ -3970,6 +4038,144 @@ def render_interactive_dca_final_plots(artifacts: WorkflowArtifacts) -> None:
             )
 
 
+def render_sidebar_nav() -> dict[str, Any]:
+    """Sidebar redesigned as module navigator with traffic-light status indicators.
+
+    Returns the same dict as the old render_sidebar_inputs() so main() is unchanged.
+    """
+    # ── Well identification ────────────────────────────────────────────────
+    st.sidebar.markdown("## 🛢 ecoRTA")
+    well_id = st.sidebar.text_input(
+        "ID del pozo (well_id)",
+        value="W001",
+        help="Identificador único del pozo — se usa como prefijo en todos los archivos de output.",
+    ).strip()
+
+    st.sidebar.divider()
+
+    # ── Module navigation buttons with traffic-light indicators ───────────
+    st.sidebar.markdown("### 📋 Módulos")
+
+    _module_meta = [
+        ("M1",        "🗂 M1 — Pozo & Pwf",   "Historia, mecanismo, estimación Pwf"),
+        ("M2",        "🧪 M2 — PVT",           "Correlaciones PVT: Rs, Bo, μo, ρo"),
+        ("M3",        "📉 M3 — DCA",           "Declinación Arps: exp/hip/armónica"),
+        ("M4",        "🔬 M4 — RTA",           "Curvas tipo Fetkovich / Blasingame / AG"),
+        ("M5",        "📊 M5 — Resultados",    "Dashboard integrado, comparativo y exportación"),
+        ("Descargas", "⬇ Descargas",           "Todos los artefactos del workflow"),
+    ]
+
+    _status_map = compute_module_status(well_id, OUTPUT_DIR) if well_id else {}
+    _traffic = {"ok": "🟢", "warning": "🟡", "missing": "🔴"}
+    _active = st.session_state.get(SESSION_ACTIVE_MODULE, "M1")
+
+    for _mod_key, _mod_label, _mod_help in _module_meta:
+        _light = _traffic.get(_status_map.get(_mod_key, "missing"), "🔴")
+        _btn_label = f"{_light} {_mod_label}"
+        _is_active = _active == _mod_key
+        # Use primary type for the active module to give visual emphasis
+        if st.sidebar.button(
+            _btn_label,
+            key=f"nav_{_mod_key}",
+            use_container_width=True,
+            type="primary" if _is_active else "secondary",
+            help=_mod_help,
+        ):
+            st.session_state[SESSION_ACTIVE_MODULE] = _mod_key
+            st.rerun()
+
+    st.sidebar.divider()
+
+    # ── Datos de entrada ───────────────────────────────────────────────────
+    with st.sidebar.expander("📂 Datos de entrada", expanded=True):
+        history_upload = st.file_uploader(
+            "Historia de producción (CSV)",
+            type=["csv"],
+            help="Historia de producción del pozo.",
+        )
+        pvt_config_upload = st.file_uploader(
+            "Config PVT (JSON)",
+            type=["json"],
+            help="Configuración PVT del pozo o escenario.",
+        )
+        active_edited_path = get_active_edited_history_path()
+        if active_edited_path is not None:
+            st.success(f"Historia editada activa: `{active_edited_path.name}`")
+        active_pvt_path = get_active_pvt_config_path()
+        if active_pvt_path is not None:
+            st.success(f"PVT UI activo: `{active_pvt_path.name}`")
+
+    # ── Ventana de ajuste DCA ──────────────────────────────────────────────
+    with st.sidebar.expander("📊 Ventana ajuste DCA"):
+        use_fit_from = st.checkbox(
+            "Usar fit_from_date",
+            key=SESSION_USE_FIT_FROM,
+        )
+        fit_from_date = (
+            st.date_input("fit_from_date", key=SESSION_FIT_FROM_DATE)
+            if use_fit_from
+            else None
+        )
+        use_fit_to = st.checkbox("Usar fit_to_date", key=SESSION_USE_FIT_TO)
+        fit_to_date = (
+            st.date_input("fit_to_date", key=SESSION_FIT_TO_DATE)
+            if use_fit_to
+            else None
+        )
+        exclude_first_n = st.number_input(
+            "exclude_first_n",
+            min_value=0,
+            max_value=10_000,
+            value=0,
+            step=1,
+        )
+
+    # ── Forecast ──────────────────────────────────────────────────────────
+    with st.sidebar.expander("📈 Forecast"):
+        forecast_start_rate_mode = st.selectbox(
+            "forecast_start_rate_mode",
+            options=FORECAST_START_RATE_MODES,
+            key=SESSION_FORECAST_START_RATE_MODE,
+        )
+        forecast_start_rate = None
+        if forecast_start_rate_mode == "manual":
+            forecast_start_rate = st.number_input(
+                "forecast_start_rate",
+                min_value=0.000001,
+                step=1.0,
+                key=SESSION_FORECAST_START_RATE,
+            )
+        forecast_days = st.number_input(
+            "forecast_days",
+            min_value=1,
+            max_value=50_000,
+            value=3650,
+            step=30,
+        )
+        abandonment_rate = st.number_input(
+            "abandonment_rate",
+            min_value=0.0,
+            value=50.0,
+            step=1.0,
+            help="Tasa económica o técnica de abandono.",
+        )
+
+    return {
+        "history_upload": history_upload,
+        "pvt_config_upload": pvt_config_upload,
+        "well_id": well_id,
+        "fit_from_date": fit_from_date,
+        "fit_to_date": fit_to_date,
+        "exclude_first_n": int(exclude_first_n),
+        "forecast_days": int(forecast_days),
+        "abandonment_rate": float(abandonment_rate),
+        "forecast_start_rate_mode": forecast_start_rate_mode,
+        "forecast_start_rate": (
+            float(forecast_start_rate) if forecast_start_rate is not None else None
+        ),
+    }
+
+
 def render_sidebar_inputs() -> dict[str, Any]:
     st.sidebar.header("Entrada M1-M2-M3")
 
@@ -4213,18 +4419,19 @@ def render_artifacts(well_id: str) -> None:
     artifacts = WorkflowArtifacts.for_well(well_id)
     enriched_df = read_csv_safe(artifacts.enriched_history_csv)
 
-    render_quick_dca_summary(artifacts)
+    active = st.session_state.get(SESSION_ACTIVE_MODULE, "M1")
 
-    main_tabs = st.tabs(["M1 Pozo", "M2 PVT", "M3 DCA", "M4 RTA", "M5 Resultados", "Descargas"])
-
-    with main_tabs[0]:
+    # ── M1 — Pozo & Pwf ───────────────────────────────────────────────────
+    if active == "M1":
+        st.header("🗂 M1 — Historia de producción, Pwf y estado mecánico")
         m1_tabs = st.tabs(["Historia", "Geometría / Survey", "Edición Pwf"])
 
         with m1_tabs[0]:
             if enriched_df is None:
                 st.info(f"No se encontró `{artifacts.enriched_history_csv.name}`.")
                 st.caption(
-                    "Ejecuta el workflow para generar la historia enriquecida M1-M2."
+                    "Ejecuta el workflow (botón **Ejecutar workflow M1-M2-M3**) "
+                    "para generar la historia enriquecida."
                 )
             else:
                 render_m1_summary(
@@ -4246,19 +4453,14 @@ def render_artifacts(well_id: str) -> None:
             else:
                 render_m1_editable_history_panel(enriched_df, well_id)
 
-    with main_tabs[1]:
-        m2_tabs = st.tabs(["Modelo PVT", "PVT integrado"])
+    # ── M2 — PVT ──────────────────────────────────────────────────────────
+    elif active == "M2":
+        from src.ui.m2_pvt_editor import render_m2_embedded
+        render_m2_embedded(well_id)
 
-        with m2_tabs[0]:
-            render_m2_pvt_configuration_panel(well_id)
-
-        with m2_tabs[1]:
-            if enriched_df is None:
-                st.info(f"No se encontró `{artifacts.enriched_history_csv.name}`.")
-            else:
-                render_m2_summary(enriched_df)
-
-    with main_tabs[2]:
+    # ── M3 — DCA ──────────────────────────────────────────────────────────
+    elif active == "M3":
+        st.header("📉 M3 — Declinación de producción (Arps)")
         m3_tabs = st.tabs(
             [
                 "Resultados",
@@ -4294,26 +4496,18 @@ def render_artifacts(well_id: str) -> None:
         with m3_tabs[3]:
             render_dca_graphs_tab(artifacts)
 
-    with main_tabs[3]:
-        m4_tabs = st.tabs(["Datos RTA", "Diagnóstico", "Curvas tipo", "Resultados"])
+    # ── M4 — RTA tipo curves overlay ──────────────────────────────────────
+    elif active == "M4":
+        from src.ui.m4_type_curve_overlay import render_m4_joystick_embedded
+        render_m4_joystick_embedded(well_id=well_id, output_dir=OUTPUT_DIR)
 
-        with m4_tabs[0]:
-            render_m4_rta_configuration_panel(well_id=well_id, artifacts=artifacts)
-
-        with m4_tabs[1]:
-            render_m4_diagnostics_outputs(well_id, artifacts)
-
-        with m4_tabs[2]:
-            render_m4_type_curves_panel(well_id=well_id, artifacts=artifacts)
-
-        with m4_tabs[3]:
-            render_m4_results_placeholder(artifacts)
-
-    with main_tabs[4]:
+    # ── M5 — Resultados integrados ────────────────────────────────────────
+    elif active == "M5":
         from src.ui.m5_results_dashboard import render_m5_embedded
         render_m5_embedded(well_id=well_id, output_dir=OUTPUT_DIR)
 
-    with main_tabs[5]:
+    # ── Descargas ─────────────────────────────────────────────────────────
+    elif active == "Descargas":
         render_downloads_tab(artifacts)
 
 def main() -> None:
@@ -4331,7 +4525,7 @@ def main() -> None:
         "M5: resultados integrados, comparativo y exportación."
     )
 
-    inputs = render_sidebar_inputs()
+    inputs = render_sidebar_nav()
 
     if not inputs["well_id"]:
         st.warning("Define un well_id válido para ejecutar el workflow.")

@@ -598,22 +598,31 @@ def _reset_match() -> None:
     st.session_state["target_curve_y"] = 1.0
 
 
-def main() -> None:
-    """Run the standalone M4 overlay screen."""
-    st.set_page_config(page_title="M4 RTA Type-Curve Overlay", layout="wide")
+def _run_m4_overlay(
+    *,
+    well_id: str = "W-001",
+    output_dir: Path = OUTPUT_DIR,
+    show_title: bool = True,
+    show_anchor: bool = True,
+) -> None:
+    """Core M4 overlay UI — shared by standalone main() and render_m4_joystick_embedded()."""
+    _scenario_key = f"rta_scenario_loaded_{well_id}"
 
     # Pre-load saved scenario (if any) to seed reservoir config defaults.
-    if "rta_scenario_loaded" not in st.session_state:
-        existing = load_rta_scenario("W-001", output_dir=OUTPUT_DIR)
+    if _scenario_key not in st.session_state:
+        existing = load_rta_scenario(well_id, output_dir=output_dir)
         _init_reservoir_config_state(existing)
-        st.session_state["rta_scenario_loaded"] = True
+        st.session_state[_scenario_key] = True
 
     _init_match_state()
+    if not show_anchor:
+        # Embedded mode: force anchor off so ManualMatchConfig uses None for anchor params.
+        st.session_state["use_anchor"] = False
     _inject_arcade_css()
 
-    st.title("M4 - Overlay visual datos RTA vs curvas tipo")
-
-    st.success("Pantalla M4 cargada correctamente.")
+    if show_title:
+        st.title("M4 - Overlay visual datos RTA vs curvas tipo")
+        st.success("Pantalla M4 cargada correctamente.")
 
     st.info(
         "Esta pantalla permite superponer puntos del pozo sobre curvas tipo "
@@ -816,7 +825,8 @@ def main() -> None:
 
         st.markdown("</div>", unsafe_allow_html=True)
 
-        st.checkbox("Usar ancla y target", key="use_anchor")
+        if show_anchor:
+            st.checkbox("Usar ancla y target", key="use_anchor")
 
         if st.session_state["use_anchor"]:
             anchor_col1, anchor_col2 = st.columns(2)
@@ -1155,6 +1165,17 @@ def main() -> None:
             for m_val in ("fetkovich", "palacio_blasingame", "agarwal_gardner"):
                 st.session_state.pop(f"_saved_match_{m_val}", None)
             st.rerun()
+
+
+def main() -> None:
+    """Run the standalone M4 overlay screen."""
+    st.set_page_config(page_title="M4 RTA Type-Curve Overlay", layout="wide")
+    _run_m4_overlay(well_id="W-001", output_dir=OUTPUT_DIR, show_title=True, show_anchor=True)
+
+
+def render_m4_joystick_embedded(well_id: str, output_dir: Path) -> None:
+    """Render M4 joystick overlay embedded in the hub (no set_page_config, no anchor UI)."""
+    _run_m4_overlay(well_id=well_id, output_dir=output_dir, show_title=False, show_anchor=False)
 
 
 if __name__ == "__main__":

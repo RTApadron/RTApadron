@@ -37,16 +37,6 @@ from src.services.pvt_correlations import api_to_sg
 from src.services.pvt_service import PVTTableInput, PVTPressurePoint, compute_pvt_table
 
 # ---------------------------------------------------------------------------
-# Page config
-# ---------------------------------------------------------------------------
-
-st.set_page_config(
-    page_title="ecoRTA M2 — PVT",
-    page_icon="🧪",
-    layout="wide",
-)
-
-# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
@@ -137,16 +127,11 @@ def _draw_pvt_plots(
 
 
 # ---------------------------------------------------------------------------
-# Main
+# Core UI (shared between standalone and embedded modes)
 # ---------------------------------------------------------------------------
 
-def main() -> None:
-    st.title("🧪 ecoRTA M2 — Propiedades PVT")
-    st.caption(
-        "Correlaciones Standing (1947) y Vasquez-Beggs (1980) para Rs/Bo "
-        "y Beggs-Robinson (1975) para viscosidad. "
-        "Temperatura en **°F**, presión en **psia**."
-    )
+def _pvt_core_ui() -> None:
+    """PVT UI body — callable from both standalone main() and render_m2_embedded()."""
 
     left_col, right_col = st.columns([0.38, 0.62], gap="large")
 
@@ -462,6 +447,40 @@ def main() -> None:
             f"SG gas: **{gamma_g:.3f}** | "
             f"T: **{t_f:.0f} °F**"
         )
+
+
+# ---------------------------------------------------------------------------
+# Embedded entry point (called from app.py hub)
+# ---------------------------------------------------------------------------
+
+def render_m2_embedded(well_id: str) -> None:
+    """Render M2 PVT editor embedded in the hub (no set_page_config)."""
+    st.subheader("🧪 M2 — Propiedades PVT")
+    st.caption(
+        "Correlaciones Standing (1947) y Vasquez-Beggs (1980) para Rs/Bo "
+        "y Beggs-Robinson (1975) para viscosidad. "
+        "Temperatura en **°F**, presión en **psia**."
+    )
+    _pvt_core_ui()
+
+
+# ---------------------------------------------------------------------------
+# Standalone entry point
+# ---------------------------------------------------------------------------
+
+def main() -> None:
+    st.set_page_config(
+        page_title="ecoRTA M2 — PVT",
+        page_icon="🧪",
+        layout="wide",
+    )
+    st.title("🧪 ecoRTA M2 — Propiedades PVT")
+    st.caption(
+        "Correlaciones Standing (1947) y Vasquez-Beggs (1980) para Rs/Bo "
+        "y Beggs-Robinson (1975) para viscosidad. "
+        "Temperatura en **°F**, presión en **psia**."
+    )
+    _pvt_core_ui()
 
 
 if __name__ == "__main__":
