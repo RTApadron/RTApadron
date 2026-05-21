@@ -122,6 +122,222 @@ def _casing_inputs(idx: int) -> CasingString:
 
 
 # ---------------------------------------------------------------------------
+# Embedded renderer (for use from the hub app.py)
+# ---------------------------------------------------------------------------
+
+def render_m1_editor_embedded(well_id: str) -> None:
+    """Render the M1 well-mechanic editor inside the hub (no page config, no title).
+
+    Displays casing / tubing / ESP / perforations inputs on the left and the
+    well schematic + mechanical QC on the right.  A *Save* button writes the
+    relevant geometry fields to ``output/{well_id}_well_geometry.json`` so the
+    hub's Pwf pipeline can pick them up.
+    """
+    import json
+
+    output_dir = PROJECT_ROOT / "output"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    geo_path = output_dir / f"{well_id}_well_geometry.json"
+
+    # Load existing geometry for pre-filling defaults
+    _existing_geo: dict = {}
+    if geo_path.exists():
+        try:
+            _existing_geo = json.loads(geo_path.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+
+    left_col, right_col = st.columns([0.40, 0.60], gap="large")
+
+    # =========================================================================
+    # LEFT COLUMN — inputs
+    # =========================================================================
+    with left_col:
+        st.markdown("#### 🔩 Revestimientos")
+        n_casings = st.number_input(
+            "Número de revestimientos",
+            min_value=1, max_value=3, value=2, step=1,
+            key="m1e_n_casings",
+        )
+        casings: list[CasingString] = []
+        for _ci in range(int(n_casings)):
+            _default_name = _DEFAULT_CASING_NAMES[_ci] if _ci < 3 else f"Revestimiento {_ci + 1}"
+            _def_preset, _def_shoe = (
+                _DEFAULT_CASING_PRESETS[_ci] if _ci < len(_DEFAULT_CASING_PRESETS)
+                else ('9-5/8" (8.681" ID)', 9000.0 + _ci * 1000)
+            )
+            with st.expander(
+                f"Revestimiento {_ci + 1} — {_default_name}",
+                expanded=(_ci == int(n_casings) - 1),
+            ):
+                _name = st.text_input("Nombre", value=_default_name, key=f"m1e_c_name_{_ci}")
+                _preset = st.selectbox(
+                    "Tamaño nominal", options=list(_CASING_SIZES.keys()),
+                    index=list(_CASING_SIZES.keys()).index(_def_preset),
+                    key=f"m1e_c_preset_{_ci}",
+                )
+                _pv = _CASING_SIZES[_preset]
+                _cod, _cid = st.columns(2)
+                _c_od = _cod.number_input(
+                    "OD (in)", min_value=1.0, max_value=30.0,
+                    value=float(_pv[0]) if _pv else 9.625,
+                    step=0.001, format="%.3f", key=f"m1e_c_od_{_ci}",
+                )
+                _c_id = _cid.number_input(
+                    "ID / drift (in)", min_value=0.5, max_value=29.0,
+                    value=float(_pv[1]) if _pv else 8.681,
+                    step=0.001, format="%.3f", key=f"m1e_c_id_{_ci}",
+                )
+                _c_shoe = st.number_input(
+                    "Zapato MD (ft)", min_value=50.0, max_value=25_000.0,
+                    value=float(_def_shoe), step=10.0, format="%.0f",
+                    key=f"m1e_c_shoe_{_ci}",
+                )
+                casings.append(CasingString(
+                    name=_name, od_in=_c_od, id_in=_c_id, shoe_depth_ft=_c_shoe
+                ))
+
+        st.divider()
+
+        st.markdown("#### 🔵 Tubing")
+        _t_preset = st.selectbox(
+            "Tamaño nominal",
+            options=list(_TUBING_SIZES.keys()),
+            index=list(_TUBING_SIZES.keys()).index(_DEFAULT_TUBING_PRESET),
+            key="m1e_t_preset",
+        )
+        _tpv = _TUBING_SIZES[_t_preset]
+        _tc1, _tc2 = st.columns(2)
+        _t_od = _tc1.number_input(
+            "OD (in)", min_value=0.5, max_value=8.0,
+            value=float(_tpv[0]) if _tpv else 2.875,
+            step=0.001, format="%.3f", key="m1e_t_od",
+        )
+        _t_id = _tc2.number_input(
+            "ID (in)", min_value=0.1, max_value=7.5,
+            value=float(_tpv[1]) if _tpv else 2.441,
+            step=0.001, format="%.3f", key="m1e_t_id",
+        )
+        _t_set = st.number_input(
+            "Zapato tubing MD (ft)", min_value=50.0, max_value=25_000.0,
+            value=float(_existing_geo.get("sensor_depth_md_ft", 7_200.0)),
+            step=10.0, format="%.0f", key="m1e_t_set",
+        )
+        tubing = TubingString(od_in=_t_od, id_in=_t_id, set_depth_ft=_t_set)
+
+        st.divider()
+
+        st.markdown("#### ⚡ ESP")
+        _has_esp = st.checkbox(
+            "El pozo tiene ESP (bomba eléctrica sumergible)", value=True, key="m1e_has_esp"
+        )
+        _esp_intake: float | None = None
+        if _has_esp:
+            _esp_intake = float(st.number_input(
+                "Profundidad intake ESP MD (ft)", min_value=50.0, max_value=25_000.0,
+                value=float(_existing_geo.get("pump_depth_md_ft", 7_000.0)),
+                step=10.0, format="%.0f", key="m1e_esp_intake",
+            ))
+
+        st.divider()
+
+        st.markdown("#### 🔴 Perforaciones")
+        _pc1, _pc2 = st.columns(2)
+        _p_top = _pc1.number_input(
+            "Tope MD (ft)", min_value=50.0, max_value=25_000.0,
+            value=float(_existing_geo.get("perforation_top_md_ft", 7_400.0)),
+            step=10.0, format="%.0f", key="m1e_p_top",
+        )
+        _p_bot = _pc2.number_input(
+            "Fondo MD (ft)", min_value=50.0, max_value=25_000.0,
+            value=float(_existing_geo.get("perforation_bottom_md_ft", 7_600.0)),
+            step=10.0, format="%.0f", key="m1e_p_bot",
+        )
+
+        st.divider()
+
+        # Save button — writes geometry fields to hub's JSON
+        if st.button(
+            "💾 Guardar estado mecánico",
+            type="primary",
+            use_container_width=True,
+            key="m1e_save_btn",
+        ):
+            _geo_payload = {
+                "well_id": well_id,
+                "tubing_od_in": float(_t_od),
+                "tubing_id_in": float(_t_id),
+                "pump_depth_md_ft": float(_esp_intake) if _esp_intake is not None else None,
+                "sensor_depth_md_ft": float(_t_set),
+                "perforation_top_md_ft": float(_p_top),
+                "perforation_bottom_md_ft": float(_p_bot),
+                "perforation_mid_tvd_ft": float(_existing_geo.get(
+                    "perforation_mid_tvd_ft", (_p_top + _p_bot) / 2
+                )),
+                "datum_name": str(_existing_geo.get("datum_name", "KB")),
+                "datum_depth_tvd_ft": float(_existing_geo.get("datum_depth_tvd_ft", 0.0)),
+                # Store casing summary (first casing = largest = shoe for Pwf)
+                "casing_od_in": float(casings[0].od_in) if casings else 0.0,
+                "casing_id_in": float(casings[0].id_in) if casings else 0.0,
+            }
+            try:
+                geo_path.write_text(
+                    json.dumps(_geo_payload, indent=2, ensure_ascii=False),
+                    encoding="utf-8",
+                )
+                st.success(f"✅ Estado mecánico guardado en `{geo_path.name}`.")
+                _existing_geo = _geo_payload  # Update for downstream use
+            except Exception as _save_exc:
+                st.error(f"❌ No fue posible guardar: {_save_exc}")
+
+    # =========================================================================
+    # RIGHT COLUMN — schematic + QC
+    # =========================================================================
+    with right_col:
+        config = WellMechConfig(
+            well_id=well_id,
+            casings=casings,
+            tubing=tubing,
+            perfs_top_ft=float(_p_top),
+            perfs_bottom_ft=float(_p_bot),
+            has_esp=_has_esp,
+            esp_intake_depth_ft=_esp_intake,
+        )
+
+        # QC técnico
+        qc_results = run_mech_qc(config)
+        severity = mech_severity_level(qc_results)
+        icon = _SEVERITY_ICON.get(severity, "")
+        with st.expander(f"{icon} QC Estado Mecánico", expanded=(severity != "ok")):
+            for _r in qc_results:
+                _msg = f"**{_r.title}**  \n{_r.detail}"
+                _SEVERITY_FN[_r.severity](_msg, icon=_SEVERITY_KW[_r.severity])
+
+        # Well schematic
+        st.markdown("**Esquema del pozo**")
+        try:
+            _fig = draw_well_schematic(config, qc_results)
+            st.pyplot(_fig, use_container_width=True)
+            plt.close(_fig)
+        except Exception as _exc:
+            st.error(f"Error al generar el esquema: {_exc}")
+
+        # Download PNG
+        try:
+            _png = schematic_to_png_bytes(config)
+            st.download_button(
+                "⬇ Descargar esquema (PNG)",
+                data=_png,
+                file_name=f"{well_id}_estado_mecanico.png",
+                mime="image/png",
+                use_container_width=True,
+                key="m1e_dl_png",
+            )
+        except Exception:
+            pass
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
