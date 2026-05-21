@@ -142,11 +142,38 @@ def _transform_points_to_overlay(
     return [p.to_overlay_point() for p in points]
 
 
-def _init_reservoir_config_state(config: RTAConfig | None) -> None:
-    """Populate session state with RTAConfig values (only if not already set)."""
-    defaults = config or RTAConfig(well_id="W-001")
+def _init_reservoir_config_state(
+    config: RTAConfig | None,
+    well_id: str | None = None,
+    pvt_json_path: Path | None = None,
+) -> None:
+    """Populate session state with RTAConfig values (only if not already set).
+
+    Args:
+        config: Saved RTAConfig scenario (or None to use defaults).
+        well_id: Hub well ID — seeds rta_well_id if not yet in session state.
+        pvt_json_path: Path to ``{well_id}_pvt_config_ui.json``; when present,
+            Bo and μo are read from it to pre-populate the PVT fields.
+    """
+    defaults = config or RTAConfig(well_id=well_id or "W-001")
+
+    # Read Bo / μo from M2 PVT JSON when available.
+    bo_from_pvt: float | None = None
+    mu_from_pvt: float | None = None
+    if pvt_json_path is not None and pvt_json_path.exists():
+        try:
+            _pvt = json.loads(pvt_json_path.read_text(encoding="utf-8"))
+            _bo = _pvt.get("bo_rb_stb")
+            _mu = _pvt.get("mu_o_cp")
+            if _bo is not None:
+                bo_from_pvt = float(_bo)
+            if _mu is not None:
+                mu_from_pvt = float(_mu)
+        except Exception:
+            pass  # If PVT file is unreadable, fall back to scenario / defaults.
+
     _ss_defaults: dict[str, object] = {
-        "rta_well_id": defaults.well_id,
+        "rta_well_id": well_id or defaults.well_id,
         "rta_pi_psia": defaults.pi_psia,
         "rta_phi_frac": defaults.phi_frac,
         "rta_h_ft": defaults.h_ft,
@@ -154,8 +181,8 @@ def _init_reservoir_config_state(config: RTAConfig | None) -> None:
         "rta_rw_ft": defaults.rw_ft,
         "rta_re_ft": defaults.re_ft or 0.0,
         "rta_area_acres": defaults.area_acres or 0.0,
-        "rta_Bo_rb_stb": defaults.Bo_rb_stb,
-        "rta_mu_o_cp": defaults.mu_o_cp,
+        "rta_Bo_rb_stb": bo_from_pvt if bo_from_pvt is not None else defaults.Bo_rb_stb,
+        "rta_mu_o_cp": mu_from_pvt if mu_from_pvt is not None else defaults.mu_o_cp,
         "rta_CA": defaults.CA,
     }
     for key, value in _ss_defaults.items():
@@ -208,8 +235,9 @@ def _render_reservoir_config() -> RTAConfig:
     with st.expander("Parámetros de yacimiento / fluidos", expanded=False):
         st.caption(
             "Estos valores alimentan el cálculo de variables RTA físicas "
-            "(Δp, tasa normalizada, MBT) y, en el próximo commit, los parámetros "
-            "de yacimiento desde el match point (kh, k, OOIP)."
+            "(Δp, tasa normalizada, MBT) y los parámetros de yacimiento desde "
+            "el match point (kh, k, skin, volumen contactado, OOIP). "
+            "Bo y μo se pre-cargan automáticamente desde la configuración PVT de M2."
         )
 
         col_a, col_b = st.columns(2)
@@ -611,7 +639,12 @@ def _run_m4_overlay(
     # Pre-load saved scenario (if any) to seed reservoir config defaults.
     if _scenario_key not in st.session_state:
         existing = load_rta_scenario(well_id, output_dir=output_dir)
-        _init_reservoir_config_state(existing)
+        _pvt_json_path = PROJECT_ROOT / "data" / "ui_uploads" / f"{well_id}_pvt_config_ui.json"
+        _init_reservoir_config_state(
+            existing,
+            well_id=well_id,
+            pvt_json_path=_pvt_json_path if _pvt_json_path.exists() else None,
+        )
         st.session_state[_scenario_key] = True
 
     _init_match_state()
@@ -625,9 +658,9 @@ def _run_m4_overlay(
         st.success("Pantalla M4 cargada correctamente.")
 
     st.info(
-        "Esta pantalla permite superponer puntos del pozo sobre curvas tipo "
-        "cargadas desde CSV/tablas internas. No calcula todavía kh, skin, "
-        "volumen contactado ni OOIP."
+        "Superpone puntos RTA del pozo sobre curvas tipo (Blasingame / Agarwal-Gardner). "
+        "Calcula kh, k, skin, volumen contactado y OOIP desde el match point. "
+        "Exporta PNG del overlay y resumen JSON consumido por M5."
     )
 
     try:
@@ -695,19 +728,38 @@ def _run_m4_overlay(
 
         st.subheader("Datos del pozo")
 
+        _auto_history_path = output_dir / f"{well_id}_history_enriched.csv"
+        _auto_available = _auto_history_path.exists()
+
+        if _auto_available:
+            st.caption(
+                f"✅ Historia enriquecida auto-cargada: `{_auto_history_path.name}`  "
+                f"— puedes reemplazarla con otro CSV abajo."
+            )
+
         uploaded_csv = st.file_uploader(
-            "Cargar historia enriquecida CSV",
+            "Cargar otro CSV (reemplaza historia auto-cargada)" if _auto_available
+            else "Cargar historia enriquecida CSV",
             type=["csv"],
         )
 
-        if uploaded_csv is None:
-            st.info("Carga un CSV enriquecido para generar el overlay.")
-            return
-
-        try:
-            history_df = _read_uploaded_csv(uploaded_csv)
-        except Exception as exc:
-            st.error(f"No fue posible leer el CSV cargado: {exc}")
+        if uploaded_csv is not None:
+            try:
+                history_df = _read_uploaded_csv(uploaded_csv)
+            except Exception as exc:
+                st.error(f"No fue posible leer el CSV cargado: {exc}")
+                return
+        elif _auto_available:
+            try:
+                history_df = pd.read_csv(_auto_history_path)
+            except Exception as exc:
+                st.error(f"No fue posible leer la historia auto-cargada: {exc}")
+                return
+        else:
+            st.info(
+                "No hay historia enriquecida disponible. "
+                "Ejecuta el **Paso 4 (M1-M2)** en el flujo de trabajo o carga un CSV aquí."
+            )
             return
 
         # --- Determine overlay source ---
