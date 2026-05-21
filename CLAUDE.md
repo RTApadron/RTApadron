@@ -48,7 +48,7 @@ producción en los Llanos Orientales."
 | M4 | RTA curvas tipo (Fetkovich, Blasingame, Agarwal-Gardner), match manual, QC | 🔧 Activo | varios |
 | M5 | Resultados integrados, dashboard comparativo, exportación CSV/JSON/Excel/PDF | ✅ Funcional | `test_m5_aggregator_service.py` (29) + `test_m5_export_service.py` (26) |
 
-**Tests totales: 351 passed, 1 warning (Pydantic v1 @validator en `src/well_mod/models.py`)**
+**Tests totales: 387 passed, 1 warning (Pydantic v1 @validator en `src/well_mod/models.py`)**
 
 ---
 
@@ -86,7 +86,8 @@ src/
 │   └── m1_loader_adapter.py
 ├── domain/
 │   ├── models.py                  — WellStatic, HistoryPoint, PVTConfig, PVTPoint, EnrichedHistoryPoint
-│   └── m5_models.py               — WellResultsSummary, WellInfoSummary, PVTSummary, DCASummary, RTASummary
+│   └── m5_models.py               — WellResultsSummary, WellInfoSummary, PVTSummary, DCASummary, RTASummary,
+│                                    ExternalSoftwareResult, ComparisonRow
 ├── rta_type_curves/
 │   ├── overlay.py                 — ManualMatchConfig, build_overlay()
 │   └── models.py                  — RTATypeCurveMethod, TypeCurve, CurveDataStatus
@@ -190,10 +191,11 @@ Parámetros desde match:
 
 ### M5 — pendiente
 - [ ] QC final y trazabilidad (badges medido/estimado/calculado en UI)
-- [ ] Tabla para tesis (comparación vs Harmony IHS/Fekete)
 - [x] Modelo común de resultados (WellResultsSummary — commit 1e18d48)
 - [x] Dashboard comparativo EUR DCA vs OOIP volumétrico (commit 1e18d48)
 - [x] Exportación consolidada CSV/JSON/Excel/PDF (commit 2423e60)
+- [x] Tabla comparativa vs software comercial de referencia (commit de332ae)
+      — ExternalSoftwareResult, semáforo match/close/diverge, tab 📐 Validación
 
 ---
 
