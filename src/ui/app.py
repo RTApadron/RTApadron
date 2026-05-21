@@ -143,7 +143,7 @@ class WorkflowArtifacts:
 
 def configure_page() -> None:
     st.set_page_config(
-        page_title="ecoRTA | M1-M2-M3-M4",
+        page_title="ecoRTA | M1-M2-M3-M4-M5",
         page_icon="📉",
         layout="wide",
     )
@@ -4215,7 +4215,7 @@ def render_artifacts(well_id: str) -> None:
 
     render_quick_dca_summary(artifacts)
 
-    main_tabs = st.tabs(["M1 Pozo", "M2 PVT", "M3 DCA", "M4 RTA", "Descargas"])
+    main_tabs = st.tabs(["M1 Pozo", "M2 PVT", "M3 DCA", "M4 RTA", "M5 Resultados", "Descargas"])
 
     with main_tabs[0]:
         m1_tabs = st.tabs(["Historia", "Geometría / Survey", "Edición Pwf"])
@@ -4310,6 +4310,10 @@ def render_artifacts(well_id: str) -> None:
             render_m4_results_placeholder(artifacts)
 
     with main_tabs[4]:
+        from src.ui.m5_results_dashboard import render_m5_embedded
+        render_m5_embedded(well_id=well_id, output_dir=OUTPUT_DIR)
+
+    with main_tabs[5]:
         render_downloads_tab(artifacts)
 
 def main() -> None:
@@ -4318,12 +4322,13 @@ def main() -> None:
     apply_light_css()
     ensure_dirs()
 
-    st.title("ecoRTA | Workflow M1-M2-M3-M4")
+    st.title("ecoRTA | Workflow M1-M2-M3-M4-M5")
     st.caption(
-        "Módulo 1: historia, Pwf, estado mecánico y survey. "
-        "Módulo 2: propiedades PVT. "
-        "Módulo 3: curvas de declinación Arps. "
-        "Módulo 4: preparación diagnóstica RTA."
+        "M1: historia, Pwf, estado mecánico · "
+        "M2: propiedades PVT · "
+        "M3: curvas de declinación Arps · "
+        "M4: diagnóstico RTA y curvas tipo · "
+        "M5: resultados integrados, comparativo y exportación."
     )
 
     inputs = render_sidebar_inputs()
