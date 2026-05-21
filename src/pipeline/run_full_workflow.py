@@ -485,33 +485,74 @@ def run_m3_dca_step(
 
 def main() -> None:
     """Small CLI wrapper for the full workflow."""
+    import sys as _sys
+
     parser = argparse.ArgumentParser(description="Run M1-M2 and optional M3 workflow.")
     parser.add_argument("--well-id", required=True)
-    parser.add_argument("--history-csv", required=True, type=Path)
-    parser.add_argument("--pvt-config-json", required=True, type=Path)
+    # M1-M2 inputs — not required when --dca-only is set
+    parser.add_argument("--history-csv", default=None, type=Path)
+    parser.add_argument("--pvt-config-json", default=None, type=Path)
     parser.add_argument("--output-dir", default=Path("output"), type=Path)
     parser.add_argument("--from-date", default=None)
     parser.add_argument("--to-date", default=None)
-    parser.add_argument("--skip-dca", action="store_true")
+    # Step control flags
+    parser.add_argument(
+        "--skip-dca",
+        action="store_true",
+        help="Run only M1-M2 (skip DCA).",
+    )
+    parser.add_argument(
+        "--dca-only",
+        action="store_true",
+        help="Run only M3 DCA using the existing enriched history in output-dir.",
+    )
+    # M3 DCA parameters
     parser.add_argument("--forecast-days", default=365, type=int)
     parser.add_argument("--rate-column", default="qo_stb_d")
     parser.add_argument("--abandonment-rate", default=50.0, type=float)
+    parser.add_argument("--exclude-first-n", default=0, type=int)
+    parser.add_argument(
+        "--forecast-start-rate-mode",
+        default="fitted",
+        choices=["fitted", "last-window-rate", "manual"],
+    )
+    parser.add_argument("--forecast-start-rate", default=None, type=float)
     parser.add_argument("--no-plots", action="store_true")
 
     args = parser.parse_args()
 
-    enriched_path, qc_path = run_m1_m2_step(
-        well_id=args.well_id,
-        history_csv=args.history_csv,
-        pvt_config_json=args.pvt_config_json,
-        output_dir=args.output_dir,
-        from_date=args.from_date,
-        to_date=args.to_date,
-        auto_estimate_missing_pwf=True,
-    )
+    # --dca-only: skip M1-M2, read existing enriched history
+    if args.dca_only:
+        enriched_path = Path(args.output_dir) / f"{args.well_id}_history_enriched.csv"
+        if not enriched_path.exists():
+            print(
+                f"ERROR: --dca-only requires an existing enriched history file at "
+                f"'{enriched_path}'. Run M1-M2 first.",
+                file=_sys.stderr,
+            )
+            _sys.exit(1)
+        print(f"[--dca-only] Using existing enriched history: {enriched_path}")
+    else:
+        # Validate M1-M2 required args
+        if args.history_csv is None:
+            print("ERROR: --history-csv is required unless --dca-only is set.", file=_sys.stderr)
+            _sys.exit(1)
+        if args.pvt_config_json is None:
+            print("ERROR: --pvt-config-json is required unless --dca-only is set.", file=_sys.stderr)
+            _sys.exit(1)
 
-    print(f"M1-M2 enriched history written to: {enriched_path}")
-    print(f"M1-M2 QC report written to: {qc_path}")
+        enriched_path, qc_path = run_m1_m2_step(
+            well_id=args.well_id,
+            history_csv=args.history_csv,
+            pvt_config_json=args.pvt_config_json,
+            output_dir=args.output_dir,
+            from_date=args.from_date,
+            to_date=args.to_date,
+            auto_estimate_missing_pwf=True,
+        )
+
+        print(f"M1-M2 enriched history written to: {enriched_path}")
+        print(f"M1-M2 QC report written to: {qc_path}")
 
     if not args.skip_dca:
         fit_path, forecast_path, dca_qc_path, rate_plot_path, forecast_plot_path = (
@@ -522,6 +563,9 @@ def main() -> None:
                 rate_column=args.rate_column,
                 forecast_days=args.forecast_days,
                 abandonment_rate=args.abandonment_rate,
+                exclude_first_n=args.exclude_first_n,
+                forecast_start_rate_mode=args.forecast_start_rate_mode,
+                forecast_start_rate=args.forecast_start_rate,
                 make_plot=not args.no_plots,
             )
         )
