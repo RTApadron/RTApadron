@@ -4088,15 +4088,70 @@ def render_sidebar_nav() -> dict[str, Any]:
 
     # ── Datos de entrada ───────────────────────────────────────────────────
     with st.sidebar.expander("📂 Datos de entrada", expanded=True):
+        # ── Estado del último run ─────────────────────────────────────────
+        _safe_wid = well_id.strip() if well_id else ""
+        _enriched_path = OUTPUT_DIR / f"{_safe_wid}_history_enriched.csv" if _safe_wid else None
+        if _enriched_path and _enriched_path.exists():
+            import datetime as _dt
+            _mtime = _dt.datetime.fromtimestamp(_enriched_path.stat().st_mtime)
+            st.success(
+                f"✅ Último run: `{_enriched_path.name}`  \n"
+                f"📅 {_mtime.strftime('%Y-%m-%d %H:%M')}  \n"
+                "Los módulos muestran estos resultados."
+            )
+        else:
+            st.info("ℹ️ Sin resultados previos. Carga una historia para correr el workflow.")
+
+        st.divider()
+
+        # ── Uploader historia ─────────────────────────────────────────────
         history_upload = st.file_uploader(
             "Historia de producción (CSV)",
             type=["csv"],
-            help="Historia de producción del pozo.",
+            help="Carga para ejecutar un nuevo workflow M1-M2-M3.",
         )
+
+        # Columnas requeridas
+        with st.expander("📋 Formato CSV requerido"):
+            st.markdown(
+                "**Columnas obligatorias:**\n"
+                "| Columna | Tipo | Descripción |\n"
+                "|---------|------|-------------|\n"
+                "| `date` | fecha | YYYY-MM-DD |\n"
+                "| `qo_stb_d` | float | Caudal aceite [STB/d] |\n"
+                "| `qg_mscf_d` | float | Caudal gas [MSCF/d] |\n"
+                "| `qw_stb_d` | float | Caudal agua [STB/d] |\n"
+                "| `whp_psia` | float | Presión cabeza [psia] |\n"
+                "| `t_wh_f` | float | Temp. cabeza [°F] |\n"
+                "\n**Columnas opcionales:**\n"
+                "| Columna | Descripción |\n"
+                "|---------|-------------|\n"
+                "| `well_id` | Se toma del campo ID del pozo si falta |\n"
+                "| `pwf_measured_psia` | Pwf medido (gauge fondo) [psia] |\n"
+            )
+            # Template CSV download
+            import io as _io
+            _template_cols = [
+                "date", "well_id",
+                "qo_stb_d", "qg_mscf_d", "qw_stb_d",
+                "whp_psia", "t_wh_f",
+                "pwf_measured_psia",
+            ]
+            import pandas as _pd_tmpl
+            _template_df = _pd_tmpl.DataFrame(columns=_template_cols)
+            _template_csv = _template_df.to_csv(index=False).encode("utf-8")
+            st.download_button(
+                "⬇ Descargar plantilla CSV",
+                data=_template_csv,
+                file_name="historia_plantilla.csv",
+                mime="text/csv",
+                use_container_width=True,
+            )
+
         pvt_config_upload = st.file_uploader(
             "Config PVT (JSON)",
             type=["json"],
-            help="Configuración PVT del pozo o escenario.",
+            help="Configuración PVT exportada desde M2.",
         )
         active_edited_path = get_active_edited_history_path()
         if active_edited_path is not None:
@@ -4424,13 +4479,25 @@ def render_artifacts(well_id: str) -> None:
     # ── M1 — Pozo & Pwf ───────────────────────────────────────────────────
     if active == "M1":
         st.header("🗂 M1 — Historia de producción, Pwf y estado mecánico")
+
+        # Source annotation — clarify what data is being shown
+        if enriched_df is not None and artifacts.enriched_history_csv.exists():
+            import datetime as _dt
+            _mtime = _dt.datetime.fromtimestamp(artifacts.enriched_history_csv.stat().st_mtime)
+            st.caption(
+                f"📂 Datos de: `{artifacts.enriched_history_csv.name}` "
+                f"— generado el {_mtime.strftime('%Y-%m-%d %H:%M')}. "
+                "Para actualizar, carga una nueva historia en **📂 Datos de entrada** y "
+                "ejecuta el workflow."
+            )
+
         m1_tabs = st.tabs(["Historia", "Geometría / Survey", "Edición Pwf"])
 
         with m1_tabs[0]:
             if enriched_df is None:
                 st.info(f"No se encontró `{artifacts.enriched_history_csv.name}`.")
                 st.caption(
-                    "Ejecuta el workflow (botón **Ejecutar workflow M1-M2-M3**) "
+                    "Ejecuta el workflow (botón **▶ Ejecutar workflow M1-M2-M3**) "
                     "para generar la historia enriquecida."
                 )
             else:
