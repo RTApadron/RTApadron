@@ -204,9 +204,15 @@ def compute_module_status(well_id: str, output_dir: Path) -> dict[str, str]:
     else:
         status["M1"] = "missing"
 
-    # M2 — configuración PVT guardada por la UI
+    # M2 — configuración PVT guardada explícitamente por el usuario desde M2.
+    # pvt_config_ui.json solo existe si el usuario guardó desde el editor M2.
+    # pvt_config_default.json es auto-generado por el pipeline y no cuenta como "configurado".
     pvt_cfg = UI_INPUT_DIR / f"{safe}_pvt_config_ui.json"
-    status["M2"] = "ok" if pvt_cfg.exists() else "missing"
+    if pvt_cfg.exists():
+        status["M2"] = "ok"
+    else:
+        # Not yet configured by user — warn so it's visible but not blocking
+        status["M2"] = "warning"
 
     # M3 — resultados DCA
     dca_fit = output_dir / f"{safe}_dca_fit_results.csv"
@@ -282,7 +288,7 @@ def initialize_session_defaults() -> None:
         SESSION_PWF_OVERRIDE_MODE,
         "prefer_measured_else_estimated",
     )
-    st.session_state.setdefault(SESSION_ACTIVE_MODULE, "M1")
+    st.session_state.setdefault(SESSION_ACTIVE_MODULE, "Inicio")
 
 
 def apply_light_css() -> None:
@@ -1630,6 +1636,49 @@ def render_m1_geometry_and_survey_panel(well_id: str) -> None:
         survey_df = survey_df[
             ["md_ft", "tvd_ft", "inclination_deg", "azimuth_deg"]
         ].copy()
+
+        # ── Import from CSV / XLSX ────────────────────────────────────────
+        _surv_import_file = st.file_uploader(
+            "📥 Importar survey desde CSV / XLSX",
+            type=["csv", "xlsx"],
+            key="m1_survey_import_upload",
+            help=(
+                "Columnas requeridas: `md_ft`, `tvd_ft`.  \n"
+                "Si `inclination_deg` falta se calcula como arccos(ΔTVD/ΔMD)."
+            ),
+        )
+        if _surv_import_file is not None:
+            try:
+                import numpy as _np_surv
+                if _surv_import_file.name.endswith(".xlsx"):
+                    _surv_imp_df = pd.read_excel(_surv_import_file)
+                else:
+                    _surv_imp_df = pd.read_csv(_surv_import_file)
+                # Normalize column names
+                _surv_imp_df.columns = [
+                    c.lower().strip().replace(" ", "_") for c in _surv_imp_df.columns
+                ]
+                if "md_ft" in _surv_imp_df.columns and "tvd_ft" in _surv_imp_df.columns:
+                    _surv_imp_df["md_ft"] = pd.to_numeric(_surv_imp_df["md_ft"], errors="coerce")
+                    _surv_imp_df["tvd_ft"] = pd.to_numeric(_surv_imp_df["tvd_ft"], errors="coerce")
+                    # Calculate inclination from ΔMD / ΔTVD if not provided
+                    if "inclination_deg" not in _surv_imp_df.columns:
+                        _dmd = _surv_imp_df["md_ft"].diff().fillna(_surv_imp_df["md_ft"].iloc[0])
+                        _dtvd = _surv_imp_df["tvd_ft"].diff().fillna(_surv_imp_df["tvd_ft"].iloc[0])
+                        _ratio = (_dtvd / _dmd.replace(0.0, _np_surv.nan)).clip(-1.0, 1.0)
+                        _surv_imp_df["inclination_deg"] = _np_surv.degrees(
+                            _np_surv.arccos(_ratio.fillna(1.0))
+                        )
+                    if "azimuth_deg" not in _surv_imp_df.columns:
+                        _surv_imp_df["azimuth_deg"] = 0.0
+                    survey_df = _surv_imp_df[
+                        ["md_ft", "tvd_ft", "inclination_deg", "azimuth_deg"]
+                    ].dropna(how="all").copy()
+                    st.success(f"✅ Survey importado: {len(survey_df)} estaciones.")
+                else:
+                    st.error("❌ El archivo debe tener columnas `md_ft` y `tvd_ft`.")
+            except Exception as _surv_exc:
+                st.error(f"❌ Error al importar survey: {_surv_exc}")
 
         edited_survey_df = st.data_editor(
             survey_df,
@@ -3796,7 +3845,7 @@ def add_history_qo_trace(fig: go.Figure, history_df: pd.DataFrame) -> bool:
             y=plot_df[rate_col],
             mode="markers",
             name="Historia qo",
-            marker={"size": 7},
+            marker={"size": 7, "color": "#2d6a4f"},
             customdata=plot_df["date"].dt.strftime("%Y-%m-%d"),
             hovertemplate=(
                 "Fecha: %{customdata}<br>"
@@ -3862,10 +3911,24 @@ def add_long_or_wide_model_curves(
         "time_days",
         "t_days",
         "days",
+        # Scalar reference values that should be rendered as horizontal lines, not curves:
+        "forecast_start_rate",
+        "abandonment_rate",
+        "abandonment_rate_stb_d",
+        "economic_limit",
+        "q_abandonment_stb_d",
+        "qo_abandonment_stb_d",
     }
 
     for column in numeric_columns_except(df, excluded_columns):
         lower_column = column.lower()
+        # Skip scalar-reference columns missed by exact name match above
+        _is_scalar_ref = any(
+            token in lower_column
+            for token in ("start_rate", "abandonment", "economic_limit")
+        )
+        if _is_scalar_ref:
+            continue
         is_curve_like = any(
             token in lower_column
             for token in (
@@ -4376,7 +4439,21 @@ def render_sidebar_nav() -> dict[str, Any]:
     st.sidebar.divider()
 
     # ── Module navigation buttons with traffic-light indicators ───────────
-    st.sidebar.markdown("### 📋 Módulos")
+    _active = st.session_state.get(SESSION_ACTIVE_MODULE, "Inicio")
+
+    # ── Inicio (no traffic light — not a pipeline module) ─────────────────
+    if st.sidebar.button(
+        "🏠 Inicio",
+        key="nav_Inicio",
+        use_container_width=True,
+        type="primary" if _active == "Inicio" else "secondary",
+        help="Pantalla de bienvenida y configuración inicial",
+    ):
+        st.session_state[SESSION_ACTIVE_MODULE] = "Inicio"
+        st.rerun()
+
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("##### 📋 Módulos")
 
     _module_meta = [
         ("M1",        "🗂 M1 — Pozo & Pwf",   "Historia, mecanismo, estimación Pwf"),
@@ -4389,7 +4466,6 @@ def render_sidebar_nav() -> dict[str, Any]:
 
     _status_map = compute_module_status(well_id, OUTPUT_DIR) if well_id else {}
     _traffic = {"ok": "🟢", "warning": "🟡", "missing": "🔴"}
-    _active = st.session_state.get(SESSION_ACTIVE_MODULE, "M1")
 
     for _mod_key, _mod_label, _mod_help in _module_meta:
         _light = _traffic.get(_status_map.get(_mod_key, "missing"), "🔴")
@@ -4406,6 +4482,19 @@ def render_sidebar_nav() -> dict[str, Any]:
             st.session_state[SESSION_ACTIVE_MODULE] = _mod_key
             st.rerun()
 
+    st.sidebar.markdown("---")
+
+    # ── Ayuda (placeholder) ────────────────────────────────────────────────
+    if st.sidebar.button(
+        "❓ Ayuda",
+        key="nav_Ayuda",
+        use_container_width=True,
+        type="primary" if _active == "Ayuda" else "secondary",
+        help="Documentación y guía de uso (próximamente)",
+    ):
+        st.session_state[SESSION_ACTIVE_MODULE] = "Ayuda"
+        st.rerun()
+
     st.sidebar.divider()
 
     # ── Datos de entrada ───────────────────────────────────────────────────
@@ -4418,57 +4507,12 @@ def render_sidebar_nav() -> dict[str, Any]:
             _mtime = _dt.datetime.fromtimestamp(_enriched_path.stat().st_mtime)
             st.success(
                 f"✅ Último run: `{_enriched_path.name}`  \n"
-                f"📅 {_mtime.strftime('%Y-%m-%d %H:%M')}  \n"
-                "Los módulos muestran estos resultados."
+                f"📅 {_mtime.strftime('%Y-%m-%d %H:%M')}"
             )
         else:
-            st.info("ℹ️ Sin resultados previos. Carga una historia para correr el workflow.")
+            st.info("ℹ️ Sin resultados. Carga una historia en **M1 → 📊 Historia**.")
 
         st.divider()
-
-        # ── Uploader historia ─────────────────────────────────────────────
-        history_upload = st.file_uploader(
-            "Historia de producción (CSV)",
-            type=["csv"],
-            help="Carga para ejecutar M1-M2 (historia + Pwf + PVT).",
-        )
-
-        # Columnas requeridas
-        with st.expander("📋 Formato CSV requerido"):
-            st.markdown(
-                "**Columnas obligatorias:**\n"
-                "| Columna | Tipo | Descripción |\n"
-                "|---------|------|-------------|\n"
-                "| `date` | fecha | YYYY-MM-DD, DD/MM/YYYY, MM/DD/YYYY, etc. |\n"
-                "| `qo_stb_d` | float | Caudal aceite [STB/d] |\n"
-                "| `qg_mscf_d` | float | Caudal gas [MSCF/d] |\n"
-                "| `qw_stb_d` | float | Caudal agua [STB/d] |\n"
-                "| `whp_psia` | float | Presión cabeza [psia] |\n"
-                "| `t_wh_f` | float | Temp. cabeza [°F] |\n"
-                "\n**Columnas opcionales:**\n"
-                "| Columna | Descripción |\n"
-                "|---------|-------------|\n"
-                "| `well_id` | Se toma del campo ID del pozo si falta |\n"
-                "| `pwf_measured_psia` | Pwf medido (gauge fondo) [psia] |\n"
-            )
-            # Template CSV download
-            import io as _io
-            _template_cols = [
-                "date", "well_id",
-                "qo_stb_d", "qg_mscf_d", "qw_stb_d",
-                "whp_psia", "t_wh_f",
-                "pwf_measured_psia",
-            ]
-            import pandas as _pd_tmpl
-            _template_df = _pd_tmpl.DataFrame(columns=_template_cols)
-            _template_csv = _template_df.to_csv(index=False).encode("utf-8")
-            st.download_button(
-                "⬇ Descargar plantilla CSV",
-                data=_template_csv,
-                file_name="historia_plantilla.csv",
-                mime="text/csv",
-                use_container_width=True,
-            )
 
         pvt_config_upload = st.file_uploader(
             "Config PVT (JSON)",
@@ -4477,7 +4521,7 @@ def render_sidebar_nav() -> dict[str, Any]:
         )
         active_edited_path = get_active_edited_history_path()
         if active_edited_path is not None:
-            st.success(f"Historia editada activa: `{active_edited_path.name}`")
+            st.success(f"Historia editada: `{active_edited_path.name}`")
         active_pvt_path = get_active_pvt_config_path()
         if active_pvt_path is not None:
             st.success(f"PVT UI activo: `{active_pvt_path.name}`")
@@ -4576,7 +4620,6 @@ def render_sidebar_nav() -> dict[str, Any]:
             st.rerun()
 
     return {
-        "history_upload": history_upload,
         "pvt_config_upload": pvt_config_upload,
         "well_id": well_id,
         "fit_from_date": fit_from_date,
@@ -4678,7 +4721,7 @@ def render_sidebar_inputs() -> dict[str, Any]:
     )
 
     return {
-        "history_upload": history_upload,
+        "history_upload": None,
         "pvt_config_upload": pvt_config_upload,
         "well_id": well_id,
         "fit_from_date": fit_from_date,
@@ -4834,10 +4877,179 @@ def render_artifacts(well_id: str, inputs: dict | None = None) -> None:
     artifacts = WorkflowArtifacts.for_well(well_id)
     enriched_df = read_csv_safe(artifacts.enriched_history_csv)
 
-    active = st.session_state.get(SESSION_ACTIVE_MODULE, "M1")
+    active = st.session_state.get(SESSION_ACTIVE_MODULE, "Inicio")
+
+    # ── Inicio — Pantalla de bienvenida ────────────────────────────────────
+    if active == "Inicio":
+        # Hero
+        st.markdown(
+            "<h1 style='margin-bottom:0'>🛢 ecoRTA</h1>"
+            "<p style='color:#6b7280;font-size:1.1rem;margin-top:4px'>"
+            "Rate Transient Analysis · Ecopetrol SA / Hocol</p>",
+            unsafe_allow_html=True,
+        )
+        st.divider()
+
+        # ── Well ID + action buttons ───────────────────────────────────────
+        _ic1, _ic2, _ic3, _ic4 = st.columns([2.5, 1.3, 1.3, 1.3])
+        with _ic1:
+            _wid_display = well_id or "(sin definir)"
+            st.markdown(
+                f"<div style='background:#f0fdf4;border:1px solid #86efac;"
+                f"border-radius:8px;padding:10px 16px;'>"
+                f"<span style='color:#166534;font-size:0.85rem'>Pozo activo</span><br>"
+                f"<span style='font-size:1.4rem;font-weight:700;color:#15803d'>"
+                f"🛢 {_wid_display}</span>"
+                f"</div>",
+                unsafe_allow_html=True,
+            )
+        with _ic2:
+            st.write("")
+            if st.button(
+                "🚀 Nuevo análisis",
+                use_container_width=True,
+                type="primary",
+                key="inicio_nuevo_btn",
+                help="Ir a M1 para cargar historia y configurar el pozo",
+            ):
+                st.session_state[SESSION_ACTIVE_MODULE] = "M1"
+                st.rerun()
+        with _ic3:
+            st.write("")
+            st.button(
+                "📥 Importar análisis",
+                use_container_width=True,
+                type="secondary",
+                key="inicio_importar_btn",
+                disabled=True,
+                help="Próximamente — importa un análisis exportado previamente",
+            )
+        with _ic4:
+            st.write("")
+            if well_id:
+                _cbx_ver_i = st.session_state.get("clear_checkbox_version", 0)
+                _confirm_i = st.session_state.get("inicio_confirm_clear", False)
+                if st.button(
+                    "🗑 Limpiar",
+                    use_container_width=True,
+                    type="secondary",
+                    key="inicio_limpiar_btn",
+                    help=f"Borra todos los resultados de `{well_id}`",
+                ):
+                    st.session_state["inicio_confirm_clear"] = True
+                    st.rerun()
+                if st.session_state.get("inicio_confirm_clear"):
+                    st.warning(f"¿Confirmas borrar todo para `{well_id}`?")
+                    _cc1, _cc2 = st.columns(2)
+                    if _cc1.button("Sí, borrar", type="primary", key="inicio_limpiar_ok"):
+                        _cleared = clear_all_analysis(well_id)
+                        st.session_state["inicio_confirm_clear"] = False
+                        st.session_state["clear_checkbox_version"] = _cbx_ver_i + 1
+                        st.toast(f"✅ {_cleared} archivo(s) eliminados.", icon="🗑")
+                        st.rerun()
+                    if _cc2.button("Cancelar", key="inicio_limpiar_cancel"):
+                        st.session_state["inicio_confirm_clear"] = False
+                        st.rerun()
+
+        st.divider()
+
+        # ── Methodology flow cards ─────────────────────────────────────────
+        st.markdown("### Flujo de trabajo")
+        st.caption("Haz clic en un módulo para navegar directamente.")
+
+        _card_css = """
+        <style>
+        .eco-card {
+            background: #f8fafc; border: 1px solid #e2e8f0;
+            border-radius: 10px; padding: 16px 18px; margin: 4px 0;
+            transition: box-shadow .15s;
+        }
+        .eco-card:hover { box-shadow: 0 4px 12px rgba(0,0,0,.08); }
+        .eco-card-icon { font-size: 1.6rem; }
+        .eco-card-title { font-weight: 700; font-size: 1rem; color: #1e293b; }
+        .eco-card-desc { color: #64748b; font-size: 0.85rem; margin-top:2px; }
+        .eco-arrow { color: #94a3b8; font-size: 1.2rem; text-align:center;
+                     padding-top:22px; }
+        </style>
+        """
+        st.markdown(_card_css, unsafe_allow_html=True)
+
+        _modules_info = [
+            ("M1", "🗂", "M1 — Pozo & Pwf",
+             "Historia de producción, estado mecánico, estimación Pwf"),
+            ("M2", "🧪", "M2 — PVT",
+             "Correlaciones PVT: Bo, Rs, μo, ρo, compresibilidad"),
+            ("M3", "📉", "M3 — DCA",
+             "Declinación de producción Arps: exponencial, hiperbólica, armónica"),
+            ("M4", "🔬", "M4 — RTA",
+             "Curvas tipo Fetkovich / Blasingame / Agarwal-Gardner"),
+            ("M5", "📊", "M5 — Resultados",
+             "Dashboard integrado, EUR, OOIP, exportación"),
+        ]
+        _n_cards = len(_modules_info)
+        _card_cols = st.columns([1, 0.15] * (_n_cards - 1) + [1])
+
+        for _ci_card, (_mkey, _micon, _mtitle, _mdesc) in enumerate(_modules_info):
+            _col_idx = _ci_card * 2
+            with _card_cols[_col_idx]:
+                st.markdown(
+                    f"<div class='eco-card'>"
+                    f"<div class='eco-card-icon'>{_micon}</div>"
+                    f"<div class='eco-card-title'>{_mtitle}</div>"
+                    f"<div class='eco-card-desc'>{_mdesc}</div>"
+                    f"</div>",
+                    unsafe_allow_html=True,
+                )
+                if st.button(
+                    f"→ Ir a {_mkey}",
+                    key=f"inicio_goto_{_mkey}",
+                    use_container_width=True,
+                ):
+                    st.session_state[SESSION_ACTIVE_MODULE] = _mkey
+                    st.rerun()
+            if _ci_card < _n_cards - 1:
+                with _card_cols[_col_idx + 1]:
+                    st.markdown("<div class='eco-arrow'>▶</div>", unsafe_allow_html=True)
+
+        st.divider()
+
+        # ── Status overview ────────────────────────────────────────────────
+        if well_id:
+            _sm = compute_module_status(well_id, OUTPUT_DIR)
+            _traffic_i = {"ok": "🟢", "warning": "🟡", "missing": "🔴"}
+            _st_cols = st.columns(5)
+            for _si, (_smk, _smicon, _sml, _) in enumerate(_modules_info):
+                _st_cols[_si].metric(
+                    _sml,
+                    _traffic_i.get(_sm.get(_smk, "missing"), "🔴"),
+                )
+
+        st.divider()
+
+        # ── GPL-3 disclaimer ───────────────────────────────────────────────
+        st.markdown(
+            "<div style='color:#9ca3af;font-size:0.78rem;text-align:center'>"
+            "ecoRTA v0.1 · Ecopetrol SA / Hocol · "
+            "Licenciado bajo <a href='https://www.gnu.org/licenses/gpl-3.0.html' "
+            "style='color:#9ca3af'>GNU GPL-3.0</a> · "
+            "Software de uso interno — no distribuir sin autorización.<br>"
+            "Soporte técnico y contacto: "
+            "<a href='mailto:robert.padron@ecopetrol.com.co' style='color:#9ca3af'>"
+            "robert.padron@ecopetrol.com.co</a>"
+            "</div>",
+            unsafe_allow_html=True,
+        )
+
+    # ── Ayuda — placeholder ────────────────────────────────────────────────
+    elif active == "Ayuda":
+        st.header("❓ Ayuda")
+        st.info(
+            "La documentación detallada estará disponible próximamente.  \n\n"
+            "Soporte técnico y contacto: **robert.padron@ecopetrol.com.co**"
+        )
 
     # ── M1 — Pozo & Pwf ───────────────────────────────────────────────────
-    if active == "M1":
+    elif active == "M1":
         st.header("🗂 M1 — Historia de producción, Pwf y estado mecánico")
 
         # Source annotation — clarify what data is being shown
@@ -4847,7 +5059,7 @@ def render_artifacts(well_id: str, inputs: dict | None = None) -> None:
             st.caption(
                 f"📂 Datos de: `{artifacts.enriched_history_csv.name}` "
                 f"— generado el {_mtime.strftime('%Y-%m-%d %H:%M')}. "
-                "Para actualizar, carga una nueva historia en **📂 Datos de entrada** y "
+                "Para actualizar, carga una nueva historia en la pestaña **📊 Historia** y "
                 "ejecuta el workflow."
             )
 
@@ -4864,12 +5076,75 @@ def render_artifacts(well_id: str, inputs: dict | None = None) -> None:
         m1_tabs = st.tabs(["📊 Historia", "⚙️ Geometría / Survey", "✏️ Edición Pwf"])
 
         with m1_tabs[0]:
-            if enriched_df is None:
-                st.info(f"No se encontró `{artifacts.enriched_history_csv.name}`.")
-                st.caption(
-                    "Ejecuta el **Paso 1 — M1+M2** para generar la historia enriquecida."
+            # ── Carga de historia ─────────────────────────────────────────
+            _hist_up_col, _hist_info_col = st.columns([1, 1.2])
+            with _hist_up_col:
+                st.markdown("**📂 Historia de producción (CSV)**")
+                st.file_uploader(
+                    "Cargar CSV de producción",
+                    type=["csv"],
+                    key="m1_hist_uploader",
+                    help="Carga para ejecutar M1-M2 (historia + Pwf + PVT).",
                 )
-            else:
+                with st.expander("📋 Formato CSV requerido"):
+                    st.markdown(
+                        "**Columnas obligatorias:**\n"
+                        "| Columna | Tipo | Descripción |\n"
+                        "|---------|------|-------------|\n"
+                        "| `date` | fecha | YYYY-MM-DD, DD/MM/YYYY |\n"
+                        "| `qo_stb_d` | float | Caudal aceite [STB/d] |\n"
+                        "| `qg_mscf_d` | float | Caudal gas [MSCF/d] |\n"
+                        "| `qw_stb_d` | float | Caudal agua [STB/d] |\n"
+                        "| `whp_psia` | float | Presión cabeza [psia] |\n"
+                        "| `t_wh_f` | float | Temp. cabeza [°F] |\n"
+                        "\n**Columnas opcionales:**\n"
+                        "| `well_id` | ID del pozo |\n"
+                        "| `pwf_measured_psia` | Pwf medido [psia] |\n"
+                    )
+                    import pandas as _pd_tmpl_m1
+                    _template_cols_m1 = [
+                        "date", "well_id",
+                        "qo_stb_d", "qg_mscf_d", "qw_stb_d",
+                        "whp_psia", "t_wh_f",
+                        "pwf_measured_psia",
+                    ]
+                    _template_csv_m1 = _pd_tmpl_m1.DataFrame(
+                        columns=_template_cols_m1
+                    ).to_csv(index=False).encode("utf-8")
+                    st.download_button(
+                        "⬇ Descargar plantilla CSV",
+                        data=_template_csv_m1,
+                        file_name="historia_plantilla.csv",
+                        mime="text/csv",
+                        use_container_width=True,
+                    )
+            with _hist_info_col:
+                if enriched_df is not None and artifacts.enriched_history_csv.exists():
+                    import datetime as _dt_hist
+                    _mtime_h = _dt_hist.datetime.fromtimestamp(
+                        artifacts.enriched_history_csv.stat().st_mtime
+                    )
+                    st.success(
+                        f"✅ Historia procesada: `{artifacts.enriched_history_csv.name}`  \n"
+                        f"📅 {_mtime_h.strftime('%Y-%m-%d %H:%M')}"
+                    )
+                    _nc_h = len(enriched_df)
+                    _dates_h = pd.to_datetime(enriched_df["date"], errors="coerce") if "date" in enriched_df.columns else None
+                    if _dates_h is not None and _dates_h.notna().any():
+                        st.caption(
+                            f"{_nc_h} registros · "
+                            f"{_dates_h.min().strftime('%Y-%m-%d')} → {_dates_h.max().strftime('%Y-%m-%d')}"
+                        )
+                else:
+                    st.info(
+                        "ℹ️ Sin historia procesada.  \n"
+                        "Carga un CSV y ejecuta **🔄 Actualizar Historia** "
+                        "(en la sección de configuración)."
+                    )
+
+            # ── Resumen M1 si hay datos ───────────────────────────────────
+            if enriched_df is not None:
+                st.divider()
                 render_m1_summary(
                     enriched_df,
                     well_id,
@@ -4878,6 +5153,20 @@ def render_artifacts(well_id: str, inputs: dict | None = None) -> None:
                 )
 
         with m1_tabs[1]:
+            # ── Visual well schematic editor (M1 embedded) ────────────────
+            st.subheader("🛢 Esquema mecánico interactivo")
+            st.caption(
+                "Configura casing, tubing, ESP y perforaciones para generar el "
+                "esquema visual del pozo y activar el cálculo de Pwf."
+            )
+            try:
+                from src.ui.m1_well_editor import render_m1_editor_embedded
+                render_m1_editor_embedded(well_id)
+            except Exception as _m1e_exc:
+                st.error(f"Error al cargar el editor mecánico: {_m1e_exc}")
+
+            st.divider()
+            # ── Simple geometry form + survey table ───────────────────────
             render_m1_geometry_and_survey_panel(well_id)
 
         with m1_tabs[2]:
@@ -4898,33 +5187,15 @@ def render_artifacts(well_id: str, inputs: dict | None = None) -> None:
     elif active == "M3":
         st.header("📉 M3 — Declinación de producción (Arps)")
 
-        # ── DCA execution button (inline, top of module) ──────────────────
-        if inputs is not None:
-            import datetime as _dt_m3
-            _enr_m3 = artifacts.enriched_history_csv
-            if not _enr_m3.exists():
-                st.info(
-                    "ℹ️ Ejecuta el **Paso 4 (M1-M2)** en la sección de configuración "
-                    "para generar la historia enriquecida y habilitar DCA."
-                )
-            else:
-                _ts_enr_m3 = _dt_m3.datetime.fromtimestamp(
-                    _enr_m3.stat().st_mtime
-                ).strftime("%Y-%m-%d %H:%M")
-                _dca_fit_m3 = artifacts.dca_fit_results_csv
-                _c_m3a, _c_m3b = st.columns([3, 1])
-                with _c_m3a:
-                    st.caption(
-                        f"Historia enriquecida: ✅ `{_enr_m3.name}` ({_ts_enr_m3})"
-                    )
-                with _c_m3b:
-                    if _dca_fit_m3.exists():
-                        _ts_dca_m3 = _dt_m3.datetime.fromtimestamp(
-                            _dca_fit_m3.stat().st_mtime
-                        ).strftime("%Y-%m-%d %H:%M")
-                        st.caption(f"✅ DCA: {_ts_dca_m3}")
-                    else:
-                        st.caption("⚪ Sin run DCA previo")
+        if enriched_df is None:
+            st.info(
+                "ℹ️ Ejecuta el **Paso 4 (M1-M2)** en el flujo de trabajo para "
+                "generar la historia enriquecida y habilitar DCA."
+            )
+        else:
+            # ── Run button — top of module ────────────────────────────────
+            if inputs is not None:
+                import datetime as _dt_m3
                 try:
                     _cmd_m3 = build_m3_command(
                         well_id=well_id,
@@ -4936,70 +5207,240 @@ def render_artifacts(well_id: str, inputs: dict | None = None) -> None:
                         forecast_start_rate_mode=inputs["forecast_start_rate_mode"],
                         forecast_start_rate=inputs["forecast_start_rate"],
                     )
+                    _cmd_m3_ok = True
                 except ValueError as _exc_m3:
                     st.error(str(_exc_m3))
-                else:
-                    with st.expander("Comando equivalente M3", expanded=False):
-                        show_command(_cmd_m3)
-                    if st.button(
-                        "▶ Ejecutar M3 — Declinación DCA",
-                        type="primary",
-                        use_container_width=True,
-                        key="run_m3_btn",
-                    ):
-                        with st.spinner("Ejecutando M3 (declinación DCA)…"):
-                            _res_m3 = run_command(_cmd_m3)
-                        if _res_m3.returncode != 0:
-                            st.error("❌ M3 DCA terminó con error.")
-                            with st.expander("STDERR", expanded=True):
-                                st.code(_res_m3.stderr or "(vacío)", language="text")
-                            if _res_m3.stdout:
-                                with st.expander("STDOUT", expanded=False):
-                                    st.code(_res_m3.stdout, language="text")
+                    _cmd_m3_ok = False
+
+                if _cmd_m3_ok:
+                    _c_run_m3, _c_st_m3 = st.columns([3, 1])
+                    with _c_run_m3:
+                        if st.button(
+                            "▶ Ejecutar M3 — Declinación DCA",
+                            type="primary",
+                            use_container_width=True,
+                            key="run_m3_btn",
+                        ):
+                            with st.spinner("Ejecutando M3 (declinación DCA)…"):
+                                _res_m3 = run_command(_cmd_m3)
+                            if _res_m3.returncode != 0:
+                                st.error("❌ M3 DCA terminó con error.")
+                                with st.expander("STDERR", expanded=True):
+                                    st.code(_res_m3.stderr or "(vacío)", language="text")
+                            else:
+                                st.toast("✅ M3 DCA ejecutado correctamente.", icon="📉")
+                                st.rerun()
+                    with _c_st_m3:
+                        if artifacts.dca_fit_results_csv.exists():
+                            _ts_dca_m3 = _dt_m3.datetime.fromtimestamp(
+                                artifacts.dca_fit_results_csv.stat().st_mtime
+                            ).strftime("%Y-%m-%d %H:%M")
+                            st.caption(f"✅ Último run: {_ts_dca_m3}")
                         else:
-                            st.success("✅ M3 DCA ejecutado correctamente.")
-                            if _res_m3.stdout:
-                                with st.expander("STDOUT", expanded=False):
-                                    st.code(_res_m3.stdout, language="text")
-                            if _res_m3.stderr:
-                                with st.expander("STDERR (warnings)", expanded=False):
-                                    st.code(_res_m3.stderr, language="text")
+                            st.caption("⚪ Sin run DCA previo")
+
             st.divider()
 
-        m3_tabs = st.tabs(
-            [
-                "Resultados",
-                "Ventana ajuste",
-                "Amarre forecast",
-                "Gráficas",
-            ]
-        )
+            # ── Interactive multi-method DCA adjustment ───────────────────
+            st.subheader("🎛 Ajuste interactivo DCA")
 
-        with m3_tabs[0]:
-            render_dataframe_from_csv(artifacts.dca_fit_results_csv, "fit_results")
-            render_dataframe_from_csv(artifacts.dca_forecast_csv, "forecast")
-            render_json_report(artifacts.dca_qc_report_json, "dca_qc_report")
+            import numpy as _np_dca
+            from src.services.dca_service import arps_rate as _arps_rate_svc
 
-        with m3_tabs[1]:
-            if enriched_df is None:
-                st.info(
-                    "Ejecuta primero el workflow para generar la historia enriquecida "
-                    "y habilitar la selección interactiva."
-                )
+            # Prepare history data in fit window
+            _hist_dca = enriched_df.copy()
+            _hist_dca["date"] = pd.to_datetime(_hist_dca["date"], errors="coerce")
+            if "qo_stb_d" in _hist_dca.columns:
+                _hist_dca["qo_stb_d"] = pd.to_numeric(_hist_dca["qo_stb_d"], errors="coerce")
+                _hist_dca = _hist_dca.dropna(subset=["date", "qo_stb_d"]).query("qo_stb_d > 0").sort_values("date")
             else:
-                render_interactive_dca_fit_window_selector(enriched_df)
+                _hist_dca = _hist_dca.dropna(subset=["date"]).sort_values("date")
 
-        with m3_tabs[2]:
-            if enriched_df is None:
-                st.info(
-                    "Ejecuta primero el workflow para generar la historia enriquecida "
-                    "y habilitar la selección del punto de amarre."
-                )
+            _fit_from_m3 = inputs.get("fit_from_date") if inputs else None
+            _fit_to_m3 = inputs.get("fit_to_date") if inputs else None
+            _hist_fit_m3 = _hist_dca.copy()
+            if _fit_from_m3:
+                _hist_fit_m3 = _hist_fit_m3[_hist_fit_m3["date"] >= pd.Timestamp(_fit_from_m3)]
+            if _fit_to_m3:
+                _hist_fit_m3 = _hist_fit_m3[_hist_fit_m3["date"] <= pd.Timestamp(_fit_to_m3)]
+            if _hist_fit_m3.empty:
+                _hist_fit_m3 = _hist_dca.copy()
+
+            _qo_col_m3 = "qo_stb_d" if "qo_stb_d" in _hist_fit_m3.columns else None
+            _qi_default_m3 = float(_hist_fit_m3[_qo_col_m3].quantile(0.90)) if _qo_col_m3 and not _hist_fit_m3.empty else 500.0
+            _q_aband_def_m3 = float(inputs.get("abandonment_rate", 50.0)) if inputs else 50.0
+            _fc_days_def_m3 = int(inputs.get("forecast_days", 3650)) if inputs else 3650
+            _start_date_fc_m3 = _hist_dca["date"].max() if not _hist_dca.empty else pd.Timestamp.now()
+
+            # Method checkboxes (horizontal row)
+            _chk_cols = st.columns([1, 1, 1, 4])
+            _use_exp_m3 = _chk_cols[0].checkbox("Exponencial", value=True, key="dca_use_exp")
+            _use_hip_m3 = _chk_cols[1].checkbox("Hiperbólico", value=True, key="dca_use_hip")
+            _use_arm_m3 = _chk_cols[2].checkbox("Armónico", value=False, key="dca_use_arm")
+
+            if not any([_use_exp_m3, _use_hip_m3, _use_arm_m3]):
+                st.info("Selecciona al menos un método de declinación.")
             else:
-                render_interactive_forecast_anchor_selector(enriched_df)
+                # Initialize slider defaults
+                _di_exp_m3 = 30.0
+                _di_hip_m3 = 50.0
+                _b_hip_m3 = 0.8
+                _di_arm_m3 = 40.0
 
-        with m3_tabs[3]:
-            render_dca_graphs_tab(artifacts)
+                _col_ctrl_m3, _col_chart_m3 = st.columns([1, 2.5])
+
+                with _col_ctrl_m3:
+                    st.markdown("**Parámetros de ajuste**")
+                    _qi_val_m3 = st.number_input(
+                        "qi inicial [STB/d]", min_value=0.1, value=_qi_default_m3,
+                        step=10.0, format="%.1f", key="dca_qi_val",
+                        help="Tasa al inicio del pronóstico. Toma por defecto el percentil 90 de la ventana de ajuste.",
+                    )
+                    _q_aband_m3 = st.number_input(
+                        "Tasa abandono [STB/d]", min_value=0.0, value=_q_aband_def_m3,
+                        step=5.0, key="dca_q_aband",
+                    )
+                    _fc_days_m3 = st.number_input(
+                        "Días pronóstico", min_value=365, max_value=50000,
+                        value=_fc_days_def_m3, step=365, key="dca_fc_days",
+                    )
+                    st.markdown("---")
+                    if _use_exp_m3:
+                        st.markdown("🔴 **Exponencial**")
+                        _di_exp_m3 = st.slider(
+                            "Di exp (%/año efectivo)", 1.0, 200.0, 30.0, 1.0, key="dca_di_exp_pct",
+                            help="Declinación anual efectiva para el modelo exponencial.",
+                        )
+                        st.markdown("---")
+                    if _use_hip_m3:
+                        st.markdown("🔵 **Hiperbólico**")
+                        _di_hip_m3 = st.slider(
+                            "Di hip (%/año efectivo)", 1.0, 200.0, 50.0, 1.0, key="dca_di_hip_pct",
+                        )
+                        _b_hip_m3 = st.slider(
+                            "Factor b", 0.05, 2.0, 0.8, 0.05, key="dca_b_hip",
+                            help="b=0: exponencial · b=1: armónico · 0<b<1: hiperbólico típico · b>1: pronóstico conservador",
+                        )
+                        st.markdown("---")
+                    if _use_arm_m3:
+                        st.markdown("🟠 **Armónico**")
+                        _di_arm_m3 = st.slider(
+                            "Di arm (%/año efectivo)", 1.0, 200.0, 40.0, 1.0, key="dca_di_arm_pct",
+                        )
+                        st.markdown("---")
+
+                # ── Helper functions for DCA math ─────────────────────────
+                def _di_eff_to_nom_m3(di_pct: float, b: float) -> float:
+                    """Convert effective annual decline % to nominal per-day decline."""
+                    d = min(di_pct / 100.0, 0.9999)
+                    if abs(b) < 1e-9:          # exponential
+                        return float(-_np_dca.log(1.0 - d) / 365.0)
+                    elif abs(b - 1.0) < 1e-9:  # harmonic
+                        return float(d / (1.0 - d) / 365.0)
+                    else:                       # hyperbolic
+                        return float(((1.0 - d) ** (-b) - 1.0) / (b * 365.0))
+
+                def _compute_eur_m3(q_arr: Any, t_arr: Any, q_ab: float) -> float:
+                    q = _np_dca.asarray(q_arr, dtype=float)
+                    t = _np_dca.asarray(t_arr, dtype=float)
+                    if q_ab > 0:
+                        idx_aband = _np_dca.argmax(q < q_ab)
+                        if idx_aband > 0:
+                            q = q[:idx_aband]
+                            t = t[:idx_aband]
+                    return float(_np_dca.trapz(q, t))
+
+                # ── Build Plotly chart ────────────────────────────────────
+                with _col_chart_m3:
+                    _fig_m3 = go.Figure() if go is not None else None
+                    if _fig_m3 is not None:
+                        add_history_qo_trace(_fig_m3, _hist_dca)
+
+                    _t_fc_m3 = _np_dca.arange(0.0, float(_fc_days_m3) + 1.0, 1.0)
+                    _t_dates_m3 = [_start_date_fc_m3 + pd.Timedelta(days=float(d)) for d in _t_fc_m3]
+                    _eur_results_m3: dict[str, float] = {}
+
+                    if _use_exp_m3:
+                        _di_nom_exp = _di_eff_to_nom_m3(_di_exp_m3, 0.0)
+                        _q_exp_m3 = _arps_rate_svc(_t_fc_m3, qi=float(_qi_val_m3), di=_di_nom_exp, b=0.0)
+                        _eur_results_m3["Exponencial"] = _compute_eur_m3(_q_exp_m3, _t_fc_m3, float(_q_aband_m3))
+                        if _fig_m3 is not None:
+                            _fig_m3.add_trace(go.Scatter(
+                                x=_t_dates_m3, y=_q_exp_m3, mode="lines",
+                                name=f"Exp (Di={_di_exp_m3:.0f}%/año)",
+                                line={"color": "#DC2626", "width": 2},
+                            ))
+
+                    if _use_hip_m3:
+                        _di_nom_hip = _di_eff_to_nom_m3(_di_hip_m3, _b_hip_m3)
+                        _q_hip_m3 = _arps_rate_svc(_t_fc_m3, qi=float(_qi_val_m3), di=_di_nom_hip, b=_b_hip_m3)
+                        _eur_results_m3["Hiperbólico"] = _compute_eur_m3(_q_hip_m3, _t_fc_m3, float(_q_aband_m3))
+                        if _fig_m3 is not None:
+                            _fig_m3.add_trace(go.Scatter(
+                                x=_t_dates_m3, y=_q_hip_m3, mode="lines",
+                                name=f"Hip (Di={_di_hip_m3:.0f}%/año, b={_b_hip_m3:.2f})",
+                                line={"color": "#2563EB", "width": 2},
+                            ))
+
+                    if _use_arm_m3:
+                        _di_nom_arm = _di_eff_to_nom_m3(_di_arm_m3, 1.0)
+                        _q_arm_m3 = _arps_rate_svc(_t_fc_m3, qi=float(_qi_val_m3), di=_di_nom_arm, b=1.0)
+                        _eur_results_m3["Armónico"] = _compute_eur_m3(_q_arm_m3, _t_fc_m3, float(_q_aband_m3))
+                        if _fig_m3 is not None:
+                            _fig_m3.add_trace(go.Scatter(
+                                x=_t_dates_m3, y=_q_arm_m3, mode="lines",
+                                name=f"Arm (Di={_di_arm_m3:.0f}%/año)",
+                                line={"color": "#D97706", "width": 2},
+                            ))
+
+                    if _fig_m3 is not None:
+                        if float(_q_aband_m3) > 0:
+                            _fig_m3.add_hline(
+                                y=float(_q_aband_m3), line_dash="dash", line_color="gray",
+                                annotation_text=f"Abandono {_q_aband_m3:.0f} STB/d",
+                                annotation_position="top left",
+                            )
+                        _fig_m3.update_layout(
+                            title="DCA — ajuste interactivo multi-método",
+                            xaxis_title="Fecha",
+                            yaxis_title="qo [STB/d]",
+                            hovermode="x unified",
+                            height=430,
+                            margin={"l": 20, "r": 20, "t": 50, "b": 10},
+                            legend={"orientation": "h", "y": -0.18},
+                        )
+                        st.plotly_chart(_fig_m3, use_container_width=True, key="dca_interactive_main_chart")
+                    else:
+                        st.info("Instala `plotly` para ver la gráfica interactiva.")
+
+                    # EUR panel
+                    if _eur_results_m3:
+                        st.markdown("**EUR estimado**")
+                        _eur_cols_m3 = st.columns(len(_eur_results_m3))
+                        for _ci_m3, (_mn_m3, _ev_m3) in enumerate(_eur_results_m3.items()):
+                            _eur_str = (
+                                f"{_ev_m3 / 1_000_000:.3f} MM STB"
+                                if _ev_m3 >= 1_000_000
+                                else f"{_ev_m3 / 1_000:.2f} M STB"
+                            )
+                            _eur_cols_m3[_ci_m3].metric(_mn_m3, _eur_str)
+
+            st.divider()
+
+            # ── Pipeline outputs from last run ────────────────────────────
+            if any([
+                artifacts.dca_fit_results_csv.exists(),
+                artifacts.dca_rate_fit_png.exists(),
+            ]):
+                with st.expander("📊 Resultados del último pipeline M3", expanded=False):
+                    _m3_out_tabs = st.tabs(["Ajuste DCA", "Forecast", "Gráficas PNG"])
+                    with _m3_out_tabs[0]:
+                        render_interactive_dca_final_plots(artifacts)
+                    with _m3_out_tabs[1]:
+                        render_dataframe_from_csv(artifacts.dca_forecast_csv, "forecast")
+                        render_json_report(artifacts.dca_qc_report_json, "dca_qc_report")
+                    with _m3_out_tabs[2]:
+                        render_dca_graphs_tab(artifacts)
 
     # ── M4 — RTA tipo curves overlay ──────────────────────────────────────
     elif active == "M4":
@@ -5021,11 +5462,13 @@ def main() -> None:
     apply_light_css()
     ensure_dirs()
 
-    st.title("ecoRTA")
-    st.caption(
-        "Herramienta digital para Rate Transient Analysis de pozos exploratorios "
-        "en pruebas extensas de producción · Ecopetrol SA / Hocol"
-    )
+    # Skip global title on Inicio (it has its own styled header)
+    if st.session_state.get(SESSION_ACTIVE_MODULE, "Inicio") != "Inicio":
+        st.title("ecoRTA")
+        st.caption(
+            "Herramienta digital para Rate Transient Analysis de pozos exploratorios "
+            "en pruebas extensas de producción · Ecopetrol SA / Hocol"
+        )
 
     inputs = render_sidebar_nav()
 
@@ -5033,8 +5476,11 @@ def main() -> None:
         st.warning("Define un **well_id** válido en el sidebar para continuar.")
         return
 
+    # History CSV uploader now lives in M1 → 📊 Historia tab (key "m1_hist_uploader").
+    # Session state persists the UploadedFile across reruns even when M1 tab isn't active.
+    _hist_upload_widget = st.session_state.get("m1_hist_uploader")
     uploaded_history_csv_path = save_uploaded_file(
-        inputs["history_upload"],
+        _hist_upload_widget,
         f"{inputs['well_id']}_history_upload.csv",
     )
     edited_history_csv_path = get_active_edited_history_path()
@@ -5086,13 +5532,39 @@ def main() -> None:
         ui_pvt_config_json_path is not None or uploaded_pvt_config_json_path is not None
     )
     if pvt_config_json_path is None:
-        pvt_config_json_path = save_pvt_config_from_ui(_default, inputs["well_id"])
+        # Write defaults to a SEPARATE file so that pvt_config_ui.json only exists
+        # when the user has explicitly configured PVT from the M2 editor.
+        # This prevents M2 traffic-light from showing 🟢 for auto-generated defaults.
+        _default_pvt_path = UI_INPUT_DIR / f"{inputs['well_id']}_pvt_config_default.json"
+        write_json(_default_pvt_path, _default)
+        pvt_config_json_path = _default_pvt_path
 
     # Artifacts helper
     artifacts = WorkflowArtifacts.for_well(inputs["well_id"])
     import datetime as _dt_cfg
 
-    # ── Checklist de configuración (4 pasos) ──────────────────────────────
+    # ── Checklist de configuración (solo visible en M1) ───────────────────
+    _active_for_checklist = st.session_state.get(SESSION_ACTIVE_MODULE, "Inicio")
+    _show_checklist = _active_for_checklist == "M1"
+
+    if not _show_checklist:
+        # Compact status bar for M2/M3/M4/M5 (skip for Inicio and Ayuda which have full screens)
+        if _active_for_checklist not in ("Inicio", "Ayuda"):
+            _enriched_exists = artifacts.enriched_history_csv.exists()
+            if _enriched_exists:
+                import datetime as _dt_compact
+                _ts_compact = _dt_compact.datetime.fromtimestamp(
+                    artifacts.enriched_history_csv.stat().st_mtime
+                ).strftime("%Y-%m-%d %H:%M")
+                st.caption(
+                    f"✅ Historia enriquecida disponible — último run M1-M2: {_ts_compact}  "
+                    "· Para reconfigurar dirígete a **M1 — Pozo & Pwf**"
+                )
+            else:
+                st.caption("⚪ Sin historia procesada. Ve a **M1 — Pozo & Pwf** para configurar y ejecutar el análisis.")
+        render_artifacts(inputs["well_id"], inputs=inputs)
+        return
+
     st.markdown("### ⚙️ Configuración del análisis")
 
     # ·· Paso 1 — Historia ·····················································
@@ -5103,7 +5575,7 @@ def main() -> None:
     ):
         if not _paso1_ok:
             st.info(
-                "⬆️ Carga el CSV de producción en **📂 Datos de entrada** (sidebar).  \n"
+                "⬆️ Carga el CSV de producción en la pestaña **📊 Historia** del módulo M1 (ver abajo ↓).  \n"
                 "Puedes explorar los módulos M2, M4 y M5 mientras tanto."
             )
         else:
@@ -5186,13 +5658,23 @@ def main() -> None:
                 st.session_state[SESSION_ACTIVE_MODULE] = "M2"
                 st.rerun()
 
-    # ·· Paso 4 — Ejecutar M1-M2 ···············································
+    # ·· Paso 4 — Actualizar Historia (M1-M2) ··································
     st.markdown("---")
-    st.markdown("#### ▶ Paso 4 — Ejecutar M1-M2 *(historia + Pwf estimado + PVT)*")
+    st.markdown("#### 🔄 Paso 4 — Actualizar Historia *(historia + Pwf estimado + PVT)*")
     if not _paso1_ok:
         st.info("Completa el **Paso 1** (carga la historia) para habilitar la ejecución.")
     else:
         _enriched_csv = artifacts.enriched_history_csv
+        _geom_ok_p4 = artifacts.well_geometry_json.exists()
+
+        # Gate: Pwf requires mechanical state
+        if not _geom_ok_p4:
+            st.warning(
+                "⚠️ El estado mecánico no está configurado — "
+                "el cálculo de Pwf requiere los datos de geometría del pozo.  \n"
+                "Configura tubería, casing y survey en la pestaña **⚙️ Geometría / Survey** (Paso 2)."
+            )
+
         _c4l, _c4r = st.columns([3, 1])
         with _c4l:
             st.caption(
@@ -5224,10 +5706,12 @@ def main() -> None:
             with st.expander("Comando equivalente M1-M2", expanded=False):
                 show_command(_cmd_m1m2)
             if st.button(
-                "▶ Ejecutar M1-M2 — Historia + Pwf + PVT",
+                "🔄 Actualizar Historia",
                 type="primary",
                 use_container_width=True,
                 key="run_m1m2_btn",
+                disabled=not _geom_ok_p4,
+                help="Configura el estado mecánico (Paso 2) para habilitar el cálculo de Pwf" if not _geom_ok_p4 else None,
             ):
                 with st.spinner("Ejecutando M1-M2 (historia + Pwf + PVT)…"):
                     _res = run_command(_cmd_m1m2)
@@ -5239,10 +5723,8 @@ def main() -> None:
                         with st.expander("STDOUT", expanded=False):
                             st.code(_res.stdout, language="text")
                 else:
-                    st.success("✅ M1-M2 ejecutado correctamente.")
-                    if _res.stdout:
-                        with st.expander("STDOUT", expanded=False):
-                            st.code(_res.stdout, language="text")
+                    st.toast("✅ Historia actualizada correctamente.", icon="🔄")
+                    st.rerun()
                     if _res.stderr:
                         with st.expander("STDERR (warnings)", expanded=False):
                             st.code(_res.stderr, language="text")
