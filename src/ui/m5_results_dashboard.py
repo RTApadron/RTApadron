@@ -597,7 +597,79 @@ def _tab_validacion(summary: WellResultsSummary) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Entry point
+# Función embebible — para usar desde app.py sin st.set_page_config
+# ---------------------------------------------------------------------------
+
+def render_m5_embedded(well_id: str, output_dir: Path) -> None:
+    """Renderiza el dashboard M5 completo embebido en otra app Streamlit.
+
+    Usa well_id del sidebar del hub (app.py) sin mostrar selector propio.
+    El estado se guarda en session_state con prefijo 'm5_' para no colisionar.
+    """
+    key_summary = f"m5_summary_{well_id}"
+
+    # Botón de carga / recarga
+    col_btn, col_status = st.columns([1, 3])
+    with col_btn:
+        reload = st.button("🔄 Cargar / actualizar M5", key=f"m5_load_{well_id}")
+
+    if reload or key_summary not in st.session_state:
+        with st.spinner("Agregando resultados M1-M4…"):
+            try:
+                summary = build_well_results(well_id=well_id, output_dir=output_dir)
+                st.session_state[key_summary] = summary
+                with col_status:
+                    st.success("Resultados cargados correctamente.")
+            except Exception as exc:
+                with col_status:
+                    st.error(f"Error al cargar resultados: {exc}")
+                return
+
+    summary: WellResultsSummary | None = st.session_state.get(key_summary)
+    if summary is None:
+        st.info("Haz clic en **Cargar / actualizar M5** para agregar los resultados de M1-M4.")
+        return
+
+    # Verificar que los datos corresponden al well_id activo
+    if summary.well_id != well_id:
+        st.warning("El Well ID cambió — haz clic en **Cargar / actualizar M5**.")
+        return
+
+    # Completitud rápida al inicio
+    flags = summary.completeness_flags()
+    n_ok = sum(flags.values())
+    if n_ok < len(flags):
+        missing = [k for k, v in flags.items() if not v]
+        st.warning(f"Módulos sin datos en output/: {', '.join(missing)}. Ejecuta el pipeline primero.")
+
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
+        "📋 Resumen",
+        "🧪 PVT",
+        "📉 DCA",
+        "🔬 RTA",
+        "📊 Comparativo",
+        "💾 Exportar",
+        "📐 Validación",
+    ])
+
+    with tab1:
+        _tab_resumen(summary)
+    with tab2:
+        _tab_pvt(summary)
+    with tab3:
+        _tab_dca(summary)
+    with tab4:
+        _tab_rta(summary)
+    with tab5:
+        _tab_comparativo(summary)
+    with tab6:
+        _tab_exportar(summary)
+    with tab7:
+        _tab_validacion(summary)
+
+
+# ---------------------------------------------------------------------------
+# Entry point — app standalone
 # ---------------------------------------------------------------------------
 
 def main() -> None:
