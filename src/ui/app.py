@@ -4528,13 +4528,8 @@ def main() -> None:
     inputs = render_sidebar_nav()
 
     if not inputs["well_id"]:
-        st.warning("Define un well_id válido para ejecutar el workflow.")
+        st.warning("Define un **well_id** válido en el sidebar para continuar.")
         return
-
-    st.info(
-        "La interfaz ejecuta el pipeline existente y muestra artefactos generados. "
-        "No duplica lógica de integración, PVT ni DCA."
-    )
 
     uploaded_history_csv_path = save_uploaded_file(
         inputs["history_upload"],
@@ -4559,64 +4554,68 @@ def main() -> None:
             f"⚠️ PVT no configurado — se usarán valores por defecto "
             f"(**API {_default['api']}°**, T {_default['temp_f']} °F, "
             f"correlación: `{_default['oil_corr']}`).  \n"
-            "Ajusta los parámetros reales del pozo en el tab **M2 PVT** "
-            "antes de interpretar los resultados."
+            "Configura los parámetros reales del pozo en **🧪 M2 — PVT** "
+            "(sidebar) antes de interpretar los resultados."
         )
 
-    if history_csv_path is not None:
-        st.caption(f"Historia usada por el workflow: `{history_csv_path}`")
-
-    if pvt_config_json_path is not None:
-        st.caption(f"PVT usado por el workflow: `{pvt_config_json_path}`")
-
-    try:
-        cmd = build_full_workflow_command(
-            well_id=inputs["well_id"],
-            fit_from_date=inputs["fit_from_date"],
-            fit_to_date=inputs["fit_to_date"],
-            exclude_first_n=inputs["exclude_first_n"],
-            forecast_days=inputs["forecast_days"],
-            abandonment_rate=inputs["abandonment_rate"],
-            forecast_start_rate_mode=inputs["forecast_start_rate_mode"],
-            forecast_start_rate=inputs["forecast_start_rate"],
-            history_csv=history_csv_path,
-            pvt_config_json=pvt_config_json_path,
+    # ── Workflow M1-M2-M3 (solo si hay historia cargada) ──────────────────
+    if history_csv_path is None:
+        st.info(
+            "⬆️ Carga una **historia de producción CSV** en **📂 Datos de entrada** "
+            "(sidebar) para habilitar el workflow M1-M2-M3.  \n"
+            "Puedes explorar los módulos **M2**, **M4** y **M5** mientras tanto."
         )
-    except ValueError as exc:
-        st.error(str(exc))
-        return
+    else:
+        st.caption(f"Historia: `{history_csv_path.name if hasattr(history_csv_path, 'name') else history_csv_path}`")
+        if pvt_config_json_path is not None:
+            st.caption(f"PVT: `{pvt_config_json_path.name if hasattr(pvt_config_json_path, 'name') else pvt_config_json_path}`")
 
-    with st.expander("Comando equivalente", expanded=False):
-        show_command(cmd)
+        try:
+            cmd = build_full_workflow_command(
+                well_id=inputs["well_id"],
+                fit_from_date=inputs["fit_from_date"],
+                fit_to_date=inputs["fit_to_date"],
+                exclude_first_n=inputs["exclude_first_n"],
+                forecast_days=inputs["forecast_days"],
+                abandonment_rate=inputs["abandonment_rate"],
+                forecast_start_rate_mode=inputs["forecast_start_rate_mode"],
+                forecast_start_rate=inputs["forecast_start_rate"],
+                history_csv=history_csv_path,
+                pvt_config_json=pvt_config_json_path,
+            )
+        except ValueError as exc:
+            st.error(str(exc))
+        else:
+            with st.expander("Comando equivalente", expanded=False):
+                show_command(cmd)
 
-    run_clicked = st.button(
-        "Ejecutar workflow M1-M2-M3",
-        type="primary",
-        use_container_width=True,
-    )
+            run_clicked = st.button(
+                "▶ Ejecutar workflow M1-M2-M3",
+                type="primary",
+                use_container_width=True,
+            )
 
-    if run_clicked:
-        with st.spinner("Ejecutando workflow M1-M2-M3..."):
-            result = run_command(cmd)
+            if run_clicked:
+                with st.spinner("Ejecutando workflow M1-M2-M3..."):
+                    result = run_command(cmd)
 
-        if result.returncode != 0:
-            st.error("El workflow terminó con error.")
-            st.subheader("STDERR")
-            st.code(result.stderr or "(vacío)", language="text")
-            st.subheader("STDOUT")
-            st.code(result.stdout or "(vacío)", language="text")
-            return
+                if result.returncode != 0:
+                    st.error("❌ El workflow terminó con error.")
+                    with st.expander("STDERR", expanded=True):
+                        st.code(result.stderr or "(vacío)", language="text")
+                    if result.stdout:
+                        with st.expander("STDOUT", expanded=False):
+                            st.code(result.stdout, language="text")
+                else:
+                    st.success("✅ Workflow M1-M2-M3 ejecutado correctamente.")
+                    if result.stdout:
+                        with st.expander("STDOUT", expanded=False):
+                            st.code(result.stdout, language="text")
+                    if result.stderr:
+                        with st.expander("STDERR (warnings)", expanded=False):
+                            st.code(result.stderr, language="text")
 
-        st.success("Workflow ejecutado correctamente.")
-
-        if result.stdout:
-            with st.expander("STDOUT", expanded=False):
-                st.code(result.stdout, language="text")
-
-        if result.stderr:
-            with st.expander("STDERR", expanded=False):
-                st.code(result.stderr, language="text")
-
+    # Módulos — siempre visibles (muestran datos del último run exitoso)
     render_artifacts(inputs["well_id"])
 
 
