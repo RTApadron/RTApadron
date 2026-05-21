@@ -7,6 +7,7 @@ Pestañas:
     🔬 RTA          — parámetros de yacimiento M4 + imagen overlay
     📊 Comparativo  — EUR DCA vs OOIP volumétrico vs volumen contactado
     💾 Exportar     — CSV / JSON / Excel / PDF por módulo
+    📐 Validación   — tabla comparativa ecoRTA vs software comercial de referencia
 """
 
 from __future__ import annotations
@@ -20,8 +21,14 @@ if str(PROJECT_ROOT) not in sys.path:
 
 import streamlit as st
 
-from src.domain.m5_models import WellResultsSummary
+from src.domain.m5_models import ExternalSoftwareResult, WellResultsSummary
 from src.services.m5_aggregator_service import build_well_results
+from src.services.m5_comparison_service import (
+    build_comparison_table,
+    comparison_table_to_csv_bytes,
+    load_external_result,
+    save_external_result,
+)
 
 OUTPUT_DIR = PROJECT_ROOT / "output"
 
@@ -381,6 +388,215 @@ def _tab_exportar(summary: WellResultsSummary) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Tab 7: Validación vs software comercial
+# ---------------------------------------------------------------------------
+
+_STATUS_ICONS = {
+    "match":   "✅",
+    "close":   "🟡",
+    "diverge": "🔴",
+    "missing": "⬜",
+}
+_STATUS_LABELS = {
+    "match":   "Concordancia alta  (|Δ| < 5 %)",
+    "close":   "Concordancia media (5 % ≤ |Δ| < 20 %)",
+    "diverge": "Divergencia        (|Δ| ≥ 20 %)",
+    "missing": "Dato faltante",
+}
+
+
+def _tab_validacion(summary: WellResultsSummary) -> None:
+    st.subheader("Validación vs software comercial")
+    st.caption(
+        "Ingresa los valores de referencia del software comercial para generar "
+        "la tabla comparativa. Los valores de ecoRTA se toman de M3 DCA y M4 RTA."
+    )
+
+    well_id = summary.well_id
+
+    # ── Cargar valores previos si existen ────────────────────────────────────
+    saved = load_external_result(OUTPUT_DIR, well_id)
+    if saved and "ext_loaded" not in st.session_state:
+        st.session_state["ext_loaded"] = True
+        st.session_state["ext_data"] = saved
+
+    ext_init: ExternalSoftwareResult = st.session_state.get("ext_data") or ExternalSoftwareResult()
+
+    if saved and "ext_loaded" in st.session_state:
+        st.info(f"📂 Valores cargados desde `output/{well_id}_external_reference.json`")
+
+    # ── Formulario de entrada ────────────────────────────────────────────────
+    with st.expander("📝 Valores del software comercial", expanded=True):
+        software_label = st.text_input(
+            "Nombre del software de referencia",
+            value=ext_init.software_label,
+            help="Ej.: 'Software Comercial', 'Kappa Ecrin', etc.",
+        )
+
+        st.markdown("**DCA — Declinación**")
+        c1, c2, c3, c4 = st.columns(4)
+        ext_eur = c1.number_input(
+            "EUR (MM STB)", min_value=0.0, value=float(ext_init.eur_stb / 1e6) if ext_init.eur_stb else 0.0,
+            format="%.4f", step=0.001,
+        )
+        ext_qi = c2.number_input(
+            "qi (STB/d)", min_value=0.0, value=float(ext_init.qi_stb_d or 0.0),
+            format="%.1f", step=1.0,
+        )
+        ext_di = c3.number_input(
+            "Di nominal (1/d)", min_value=0.0, value=float(ext_init.di_nominal_d or 0.0),
+            format="%.6f", step=0.0001,
+        )
+        ext_b = c4.number_input(
+            "b (Arps)", min_value=0.0, max_value=1.0, value=float(ext_init.b_factor or 0.0),
+            format="%.3f", step=0.01,
+        )
+
+        st.markdown("**RTA — Parámetros de yacimiento**")
+        c5, c6, c7 = st.columns(3)
+        ext_kh = c5.number_input(
+            "kh (mD·ft)", min_value=0.0, value=float(ext_init.kh_md_ft or 0.0),
+            format="%.2f", step=0.1,
+        )
+        ext_k = c6.number_input(
+            "k (mD)", min_value=0.0, value=float(ext_init.k_md or 0.0),
+            format="%.4f", step=0.001,
+        )
+        ext_n = c7.number_input(
+            "OOIP volumétrico (MM STB)", min_value=0.0, value=float(ext_init.n_vol_stb / 1e6) if ext_init.n_vol_stb else 0.0,
+            format="%.4f", step=0.001,
+        )
+
+        ext_notes = st.text_area(
+            "Notas / condiciones del modelo de referencia",
+            value=ext_init.notes or "",
+            height=60,
+        )
+
+    # ── Selector de modelo DCA para comparar ─────────────────────────────────
+    dca_models_available = (
+        [m.model for m in summary.dca.models] if summary.dca and summary.dca.models else []
+    )
+    dca_options = ["best"] + dca_models_available
+    dca_sel = st.selectbox(
+        "Modelo DCA ecoRTA a comparar",
+        options=dca_options,
+        format_func=lambda x: "Mejor R² (automático)" if x == "best" else x.capitalize(),
+    )
+
+    # ── Construir ExternalSoftwareResult ──────────────────────────────────────
+    external = ExternalSoftwareResult(
+        software_label=software_label,
+        eur_stb=ext_eur * 1e6 if ext_eur > 0 else None,
+        qi_stb_d=ext_qi if ext_qi > 0 else None,
+        di_nominal_d=ext_di if ext_di > 0 else None,
+        b_factor=ext_b if ext_b > 0 else None,
+        kh_md_ft=ext_kh if ext_kh > 0 else None,
+        k_md=ext_k if ext_k > 0 else None,
+        n_vol_stb=ext_n * 1e6 if ext_n > 0 else None,
+        notes=ext_notes or None,
+    )
+
+    # ── Guardar ───────────────────────────────────────────────────────────────
+    col_save, col_dl = st.columns([1, 3])
+    if col_save.button("💾 Guardar valores de referencia"):
+        path = save_external_result(external, OUTPUT_DIR, well_id)
+        st.session_state["ext_data"] = external
+        st.success(f"Guardado en `{path.name}`")
+
+    # ── Tabla comparativa ─────────────────────────────────────────────────────
+    st.divider()
+    st.subheader(f"Tabla comparativa: ecoRTA vs {software_label}")
+
+    rows = build_comparison_table(summary, external, dca_model=dca_sel)
+
+    import pandas as pd
+
+    table_data = []
+    for r in rows:
+        icon = _STATUS_ICONS.get(r.status, "")
+        table_data.append({
+            "Parámetro": r.parameter,
+            "Unidades": r.units,
+            "ecoRTA": f"{r.ecorta_value:.4g}" if r.ecorta_value is not None else "—",
+            software_label: f"{r.external_value:.4g}" if r.external_value is not None else "—",
+            "Δ relativo (%)": f"{r.rel_diff_pct:+.2f} %" if r.rel_diff_pct is not None else "—",
+            "Concordancia": f"{icon} {r.status}",
+            "Nota": r.note,
+        })
+
+    df_comp = pd.DataFrame(table_data)
+
+    # Color de filas por status
+    def _highlight(row: pd.Series) -> list[str]:
+        conc = str(row.get("Concordancia", ""))
+        if "match" in conc:
+            return ["background-color: #eafaf1"] * len(row)
+        if "close" in conc:
+            return ["background-color: #fef9e7"] * len(row)
+        if "diverge" in conc:
+            return ["background-color: #fdedec"] * len(row)
+        return [""] * len(row)
+
+    st.dataframe(
+        df_comp.style.apply(_highlight, axis=1),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    # Leyenda
+    st.caption("  ".join(f"{icon} {label}" for icon, (_, label) in zip(
+        _STATUS_ICONS.values(), _STATUS_LABELS.items()
+    )))
+
+    # ── Resumen de concordancia ───────────────────────────────────────────────
+    counts = {"match": 0, "close": 0, "diverge": 0, "missing": 0}
+    for r in rows:
+        counts[r.status] = counts.get(r.status, 0) + 1
+
+    meaningful = [r for r in rows if r.status != "missing"]
+    if meaningful:
+        st.subheader("Resumen de concordancia")
+        cm1, cm2, cm3, cm4 = st.columns(4)
+        cm1.metric("✅ Concordancia alta", counts["match"])
+        cm2.metric("🟡 Concordancia media", counts["close"])
+        cm3.metric("🔴 Divergencia", counts["diverge"])
+        cm4.metric("⬜ Datos faltantes", counts["missing"])
+
+        total_comp = counts["match"] + counts["close"] + counts["diverge"]
+        if total_comp > 0:
+            pct_ok = (counts["match"] + counts["close"]) / total_comp * 100
+            if pct_ok >= 80:
+                st.success(f"**{pct_ok:.0f} %** de los parámetros con concordancia alta o media.")
+            elif pct_ok >= 50:
+                st.warning(f"**{pct_ok:.0f} %** de los parámetros con concordancia alta o media.")
+            else:
+                st.error(f"**{pct_ok:.0f} %** de los parámetros con concordancia alta o media — revisar configuración.")
+
+    # ── Descarga ──────────────────────────────────────────────────────────────
+    if rows:
+        csv_bytes = comparison_table_to_csv_bytes(rows, summary, external)
+        st.download_button(
+            "⬇ Descargar tabla comparativa (CSV)",
+            data=csv_bytes,
+            file_name=f"{well_id}_comparativo_vs_ref.csv",
+            mime="text/csv",
+        )
+
+    # ── Advertencia status DEMO ───────────────────────────────────────────────
+    if summary.rta and summary.rta.status == "demo":
+        st.divider()
+        st.markdown(
+            _badge(
+                "⚠️ Parámetros RTA son DEMO (curvas tipo no validadas) — "
+                "comparación con fines exploratorios únicamente.",
+                "demo",
+            ),
+            unsafe_allow_html=True,
+        )
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
@@ -417,13 +633,14 @@ def main() -> None:
     if summary.well_id != well_id.strip():
         st.warning("El Well ID cambió — haz clic en **Cargar resultados** para actualizar.")
 
-    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
         "📋 Resumen",
         "🧪 PVT",
         "📉 DCA",
         "🔬 RTA",
         "📊 Comparativo",
         "💾 Exportar",
+        "📐 Validación",
     ])
 
     with tab1:
@@ -438,6 +655,8 @@ def main() -> None:
         _tab_comparativo(summary)
     with tab6:
         _tab_exportar(summary)
+    with tab7:
+        _tab_validacion(summary)
 
 
 if __name__ == "__main__":

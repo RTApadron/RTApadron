@@ -90,6 +90,48 @@ class RTASummary(BaseModel):
     qc_warnings: list[str] = Field(default_factory=list)
 
 
+ComparisonStatus = Literal["match", "close", "diverge", "missing"]
+
+
+class ExternalSoftwareResult(BaseModel):
+    """Valores de referencia ingresados manualmente desde software comercial.
+
+    El campo `software_label` permite nombrar la herramienta de referencia
+    sin especificarla en el código (default genérico "Software Comercial").
+    """
+
+    software_label: str = "Software Comercial"
+
+    # DCA
+    eur_stb: float | None = None           # EUR total (STB)
+    qi_stb_d: float | None = None          # tasa inicial (STB/d)
+    di_nominal_d: float | None = None      # declinación inicial (/d)
+    b_factor: float | None = None          # exponente hiperbólico
+
+    # RTA / parámetros de yacimiento
+    kh_md_ft: float | None = None          # permeabilidad-espesor (mD·ft)
+    k_md: float | None = None              # permeabilidad efectiva (mD)
+    n_vol_stb: float | None = None         # OOIP (STB)
+    skin: float | None = None              # daño de formación (adimensional)
+
+    # Generales
+    notes: str | None = None
+    entered_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class ComparisonRow(BaseModel):
+    """Fila individual de la tabla comparativa ecoRTA vs software comercial."""
+
+    parameter: str          # nombre del parámetro
+    units: str              # unidades
+    ecorta_value: float | None
+    external_value: float | None
+    abs_diff: float | None        # |ecoRTA - externo|
+    rel_diff_pct: float | None    # (ecoRTA - externo) / externo × 100
+    status: ComparisonStatus      # semáforo de concordancia
+    note: str = ""                # advertencia o aclaración (ej. "DEMO")
+
+
 class WellResultsSummary(BaseModel):
     """Resultado integrado M1-M4 para un pozo.
 
