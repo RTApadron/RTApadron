@@ -39,6 +39,7 @@ from src.rta.point_selection import (
 )
 OUTPUT_DIR = PROJECT_ROOT / "output"
 UI_INPUT_DIR = PROJECT_ROOT / "data" / "ui_uploads"
+LOGO_PATH = PROJECT_ROOT / "assets" / "logo.jpg"
 
 FORECAST_START_RATE_MODES = ("fitted", "last-window-rate", "manual")
 PWF_OVERRIDE_MODES = (
@@ -299,6 +300,22 @@ def apply_light_css() -> None:
             padding: 0.75rem;
             border-radius: 0.75rem;
         }
+
+        /* ── Tab bar — more prominent labels ── */
+        div[data-testid="stTabs"] button[data-baseweb="tab"] {
+            font-size: 0.90rem;
+            font-weight: 600;
+            letter-spacing: 0.01em;
+            padding: 8px 18px;
+        }
+        div[data-testid="stTabs"] button[data-baseweb="tab"][aria-selected="true"] {
+            border-bottom: 3px solid #2d6a4f;
+            color: #2d6a4f;
+        }
+        div[data-testid="stTabs"] button[data-baseweb="tab"]:hover {
+            color: #2d6a4f;
+            background: #f0faf4;
+        }
         </style>
         """,
         unsafe_allow_html=True,
@@ -462,6 +479,67 @@ def clean_optional_float(value: float | None) -> float | None:
     return parsed if parsed > 0 else None
 
 
+def _base_workflow_cmd(well_id: str) -> list[str]:
+    return [sys.executable, "-m", "src.pipeline.run_full_workflow", "--well-id", well_id]
+
+
+def build_m1m2_command(
+    *,
+    well_id: str,
+    history_csv: Path,
+    pvt_config_json: Path,
+    fit_from_date: date | None = None,
+    fit_to_date: date | None = None,
+) -> list[str]:
+    """Build command to run M1-M2 (history enrichment + Pwf + PVT). Skips DCA."""
+    cmd = _base_workflow_cmd(well_id) + [
+        "--history-csv", str(history_csv),
+        "--pvt-config-json", str(pvt_config_json),
+        "--skip-dca",
+    ]
+    if fit_from_date is not None:
+        cmd.extend(["--from-date", fit_from_date.isoformat()])
+    if fit_to_date is not None:
+        cmd.extend(["--to-date", fit_to_date.isoformat()])
+    return cmd
+
+
+def build_m3_command(
+    *,
+    well_id: str,
+    fit_from_date: date | None,
+    fit_to_date: date | None,
+    exclude_first_n: int,
+    forecast_days: int,
+    abandonment_rate: float,
+    forecast_start_rate_mode: str,
+    forecast_start_rate: float | None,
+) -> list[str]:
+    """Build command to run M3 DCA only (requires existing enriched history)."""
+    if forecast_start_rate_mode not in FORECAST_START_RATE_MODES:
+        raise ValueError(f"Modo no soportado: {forecast_start_rate_mode}")
+
+    cmd = _base_workflow_cmd(well_id) + [
+        "--dca-only",
+        "--exclude-first-n", str(exclude_first_n),
+        "--forecast-days", str(forecast_days),
+        "--abandonment-rate", str(abandonment_rate),
+        "--forecast-start-rate-mode", forecast_start_rate_mode,
+    ]
+    if fit_from_date is not None:
+        cmd.extend(["--from-date", fit_from_date.isoformat()])
+    if fit_to_date is not None:
+        cmd.extend(["--to-date", fit_to_date.isoformat()])
+    if forecast_start_rate_mode == "manual":
+        if forecast_start_rate is None or forecast_start_rate <= 0:
+            raise ValueError(
+                "Cuando forecast_start_rate_mode='manual', "
+                "forecast_start_rate debe ser mayor que cero."
+            )
+        cmd.extend(["--forecast-start-rate", str(forecast_start_rate)])
+    return cmd
+
+
 def build_full_workflow_command(
     *,
     well_id: str,
@@ -475,47 +553,33 @@ def build_full_workflow_command(
     history_csv: Path | None,
     pvt_config_json: Path | None,
 ) -> list[str]:
+    """Build command to run the full M1-M2-M3 pipeline (kept for compatibility)."""
     if forecast_start_rate_mode not in FORECAST_START_RATE_MODES:
-        msg = f"Modo de tasa inicial de forecast no soportado: {forecast_start_rate_mode}"
-        raise ValueError(msg)
+        raise ValueError(f"Modo de tasa inicial no soportado: {forecast_start_rate_mode}")
+    if history_csv is None:
+        raise ValueError("history_csv es requerido para el workflow completo.")
+    if pvt_config_json is None:
+        raise ValueError("pvt_config_json es requerido para el workflow completo.")
 
-    cmd = [
-        sys.executable,
-        "-m",
-        "src.pipeline.run_full_workflow",
-        "--well-id",
-        well_id,
-        "--exclude-first-n",
-        str(exclude_first_n),
-        "--forecast-days",
-        str(forecast_days),
-        "--abandonment-rate",
-        str(abandonment_rate),
-        "--forecast-start-rate-mode",
-        forecast_start_rate_mode,
+    cmd = _base_workflow_cmd(well_id) + [
+        "--history-csv", str(history_csv),
+        "--pvt-config-json", str(pvt_config_json),
+        "--exclude-first-n", str(exclude_first_n),
+        "--forecast-days", str(forecast_days),
+        "--abandonment-rate", str(abandonment_rate),
+        "--forecast-start-rate-mode", forecast_start_rate_mode,
     ]
-
     if fit_from_date is not None:
-        cmd.extend(["--fit-from-date", fit_from_date.isoformat()])
-
+        cmd.extend(["--from-date", fit_from_date.isoformat()])
     if fit_to_date is not None:
-        cmd.extend(["--fit-to-date", fit_to_date.isoformat()])
-
+        cmd.extend(["--to-date", fit_to_date.isoformat()])
     if forecast_start_rate_mode == "manual":
         if forecast_start_rate is None or forecast_start_rate <= 0:
-            msg = (
+            raise ValueError(
                 "Cuando forecast_start_rate_mode='manual', "
                 "forecast_start_rate debe ser mayor que cero."
             )
-            raise ValueError(msg)
         cmd.extend(["--forecast-start-rate", str(forecast_start_rate)])
-
-    if history_csv is not None:
-        cmd.extend(["--history-csv", str(history_csv)])
-
-    if pvt_config_json is not None:
-        cmd.extend(["--pvt-config-json", str(pvt_config_json)])
-
     return cmd
 
 
@@ -2191,7 +2255,7 @@ def render_m4_rta_configuration_panel(
     if not artifacts.enriched_history_csv.exists():
         st.info(
             f"No se encontró `{artifacts.enriched_history_csv.name}`. "
-            "Ejecuta primero el workflow M1-M2-M3."
+            "Ejecuta primero el **Paso 1 — M1+M2**."
         )
         return
 
@@ -3984,7 +4048,7 @@ def render_interactive_dca_final_plots(artifacts: WorkflowArtifacts) -> None:
     if history_df is None or history_df.empty:
         st.warning(
             "No hay historia enriquecida válida para graficar. "
-            "Ejecuta primero el workflow M1-M2-M3."
+            "Ejecuta primero el **Paso 1 — M1+M2**."
         )
         return
 
@@ -4086,8 +4150,22 @@ def render_history_column_mapper(raw_csv_path: Path, well_id: str) -> None:
         "El sistema detectó las más probables automáticamente — revisa y ajusta si es necesario."
     )
 
+    # Auto-detect separator: handles comma, semicolon, tab, pipe, space
+    import csv as _csv_mod
+    _detected_sep = ","
     try:
-        df = pd.read_csv(raw_csv_path)
+        with open(raw_csv_path, "r", encoding="utf-8-sig", errors="replace") as _fh:
+            _sample = _fh.read(8192)
+        _sniff = _csv_mod.Sniffer().sniff(_sample, delimiters=",;\t| ")
+        _detected_sep = _sniff.delimiter
+    except Exception:
+        _detected_sep = ","
+
+    _sep_labels = {",": "coma (,)", ";": "punto y coma (;)", "\t": "tabulador (\\t)", "|": "barra (|)", " ": "espacio"}
+    _sep_label = _sep_labels.get(_detected_sep, repr(_detected_sep))
+
+    try:
+        df = pd.read_csv(raw_csv_path, sep=_detected_sep, encoding="utf-8-sig")
     except Exception as exc:
         st.error(f"Error leyendo el CSV: {exc}")
         return
@@ -4096,9 +4174,28 @@ def render_history_column_mapper(raw_csv_path: Path, well_id: str) -> None:
     auto_map = _auto_detect_mapping(csv_cols)
 
     with st.expander(
-        f"📄 Vista previa — {len(df):,} filas · {len(csv_cols)} columnas detectadas",
+        f"📄 Vista previa — {len(df):,} filas · {len(csv_cols)} columna(s) detectadas · separador: {_sep_label}",
         expanded=True,
     ):
+        if len(csv_cols) == 1:
+            st.warning(
+                f"⚠️ Solo se detectó **1 columna** con separador `{_detected_sep!r}`. "
+                "Si tu archivo usa otro separador, selecciónalo manualmente:"
+            )
+            _manual_sep = st.radio(
+                "Separador del archivo",
+                options=[",", ";", "\t", "|"],
+                format_func=lambda s: _sep_labels.get(s, s),
+                horizontal=True,
+                key="colmap_manual_sep",
+            )
+            if _manual_sep != _detected_sep:
+                try:
+                    df = pd.read_csv(raw_csv_path, sep=_manual_sep, encoding="utf-8-sig")
+                    csv_cols = list(df.columns)
+                    auto_map = _auto_detect_mapping(csv_cols)
+                except Exception as exc:
+                    st.error(f"Error leyendo con separador `{_manual_sep}`: {exc}")
         st.dataframe(df.head(8), use_container_width=True)
 
     NONE_OPT = "— (columna no disponible)"
@@ -4137,6 +4234,63 @@ def render_history_column_mapper(raw_csv_path: Path, well_id: str) -> None:
 
     missing_req = [c for c, _, _ in _REQUIRED_HISTORY_COLS if not mapping.get(c)]
 
+    # ── Formato de fecha ───────────────────────────────────────────────────
+    _DATE_FORMATS: list[tuple[str, str]] = [
+        ("%Y-%m-%d", "YYYY-MM-DD — 2023-07-13 (ISO recomendado)"),
+        ("%d/%m/%Y", "DD/MM/YYYY — 13/07/2023"),
+        ("%m/%d/%Y", "MM/DD/YYYY — 07/13/2023"),
+        ("%d-%m-%Y", "DD-MM-YYYY — 13-07-2023"),
+        ("%Y/%m/%d", "YYYY/MM/DD — 2023/07/13"),
+        ("%d/%m/%y", "DD/MM/YY  — 13/07/23"),
+    ]
+    _sel_date_fmt = "%Y-%m-%d"  # default (ISO); overridden below if date col mapped
+    _date_src = mapping.get("date")
+    if _date_src and _date_src in df.columns:
+        st.divider()
+        st.markdown("**🗓 Formato de fecha**")
+        _date_samples = [str(v) for v in df[_date_src].dropna().head(10).tolist()]
+        # Auto-detect: first format that parses all samples cleanly wins
+        _auto_fmt = "%Y-%m-%d"
+        for _fmt, _ in _DATE_FORMATS:
+            try:
+                pd.to_datetime(_date_samples, format=_fmt, errors="raise")
+                _auto_fmt = _fmt
+                break
+            except (ValueError, TypeError):
+                continue
+        _fmt_map = dict(_DATE_FORMATS)
+        _fmt_idx = next(
+            (i for i, (f, _) in enumerate(_DATE_FORMATS) if f == _auto_fmt), 0
+        )
+        _sel_date_fmt = st.selectbox(
+            "Formato detectado en el archivo",
+            options=[f for f, _ in _DATE_FORMATS],
+            format_func=lambda f, _m=_fmt_map: _m[f],
+            index=_fmt_idx,
+            key="colmap_date_format",
+            help=(
+                "ecoRTA convertirá todas las fechas a **YYYY-MM-DD** al guardar. "
+                "Si la vista previa muestra resultados incorrectos, selecciona otro formato."
+            ),
+        )
+        # Preview conversion of first 3 values
+        _prev_ok, _prev_fail = [], []
+        for _s in _date_samples[:3]:
+            try:
+                _norm = pd.to_datetime([_s], format=_sel_date_fmt, errors="raise")[0]
+                _prev_ok.append(
+                    f"`{_s}` → `{pd.Timestamp(_norm).strftime('%Y-%m-%d')}`"
+                )
+            except Exception:
+                _prev_fail.append(f"`{_s}`")
+        if _prev_ok:
+            st.caption("Vista previa: " + "  ·  ".join(_prev_ok))
+        if _prev_fail:
+            st.warning(
+                f"⚠️ No se pudo convertir con este formato: {', '.join(_prev_fail)}. "
+                "Selecciona otro formato en la lista."
+            )
+
     st.divider()
     if missing_req:
         st.warning(
@@ -4156,6 +4310,17 @@ def render_history_column_mapper(raw_csv_path: Path, well_id: str) -> None:
     ):
         rename = {v: k for k, v in mapping.items() if v is not None}
         mapped_df = df.rename(columns=rename)
+        # Normalize date → ISO YYYY-MM-DD so the pipeline always gets a consistent format
+        _save_fmt = st.session_state.get("colmap_date_format", "%Y-%m-%d")
+        if "date" in mapped_df.columns:
+            try:
+                mapped_df["date"] = (
+                    pd.to_datetime(
+                        mapped_df["date"], format=_save_fmt, errors="coerce"
+                    ).dt.strftime("%Y-%m-%d")
+                )
+            except Exception:
+                pass  # Leave as-is if normalization unexpectedly fails
         target = UI_INPUT_DIR / f"{well_id}_history_mapped.csv"
         mapped_df.to_csv(target, index=False)
         st.session_state[SESSION_HISTORY_MAPPED_PATH] = str(target)
@@ -4197,8 +4362,11 @@ def render_sidebar_nav() -> dict[str, Any]:
 
     Returns the same dict as the old render_sidebar_inputs() so main() is unchanged.
     """
-    # ── Well identification ────────────────────────────────────────────────
-    st.sidebar.markdown("## 🛢 ecoRTA")
+    # ── Logo + Well identification ─────────────────────────────────────────
+    if LOGO_PATH.exists():
+        st.sidebar.image(str(LOGO_PATH), use_container_width=True)
+    else:
+        st.sidebar.markdown("## 🛢 ecoRTA")
     well_id = st.sidebar.text_input(
         "ID del pozo (well_id)",
         value="W001",
@@ -4262,7 +4430,7 @@ def render_sidebar_nav() -> dict[str, Any]:
         history_upload = st.file_uploader(
             "Historia de producción (CSV)",
             type=["csv"],
-            help="Carga para ejecutar un nuevo workflow M1-M2-M3.",
+            help="Carga para ejecutar M1-M2 (historia + Pwf + PVT).",
         )
 
         # Columnas requeridas
@@ -4271,7 +4439,7 @@ def render_sidebar_nav() -> dict[str, Any]:
                 "**Columnas obligatorias:**\n"
                 "| Columna | Tipo | Descripción |\n"
                 "|---------|------|-------------|\n"
-                "| `date` | fecha | YYYY-MM-DD |\n"
+                "| `date` | fecha | YYYY-MM-DD, DD/MM/YYYY, MM/DD/YYYY, etc. |\n"
                 "| `qo_stb_d` | float | Caudal aceite [STB/d] |\n"
                 "| `qg_mscf_d` | float | Caudal gas [MSCF/d] |\n"
                 "| `qw_stb_d` | float | Caudal agua [STB/d] |\n"
@@ -4376,9 +4544,11 @@ def render_sidebar_nav() -> dict[str, Any]:
             "Elimina **todos** los resultados y archivos del workflow para "
             f"el pozo **{well_id or '(sin ID)'}**. Esta acción es irreversible."
         )
+        # Versioned key avoids StreamlitAPIException when resetting after delete
+        _cbx_ver = st.session_state.get("clear_checkbox_version", 0)
         _confirm_clear = st.checkbox(
             f"Confirmo que quiero borrar todo para `{well_id or '(sin ID)'}`",
-            key="confirm_clear_checkbox",
+            key=f"confirm_clear_checkbox_{_cbx_ver}",
         )
         if st.button(
             "🗑 Borrar todo",
@@ -4400,7 +4570,8 @@ def render_sidebar_nav() -> dict[str, Any]:
                 f"m5_summary_{well_id}",
             ]:
                 st.session_state.pop(_key, None)
-            st.session_state["confirm_clear_checkbox"] = False
+            # Increment version → new checkbox key → resets to unchecked on rerun
+            st.session_state["clear_checkbox_version"] = _cbx_ver + 1
             st.toast(f"✅ {_deleted} archivo(s) eliminados para `{well_id}`.", icon="🗑")
             st.rerun()
 
@@ -4659,7 +4830,7 @@ def render_dca_graphs_tab(artifacts: WorkflowArtifacts) -> None:
         )
 
 
-def render_artifacts(well_id: str) -> None:
+def render_artifacts(well_id: str, inputs: dict | None = None) -> None:
     artifacts = WorkflowArtifacts.for_well(well_id)
     enriched_df = read_csv_safe(artifacts.enriched_history_csv)
 
@@ -4680,14 +4851,23 @@ def render_artifacts(well_id: str) -> None:
                 "ejecuta el workflow."
             )
 
-        m1_tabs = st.tabs(["Historia", "Geometría / Survey", "Edición Pwf"])
+        # Visual hint when geometry is not yet configured
+        if not artifacts.well_geometry_json.exists():
+            st.markdown(
+                """<div style="background:#fff3cd;border-left:4px solid #f59e0b;
+                padding:9px 14px;border-radius:0 6px 6px 0;margin-bottom:10px;font-size:0.9rem;">
+                ⚠️ <strong>Estado mecánico no configurado</strong> — ve a la pestaña
+                <strong>⚙️ Geometría / Survey</strong> para ingresar los datos del pozo.
+                </div>""",
+                unsafe_allow_html=True,
+            )
+        m1_tabs = st.tabs(["📊 Historia", "⚙️ Geometría / Survey", "✏️ Edición Pwf"])
 
         with m1_tabs[0]:
             if enriched_df is None:
                 st.info(f"No se encontró `{artifacts.enriched_history_csv.name}`.")
                 st.caption(
-                    "Ejecuta el workflow (botón **▶ Ejecutar workflow M1-M2-M3**) "
-                    "para generar la historia enriquecida."
+                    "Ejecuta el **Paso 1 — M1+M2** para generar la historia enriquecida."
                 )
             else:
                 render_m1_summary(
@@ -4717,6 +4897,75 @@ def render_artifacts(well_id: str) -> None:
     # ── M3 — DCA ──────────────────────────────────────────────────────────
     elif active == "M3":
         st.header("📉 M3 — Declinación de producción (Arps)")
+
+        # ── DCA execution button (inline, top of module) ──────────────────
+        if inputs is not None:
+            import datetime as _dt_m3
+            _enr_m3 = artifacts.enriched_history_csv
+            if not _enr_m3.exists():
+                st.info(
+                    "ℹ️ Ejecuta el **Paso 4 (M1-M2)** en la sección de configuración "
+                    "para generar la historia enriquecida y habilitar DCA."
+                )
+            else:
+                _ts_enr_m3 = _dt_m3.datetime.fromtimestamp(
+                    _enr_m3.stat().st_mtime
+                ).strftime("%Y-%m-%d %H:%M")
+                _dca_fit_m3 = artifacts.dca_fit_results_csv
+                _c_m3a, _c_m3b = st.columns([3, 1])
+                with _c_m3a:
+                    st.caption(
+                        f"Historia enriquecida: ✅ `{_enr_m3.name}` ({_ts_enr_m3})"
+                    )
+                with _c_m3b:
+                    if _dca_fit_m3.exists():
+                        _ts_dca_m3 = _dt_m3.datetime.fromtimestamp(
+                            _dca_fit_m3.stat().st_mtime
+                        ).strftime("%Y-%m-%d %H:%M")
+                        st.caption(f"✅ DCA: {_ts_dca_m3}")
+                    else:
+                        st.caption("⚪ Sin run DCA previo")
+                try:
+                    _cmd_m3 = build_m3_command(
+                        well_id=well_id,
+                        fit_from_date=inputs["fit_from_date"],
+                        fit_to_date=inputs["fit_to_date"],
+                        exclude_first_n=inputs["exclude_first_n"],
+                        forecast_days=inputs["forecast_days"],
+                        abandonment_rate=inputs["abandonment_rate"],
+                        forecast_start_rate_mode=inputs["forecast_start_rate_mode"],
+                        forecast_start_rate=inputs["forecast_start_rate"],
+                    )
+                except ValueError as _exc_m3:
+                    st.error(str(_exc_m3))
+                else:
+                    with st.expander("Comando equivalente M3", expanded=False):
+                        show_command(_cmd_m3)
+                    if st.button(
+                        "▶ Ejecutar M3 — Declinación DCA",
+                        type="primary",
+                        use_container_width=True,
+                        key="run_m3_btn",
+                    ):
+                        with st.spinner("Ejecutando M3 (declinación DCA)…"):
+                            _res_m3 = run_command(_cmd_m3)
+                        if _res_m3.returncode != 0:
+                            st.error("❌ M3 DCA terminó con error.")
+                            with st.expander("STDERR", expanded=True):
+                                st.code(_res_m3.stderr or "(vacío)", language="text")
+                            if _res_m3.stdout:
+                                with st.expander("STDOUT", expanded=False):
+                                    st.code(_res_m3.stdout, language="text")
+                        else:
+                            st.success("✅ M3 DCA ejecutado correctamente.")
+                            if _res_m3.stdout:
+                                with st.expander("STDOUT", expanded=False):
+                                    st.code(_res_m3.stdout, language="text")
+                            if _res_m3.stderr:
+                                with st.expander("STDERR (warnings)", expanded=False):
+                                    st.code(_res_m3.stderr, language="text")
+            st.divider()
+
         m3_tabs = st.tabs(
             [
                 "Resultados",
@@ -4772,13 +5021,10 @@ def main() -> None:
     apply_light_css()
     ensure_dirs()
 
-    st.title("ecoRTA | Workflow M1-M2-M3-M4-M5")
+    st.title("ecoRTA")
     st.caption(
-        "M1: historia, Pwf, estado mecánico · "
-        "M2: propiedades PVT · "
-        "M3: curvas de declinación Arps · "
-        "M4: diagnóstico RTA y curvas tipo · "
-        "M5: resultados integrados, comparativo y exportación."
+        "Herramienta digital para Rate Transient Analysis de pozos exploratorios "
+        "en pruebas extensas de producción · Ecopetrol SA / Hocol"
     )
 
     inputs = render_sidebar_nav()
@@ -4833,78 +5079,176 @@ def main() -> None:
     ui_pvt_config_json_path = get_active_pvt_config_path()
     pvt_config_json_path = ui_pvt_config_json_path or uploaded_pvt_config_json_path
 
-    # Si no hay config PVT, generar y guardar valores por defecto automáticamente.
-    # El pipeline siempre requiere --pvt-config-json; esto evita el error de argumento.
+    # Siempre calcular defaults PVT para mostrar en el paso 3 del checklist.
+    # El pipeline requiere --pvt-config-json; si el usuario no configuró PVT se usa este.
+    _default = default_pvt_config(inputs["well_id"])
+    _pvt_explicitly_configured = (
+        ui_pvt_config_json_path is not None or uploaded_pvt_config_json_path is not None
+    )
     if pvt_config_json_path is None:
-        _default = default_pvt_config(inputs["well_id"])
         pvt_config_json_path = save_pvt_config_from_ui(_default, inputs["well_id"])
-        st.warning(
-            f"⚠️ PVT no configurado — se usarán valores por defecto "
-            f"(**API {_default['api']}°**, T {_default['temp_f']} °F, "
-            f"correlación: `{_default['oil_corr']}`).  \n"
-            "Configura los parámetros reales del pozo en **🧪 M2 — PVT** "
-            "(sidebar) antes de interpretar los resultados."
-        )
 
-    # ── Workflow M1-M2-M3 (solo si hay historia cargada) ──────────────────
-    if history_csv_path is None:
-        st.info(
-            "⬆️ Carga una **historia de producción CSV** en **📂 Datos de entrada** "
-            "(sidebar) para habilitar el workflow M1-M2-M3.  \n"
-            "Puedes explorar los módulos **M2**, **M4** y **M5** mientras tanto."
-        )
+    # Artifacts helper
+    artifacts = WorkflowArtifacts.for_well(inputs["well_id"])
+    import datetime as _dt_cfg
+
+    # ── Checklist de configuración (4 pasos) ──────────────────────────────
+    st.markdown("### ⚙️ Configuración del análisis")
+
+    # ·· Paso 1 — Historia ·····················································
+    _paso1_ok = history_csv_path is not None
+    with st.expander(
+        ("✅" if _paso1_ok else "⚪") + " Paso 1 — Historia de producción",
+        expanded=not _paso1_ok,
+    ):
+        if not _paso1_ok:
+            st.info(
+                "⬆️ Carga el CSV de producción en **📂 Datos de entrada** (sidebar).  \n"
+                "Puedes explorar los módulos M2, M4 y M5 mientras tanto."
+            )
+        else:
+            _h_name = history_csv_path.name if hasattr(history_csv_path, "name") else str(history_csv_path)
+            st.success(f"✅ `{_h_name}`")
+            if artifacts.enriched_history_csv.exists():
+                _ts_e = _dt_cfg.datetime.fromtimestamp(
+                    artifacts.enriched_history_csv.stat().st_mtime
+                ).strftime("%Y-%m-%d %H:%M")
+                st.caption(f"Historia enriquecida disponible — último run M1-M2: {_ts_e}")
+            else:
+                st.caption("Historia enriquecida: aún no calculada. Ejecuta el Paso 4.")
+            if uploaded_history_csv_path is not None:
+                if st.button("🔄 Re-mapear columnas del CSV", key="step1_remap_btn"):
+                    st.session_state[SESSION_HISTORY_MAPPER_ACTIVE] = True
+                    st.session_state.pop(SESSION_HISTORY_MAPPED_PATH, None)
+                    st.rerun()
+
+    # ·· Paso 2 — Estado mecánico y survey ·····································
+    _geom_ok = artifacts.well_geometry_json.exists()
+    _active_now = st.session_state.get(SESSION_ACTIVE_MODULE, "M1")
+    with st.expander(
+        ("✅" if _geom_ok else "⚪") + " Paso 2 — Estado mecánico y survey",
+        expanded=_paso1_ok and not _geom_ok,
+    ):
+        if _geom_ok:
+            st.success("✅ Geometría del pozo guardada.")
+            if _active_now == "M1":
+                st.caption(
+                    "Revisa o edita los datos en la pestaña "
+                    "**⚙️ Geometría / Survey** del módulo M1 (ver abajo ↓)."
+                )
+            else:
+                if st.button("✏️ Editar en M1 — Geometría / Survey", key="goto_m1_btn"):
+                    st.session_state[SESSION_ACTIVE_MODULE] = "M1"
+                    st.rerun()
+        else:
+            if _active_now == "M1":
+                st.info(
+                    "Configura la geometría (profundidades, tubería, casing, survey) "
+                    "en la pestaña **⚙️ Geometría / Survey** del módulo M1 — visible abajo ↓.  \n"
+                    "El esquema mecánico y el cálculo de Pwf dependen de estos datos."
+                )
+            else:
+                st.info(
+                    "Configura la geometría del pozo en el módulo **M1 — Pozo & Pwf**, "
+                    "pestaña **⚙️ Geometría / Survey**.  \n"
+                    "El esquema mecánico y el cálculo de Pwf dependen de estos datos."
+                )
+                if st.button("→ M1 — Geometría / Survey", key="goto_m1_btn"):
+                    st.session_state[SESSION_ACTIVE_MODULE] = "M1"
+                    st.rerun()
+
+    # ·· Paso 3 — PVT ··························································
+    with st.expander(
+        ("✅" if _pvt_explicitly_configured else "⚠️") + " Paso 3 — Propiedades PVT",
+        expanded=_paso1_ok and not _pvt_explicitly_configured,
+    ):
+        _c3l, _c3r = st.columns([3, 1])
+        with _c3l:
+            if _pvt_explicitly_configured:
+                st.success("✅ PVT configurado por el usuario.")
+                st.caption(
+                    f"PVT activo: `{pvt_config_json_path.name}`"
+                    if pvt_config_json_path else "PVT activo: configuración de usuario"
+                )
+            else:
+                st.warning(
+                    f"⚠️ PVT no configurado — se usarán valores por defecto "
+                    f"(API **{_default['api']}°**, T {_default['temp_f']} °F, "
+                    f"correlación: `{_default['oil_corr']}`).  \n"
+                    "Configura los parámetros reales en **M2 — PVT** antes de interpretar resultados."
+                )
+        with _c3r:
+            if st.button(
+                "✏️ Editar en M2" if _pvt_explicitly_configured else "→ Ir a M2",
+                key="goto_m2_btn",
+                use_container_width=True,
+            ):
+                st.session_state[SESSION_ACTIVE_MODULE] = "M2"
+                st.rerun()
+
+    # ·· Paso 4 — Ejecutar M1-M2 ···············································
+    st.markdown("---")
+    st.markdown("#### ▶ Paso 4 — Ejecutar M1-M2 *(historia + Pwf estimado + PVT)*")
+    if not _paso1_ok:
+        st.info("Completa el **Paso 1** (carga la historia) para habilitar la ejecución.")
     else:
-        st.caption(f"Historia: `{history_csv_path.name if hasattr(history_csv_path, 'name') else history_csv_path}`")
-        if pvt_config_json_path is not None:
-            st.caption(f"PVT: `{pvt_config_json_path.name if hasattr(pvt_config_json_path, 'name') else pvt_config_json_path}`")
+        _enriched_csv = artifacts.enriched_history_csv
+        _c4l, _c4r = st.columns([3, 1])
+        with _c4l:
+            st.caption(
+                f"Historia: `{history_csv_path.name if hasattr(history_csv_path, 'name') else history_csv_path}`"
+                + (f"  |  PVT: `{pvt_config_json_path.name}`" if pvt_config_json_path else "  |  PVT: defaults")
+            )
+        with _c4r:
+            if _enriched_csv.exists():
+                _ts4 = _dt_cfg.datetime.fromtimestamp(
+                    _enriched_csv.stat().st_mtime
+                ).strftime("%Y-%m-%d %H:%M")
+                st.caption(f"✅ Último run: {_ts4}")
+            else:
+                st.caption("⚪ Sin run previo")
 
         try:
-            cmd = build_full_workflow_command(
+            _cmd_m1m2 = build_m1m2_command(
                 well_id=inputs["well_id"],
+                history_csv=history_csv_path,
+                pvt_config_json=pvt_config_json_path or (
+                    UI_INPUT_DIR / f"{inputs['well_id']}_pvt_config_ui.json"
+                ),
                 fit_from_date=inputs["fit_from_date"],
                 fit_to_date=inputs["fit_to_date"],
-                exclude_first_n=inputs["exclude_first_n"],
-                forecast_days=inputs["forecast_days"],
-                abandonment_rate=inputs["abandonment_rate"],
-                forecast_start_rate_mode=inputs["forecast_start_rate_mode"],
-                forecast_start_rate=inputs["forecast_start_rate"],
-                history_csv=history_csv_path,
-                pvt_config_json=pvt_config_json_path,
             )
         except ValueError as exc:
             st.error(str(exc))
         else:
-            with st.expander("Comando equivalente", expanded=False):
-                show_command(cmd)
-
-            run_clicked = st.button(
-                "▶ Ejecutar workflow M1-M2-M3",
+            with st.expander("Comando equivalente M1-M2", expanded=False):
+                show_command(_cmd_m1m2)
+            if st.button(
+                "▶ Ejecutar M1-M2 — Historia + Pwf + PVT",
                 type="primary",
                 use_container_width=True,
-            )
-
-            if run_clicked:
-                with st.spinner("Ejecutando workflow M1-M2-M3..."):
-                    result = run_command(cmd)
-
-                if result.returncode != 0:
-                    st.error("❌ El workflow terminó con error.")
+                key="run_m1m2_btn",
+            ):
+                with st.spinner("Ejecutando M1-M2 (historia + Pwf + PVT)…"):
+                    _res = run_command(_cmd_m1m2)
+                if _res.returncode != 0:
+                    st.error("❌ M1-M2 terminó con error.")
                     with st.expander("STDERR", expanded=True):
-                        st.code(result.stderr or "(vacío)", language="text")
-                    if result.stdout:
+                        st.code(_res.stderr or "(vacío)", language="text")
+                    if _res.stdout:
                         with st.expander("STDOUT", expanded=False):
-                            st.code(result.stdout, language="text")
+                            st.code(_res.stdout, language="text")
                 else:
-                    st.success("✅ Workflow M1-M2-M3 ejecutado correctamente.")
-                    if result.stdout:
+                    st.success("✅ M1-M2 ejecutado correctamente.")
+                    if _res.stdout:
                         with st.expander("STDOUT", expanded=False):
-                            st.code(result.stdout, language="text")
-                    if result.stderr:
+                            st.code(_res.stdout, language="text")
+                    if _res.stderr:
                         with st.expander("STDERR (warnings)", expanded=False):
-                            st.code(result.stderr, language="text")
+                            st.code(_res.stderr, language="text")
 
     # Módulos — siempre visibles (muestran datos del último run exitoso)
-    render_artifacts(inputs["well_id"])
+    render_artifacts(inputs["well_id"], inputs=inputs)
 
 
 if __name__ == "__main__":
