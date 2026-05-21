@@ -46,7 +46,7 @@ producción en los Llanos Orientales."
 | M2 | PVT: Rs/Bo/μo/ρo — Standing (1947), Vasquez-Beggs (1980), Beggs-Robinson (1975) | ✅ Funcional | `test_pvt_correlations.py` (46) |
 | M3 | DCA: curvas de declinación Arps | ✅ Funcional | varios |
 | M4 | RTA curvas tipo (Fetkovich, Blasingame, Agarwal-Gardner), match manual, QC | 🔧 Activo | varios |
-| M5 | Resultados integrados, dashboard comparativo, exportación CSV/JSON/Excel/PDF | ✅ Funcional | `test_m5_aggregator_service.py` (29) + `test_m5_export_service.py` (26) |
+| M5 | Resultados integrados, dashboard 7 pestañas, exportación, tabla comparativa | ✅ Funcional + integrado en hub | `test_m5_aggregator_service.py` (29) + `test_m5_export_service.py` (26) + `test_m5_comparison_service.py` (36) |
 
 **Tests totales: 387 passed, 1 warning (Pydantic v1 @validator en `src/well_mod/models.py`)**
 
@@ -237,6 +237,7 @@ pytest tests/test_well_mech_qc_service.py -v               # solo mecánico M1
 python -m streamlit run src/ui/m1_well_editor.py            # UI M1 estado mecánico
 python -m streamlit run src/ui/m2_pvt_editor.py            # UI M2 PVT
 python -m streamlit run src/ui/m4_type_curve_overlay.py    # UI M4 RTA
-python -m streamlit run src/ui/m5_results_dashboard.py     # UI M5 resultados integrados
+python -m streamlit run src/ui/app.py                      # HUB PRINCIPAL M1-M2-M3-M4-M5 (recomendado)
+python -m streamlit run src/ui/m5_results_dashboard.py     # UI M5 standalone (alternativa)
 python src/pipeline/run_full_workflow.py                    # pipeline M1-M2-M3
 ```
