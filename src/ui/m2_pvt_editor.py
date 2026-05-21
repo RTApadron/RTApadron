@@ -108,12 +108,13 @@ def _draw_pvt_plots(
         ax.axvline(pb_st, color="#1D4ED8", linewidth=1.0, linestyle=":",
                    alpha=0.8, label=f"Pb={pb_st:.0f} psia (St)")
 
-        # Lab data overlay
+        # Lab data overlay — drop rows where EITHER P_psia or the column is NaN
         if lab_df is not None and lab_col and lab_col in lab_df.columns and "P_psia" in lab_df.columns:
-            lab_p = lab_df["P_psia"].dropna()
-            lab_y = lab_df[lab_col].dropna()
-            ax.scatter(lab_p, lab_y, marker="o", color="#059669",
-                       s=30, zorder=5, label="Laboratorio")
+            _lab_pair = lab_df[["P_psia", lab_col]].dropna()
+            if not _lab_pair.empty:
+                ax.scatter(_lab_pair["P_psia"], _lab_pair[lab_col],
+                           marker="o", color="#059669",
+                           s=30, zorder=5, label="Laboratorio")
 
         ax.set_xlabel("Presión (psia)", fontsize=8)
         ax.set_ylabel(ylabel, fontsize=8)
