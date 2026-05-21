@@ -38,7 +38,7 @@ producción en los Llanos Orientales."
 
 ---
 
-## Estado de módulos (actualizado 2026-05-20)
+## Estado de módulos (actualizado 2026-05-21)
 
 | Módulo | Descripción | Estado | Tests |
 |--------|-------------|--------|-------|
@@ -50,17 +50,45 @@ producción en los Llanos Orientales."
 
 **Tests totales: 387 passed, 1 warning (Pydantic v1 @validator en `src/well_mod/models.py`)**
 
-### Último commit UX (5c86dcf) — 2026-05-20
-- Hub `app.py`: sidebar rediseñada como navegación de módulos M1→M5 + Descargas
-  con semáforo (🟢/🟡/🔴) basado en archivos de output existentes
-- DCA summary strip fijo (`render_quick_dca_summary`) eliminado del área principal
-- Vista principal: un módulo a la vez controlado por `active_module` en session_state
-- `m2_pvt_editor.py`: `set_page_config` movido a `main()`, cuerpo extraído a
-  `_pvt_core_ui()`, añadido `render_m2_embedded(well_id)` — hub ahora muestra
-  exactamente el mismo layout que el standalone M2
-- `m4_type_curve_overlay.py`: cuerpo extraído a `_run_m4_overlay(show_anchor)`;
-  `render_m4_joystick_embedded(well_id, output_dir)` sin ancla/target — hub
-  muestra el joystick arcade log-log directamente
+---
+
+## Historial de commits relevantes (más recientes primero)
+
+### UX Sprint completo — 2026-05-20/21 (commits 38caa6e, 52da594)
+
+**`38caa6e` — pipeline: --dca-only + CLI args faltantes**
+- `--dca-only`: salta M1-M2, lee historia enriquecida existente → permite ejecutar sólo M3 DCA
+- `--exclude-first-n`, `--forecast-start-rate-mode`, `--forecast-start-rate` añadidos al parser
+  (antes app.py los pasaba pero el parser no los definía → subprocess siempre fallaba)
+- `--history-csv` y `--pvt-config-json` ya no son `required=True`; se validan manualmente
+
+**`52da594` — hub UX: checklist 4 pasos, mapper, logo, títulos, tabs**
+- Checklist de configuración en main area: 4 expanders con semáforo (✅/⚪/⚠️)
+  - Paso 1: Historia (estado, botón re-mapear)
+  - Paso 2: Estado mecánico/survey — **context-aware**: si ya estás en M1 muestra
+    texto apuntando a pestaña "⚙️ Geometría / Survey"; desde otro módulo muestra botón
+  - Paso 3: PVT con warning/valores defaults inline + botón "→ M2 — PVT"
+  - Paso 4: ▶ Ejecutar M1-M2 (solo si hay historia cargada)
+- Botón ▶ Ejecutar M3 DCA movido al interior del módulo M3 (`render_artifacts`)
+- `render_artifacts(well_id, inputs=None)` acepta dict de inputs para que M3 tenga acceso a params DCA
+- Mapper CSV: auto-detección de separador (`csv.Sniffer`); sección de formato de fecha
+  con auto-detección y normalización a ISO YYYY-MM-DD al guardar
+- Fix checkbox limpiar: clave versionada `confirm_clear_checkbox_{n}` evita StreamlitAPIException
+- Logo `assets/logo.jpg` en sidebar (`st.sidebar.image`)
+- Título: `"ecoRTA"` sin sufijo modular; subtítulo descriptivo
+- Pestañas M1: `📊 Historia`, `⚙️ Geometría / Survey`, `✏️ Edición Pwf`
+- CSS tabs: font-weight 600, borde verde #2d6a4f activo, hover suave
+- Banner ⚠️ sobre pestañas M1 cuando geometría no configurada
+
+### Commit UX anterior (53fd5c5) — 2026-05-20
+- Column mapper completo con auto-detección de alias, preview, confirm/skip
+- Botón "🗑 Limpiar análisis" en sidebar
+- `SESSION_HISTORY_MAPPER_ACTIVE`, `SESSION_HISTORY_MAPPED_PATH`, `SESSION_HISTORY_RAW_PATH`
+
+### Commit UX (5c86dcf) — 2026-05-20
+- Hub `app.py`: sidebar rediseñada como navegación M1→M5 + Descargas con semáforo
+- `render_m2_embedded(well_id)` en `m2_pvt_editor.py`
+- `render_m4_joystick_embedded(well_id, output_dir)` en `m4_type_curve_overlay.py`
 
 ---
 
@@ -82,10 +110,11 @@ src/
 │   ├── dca_service.py
 │   └── integration_service.py
 ├── ui/
-│   ├── m1_well_editor.py          — Editor estado mecánico + esquema + Pwf
-│   ├── m2_pvt_editor.py           — PVT interactivo: curvas, comparación corrs., lab manual/CSV
-│   ├── m4_type_curve_overlay.py   — Overlay curvas tipo, match arcade log-log, QC
-│   └── m5_results_dashboard.py    — Dashboard M5: 6 pestañas (Resumen/PVT/DCA/RTA/Comparativo/Exportar)
+│   ├── app.py                     — HUB PRINCIPAL (ver arquitectura abajo)
+│   ├── m1_well_editor.py          — Editor estado mecánico + esquema + Pwf (standalone)
+│   ├── m2_pvt_editor.py           — PVT interactivo; exporta render_m2_embedded(well_id)
+│   ├── m4_type_curve_overlay.py   — Overlay curvas tipo; exporta render_m4_joystick_embedded(well_id, output_dir)
+│   └── m5_results_dashboard.py    — Dashboard M5; exporta render_m5_embedded(well_id, output_dir)
 ├── well_mod/
 │   ├── pwf.py                     — estimate_pwf_v1 (legacy), estimate_pwf_v2 (D-W/Churchill)
 │   ├── schematic.py               — draw_well_schematic(), schematic_to_png_bytes()
@@ -104,7 +133,10 @@ src/
 │   ├── overlay.py                 — ManualMatchConfig, build_overlay()
 │   └── models.py                  — RTATypeCurveMethod, TypeCurve, CurveDataStatus
 └── pipeline/
-    └── run_full_workflow.py       — orquesta M1-M2-M3
+    └── run_full_workflow.py       — orquesta M1-M2-M3; flags: --skip-dca, --dca-only
+
+assets/
+└── logo.jpg                       — Logo ecoRTA (sidebar del hub)
 
 tests/
 ├── test_pvt_correlations.py       — 46 tests: Standing, VB, BR, pvt_service
@@ -113,10 +145,70 @@ tests/
 ├── test_m1_m2_integration.py      — 8 tests integración historia+PVT (no romper)
 └── ...
 
-data/type_curves/
-├── fetkovich_base.csv             — ⚠️ DEMO — no usar para interpretación técnica
-├── palacio_blasingame_base.csv    — ⚠️ DEMO
-└── agarwal_gardner_base.csv       — ⚠️ DEMO
+data/
+├── type_curves/
+│   ├── fetkovich_base.csv         — ⚠️ DEMO — no usar para interpretación técnica
+│   ├── palacio_blasingame_base.csv — ⚠️ DEMO
+│   └── agarwal_gardner_base.csv   — ⚠️ DEMO
+└── ui_uploads/                    — archivos guardados por la UI (no commitear)
+```
+
+---
+
+## Arquitectura del hub `app.py`
+
+### Flujo principal `main()`
+```
+configure_page() → initialize_session_defaults() → apply_light_css() → ensure_dirs()
+    ↓
+render_sidebar_nav()          ← devuelve inputs dict; muestra logo, nav M1-M5, uploaders,
+                                 DCA window, forecast, limpiar análisis
+    ↓
+save_uploaded_file()          ← guarda CSV/JSON en data/ui_uploads/
+    ↓
+Column mapper (si hay upload nuevo sin mapear)
+  → render_history_column_mapper(): auto-sep, auto-fecha, normaliza a ISO YYYY-MM-DD
+  → [early return con render_artifacts()]
+    ↓
+Resolver history_csv_path (mapped > edited > raw)
+Resolver pvt_config_json_path (ui > uploaded > defaults auto-generados)
+    ↓
+Checklist 4 pasos (expanders):
+  Paso 1 — Historia (status + re-mapear)
+  Paso 2 — Estado mecánico/survey (context-aware, apunta a pestaña Geometría/Survey)
+  Paso 3 — PVT (warning defaults + botón → M2)
+  Paso 4 — ▶ Ejecutar M1-M2 (build_m1m2_command → --skip-dca)
+    ↓
+render_artifacts(well_id, inputs=inputs)
+  active == "M1"  → header + banner + tabs [📊 Historia | ⚙️ Geometría/Survey | ✏️ Edición Pwf]
+  active == "M2"  → render_m2_embedded(well_id)
+  active == "M3"  → ▶ Ejecutar M3 DCA (build_m3_command → --dca-only) + tabs DCA
+  active == "M4"  → render_m4_joystick_embedded(well_id, output_dir)
+  active == "M5"  → render_m5_embedded(well_id, output_dir)
+  active == "Descargas" → render_downloads_tab(artifacts)
+```
+
+### Builders de comando
+```python
+build_m1m2_command(*, well_id, history_csv, pvt_config_json, fit_from_date, fit_to_date)
+    → [..., "--skip-dca"]
+
+build_m3_command(*, well_id, fit_from_date, fit_to_date, exclude_first_n,
+                 forecast_days, abandonment_rate, forecast_start_rate_mode, forecast_start_rate)
+    → [..., "--dca-only"]
+
+build_full_workflow_command(...)   ← mantenido para compatibilidad, ya no se usa en la UI
+```
+
+### Session state keys relevantes
+```python
+SESSION_ACTIVE_MODULE          = "active_module"          # M1/M2/M3/M4/M5/Descargas
+SESSION_HISTORY_MAPPER_ACTIVE  = "history_mapper_active"  # bool
+SESSION_HISTORY_MAPPED_PATH    = "history_mapped_csv_path"
+SESSION_HISTORY_RAW_PATH       = "history_raw_csv_path"
+SESSION_EDITED_HISTORY_PATH    = "edited_history_csv_path"
+SESSION_PVT_CONFIG_PATH        = "pvt_config_ui_path"
+# clear checkbox reset: "clear_checkbox_version" (int, versionado para evitar StreamlitAPIException)
 ```
 
 ---
@@ -128,8 +220,32 @@ data/type_curves/
 | `src/rta_pvt/pvt_tools.py` | `a_standing()` usa `(T_F - 460)` en vez de `T_F` — Pb incorrecto (~3× bajo) | ⚠️ Conocido, no corregido (legacy) |
 | `src/well_mod/models.py` | `@validator` de Pydantic v1 — genera deprecation warning | ⚠️ Conocido, no urgente |
 | Curvas tipo | Datos digitalizados son DEMO, no calibrados contra papers | ⏳ Pendiente digitalizar |
+| `m1_well_editor.py` | No tiene `render_m1_editor_embedded()` → el esquema mecánico (casings/tubing) no aparece en el hub | ⏳ Pendiente (chip de tarea generado) |
 
 **Regla:** usar siempre `src/services/pvt_correlations.py` para PVT nuevo, nunca `pvt_tools.py`.
+
+---
+
+## Pending work por módulo
+
+### M4 — pendiente
+- [ ] Panel de configuración de yacimiento: `pi_psia`, `phi`, `h`, `ct`, `rw`, `re/area`, `Bo`, `μo`, `CA`
+      → permite calcular kh, k, OOIP/contactado desde match point
+- [ ] Parámetros físicos desde match (kh, k, OOIP) usando el panel anterior
+- [ ] Exportación M4: `output/<well_id>_rta_results.csv`, `_match_summary.json`, PNG
+- [ ] Pulido UI M4
+
+### Hub / UX — pendiente
+- [ ] `render_m1_editor_embedded(well_id)` en `m1_well_editor.py` — para mostrar esquema
+      mecánico (casings, tubing, ESP) dentro del módulo M1 del hub sin set_page_config
+      (chip de tarea ya generado — ver deuda técnica)
+- [ ] QC final M5: badges medido/estimado/calculado/demo en UI
+
+### M5 — completado
+- [x] Modelo común de resultados (WellResultsSummary)
+- [x] Dashboard comparativo EUR DCA vs OOIP volumétrico
+- [x] Exportación consolidada CSV/JSON/Excel/PDF
+- [x] Tabla comparativa vs software comercial de referencia (semáforo match/close/diverge)
 
 ---
 
@@ -192,25 +308,6 @@ Parámetros desde match:
 
 ---
 
-## Pending work por módulo
-
-### M4 — pendiente
-- [ ] Panel de configuración de yacimiento: `pi_psia`, `phi`, `h`, `ct`, `rw`, `re/area`, `Bo`, `μo`, `CA`
-      → permite calcular kh, k, OOIP/contactado desde match point
-- [ ] Parámetros físicos desde match (kh, k, OOIP) usando el panel anterior
-- [ ] Exportación M4: `output/<well_id>_rta_results.csv`, `_match_summary.json`, PNG
-- [ ] Pulido UI M4
-
-### M5 — pendiente
-- [ ] QC final y trazabilidad (badges medido/estimado/calculado en UI)
-- [x] Modelo común de resultados (WellResultsSummary — commit 1e18d48)
-- [x] Dashboard comparativo EUR DCA vs OOIP volumétrico (commit 1e18d48)
-- [x] Exportación consolidada CSV/JSON/Excel/PDF (commit 2423e60)
-- [x] Tabla comparativa vs software comercial de referencia (commit de332ae)
-      — ExternalSoftwareResult, semáforo match/close/diverge, tab 📐 Validación
-
----
-
 ## Filosofía de desarrollo — respetar siempre
 
 1. No romper módulos existentes ni eliminar scripts funcionales
@@ -220,6 +317,7 @@ Parámetros desde match:
 5. Mantener compatibilidad hacia atrás (esp. `m2_pvt_adapter.py` y `test_m1_m2_integration.py`)
 6. `pytest` en verde antes de cada commit — sin excepciones
 7. Las curvas tipo actuales son DEMO — no usar para interpretación técnica real
+8. No nombrar software comercial por nombre — usar "Software Comercial" como etiqueta
 
 ---
 
@@ -246,10 +344,19 @@ Parámetros desde match:
 pytest                                                      # todas las pruebas
 pytest tests/test_pvt_correlations.py -v                   # solo PVT
 pytest tests/test_well_mech_qc_service.py -v               # solo mecánico M1
-python -m streamlit run src/ui/m1_well_editor.py            # UI M1 estado mecánico
-python -m streamlit run src/ui/m2_pvt_editor.py            # UI M2 PVT
-python -m streamlit run src/ui/m4_type_curve_overlay.py    # UI M4 RTA
-python -m streamlit run src/ui/app.py                      # HUB PRINCIPAL M1-M2-M3-M4-M5 (recomendado)
-python -m streamlit run src/ui/m5_results_dashboard.py     # UI M5 standalone (alternativa)
-python src/pipeline/run_full_workflow.py                    # pipeline M1-M2-M3
+python -m streamlit run src/ui/app.py --server.port 8506   # HUB PRINCIPAL (puerto libre)
+python -m streamlit run src/ui/m1_well_editor.py            # UI M1 standalone (esquema mecánico)
+python -m streamlit run src/ui/m2_pvt_editor.py            # UI M2 PVT standalone
+python -m streamlit run src/ui/m4_type_curve_overlay.py    # UI M4 RTA standalone
+python -m streamlit run src/ui/m5_results_dashboard.py     # UI M5 standalone
+python src/pipeline/run_full_workflow.py \
+    --well-id W001 \
+    --history-csv data/ui_uploads/W001_history_mapped.csv \
+    --pvt-config-json data/ui_uploads/W001_pvt_config_ui.json   # pipeline M1-M2-M3
+python src/pipeline/run_full_workflow.py \
+    --well-id W001 --dca-only                               # solo M3 DCA
+python src/pipeline/run_full_workflow.py \
+    --well-id W001 --history-csv ... --pvt-config-json ... \
+    --skip-dca                                              # solo M1-M2
+git push origin feature/m4-type-curve-overlay              # push (15 commits adelante de origin)
 ```
