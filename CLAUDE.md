@@ -50,6 +50,18 @@ producción en los Llanos Orientales."
 
 **Tests totales: 387 passed, 1 warning (Pydantic v1 @validator en `src/well_mod/models.py`)**
 
+### Último commit UX (5c86dcf) — 2026-05-20
+- Hub `app.py`: sidebar rediseñada como navegación de módulos M1→M5 + Descargas
+  con semáforo (🟢/🟡/🔴) basado en archivos de output existentes
+- DCA summary strip fijo (`render_quick_dca_summary`) eliminado del área principal
+- Vista principal: un módulo a la vez controlado por `active_module` en session_state
+- `m2_pvt_editor.py`: `set_page_config` movido a `main()`, cuerpo extraído a
+  `_pvt_core_ui()`, añadido `render_m2_embedded(well_id)` — hub ahora muestra
+  exactamente el mismo layout que el standalone M2
+- `m4_type_curve_overlay.py`: cuerpo extraído a `_run_m4_overlay(show_anchor)`;
+  `render_m4_joystick_embedded(well_id, output_dir)` sin ancla/target — hub
+  muestra el joystick arcade log-log directamente
+
 ---
 
 ## Mapa de archivos clave
