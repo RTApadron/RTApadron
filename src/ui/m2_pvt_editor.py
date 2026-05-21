@@ -212,20 +212,97 @@ def main() -> None:
 
         st.divider()
 
-        # ── Lab data upload ───────────────────────────────────────────────
+        # ── Lab data ──────────────────────────────────────────────────────
         st.subheader("🧫 Datos de laboratorio (opcional)")
-        st.caption(
-            "CSV con columnas: `P_psia`, `Rs_scfstb`, `Bo_rbblstb`, `mu_cp`. "
-            "Columnas faltantes se ignoran."
+
+        lab_mode = st.radio(
+            "Fuente de datos de laboratorio",
+            ["Introducir manualmente", "Cargar CSV"],
+            horizontal=True,
+            label_visibility="collapsed",
         )
-        uploaded = st.file_uploader("Cargar CSV laboratorio", type=["csv"])
+
         lab_df: pd.DataFrame | None = None
-        if uploaded is not None:
-            try:
-                lab_df = pd.read_csv(uploaded)
-                st.success(f"Cargados {len(lab_df)} puntos de laboratorio.", icon="✅")
-            except Exception as exc:
-                st.error(f"Error leyendo CSV: {exc}")
+
+        if lab_mode == "Cargar CSV":
+            st.caption(
+                "Columnas: `P_psia` (requerida), `Rs_scfstb`, `Bo_rbblstb`, `mu_cp` (opcionales)."
+            )
+            uploaded = st.file_uploader("Cargar CSV laboratorio", type=["csv"])
+            if uploaded is not None:
+                try:
+                    lab_df = pd.read_csv(uploaded)
+                    st.success(f"{len(lab_df)} puntos cargados.", icon="✅")
+                except Exception as exc:
+                    st.error(f"Error leyendo CSV: {exc}")
+
+        else:
+            # ── Manual entry via st.data_editor ──────────────────────────
+            st.caption(
+                "Completa solo las columnas que tienes. Deja vacías las demás. "
+                "Usa ➕ (fila inferior) para agregar más puntos."
+            )
+
+            # Version counter — incrementing resets the editor widget
+            if "lab_editor_version" not in st.session_state:
+                st.session_state["lab_editor_version"] = 0
+
+            col_btn, col_info = st.columns([1, 2])
+            if col_btn.button(
+                "↺ Regenerar plantilla",
+                help="Recrea la tabla con 6 puntos distribuidos en el rango de presión actual",
+                use_container_width=True,
+            ):
+                st.session_state["lab_editor_version"] += 1
+
+            # Build template from current p_min / p_max
+            _n = 6
+            _step = (float(p_max) - float(p_min)) / (_n - 1)
+            _template = pd.DataFrame({
+                "P_psia":     [round(float(p_min) + i * _step) for i in range(_n)],
+                "Rs_scfstb":  [None] * _n,
+                "Bo_rbblstb": [None] * _n,
+                "mu_cp":      [None] * _n,
+            })
+
+            _edited = st.data_editor(
+                _template,
+                num_rows="dynamic",
+                use_container_width=True,
+                key=f"lab_manual_{st.session_state['lab_editor_version']}",
+                column_config={
+                    "P_psia": st.column_config.NumberColumn(
+                        "P (psia)", min_value=0.0, format="%.1f",
+                    ),
+                    "Rs_scfstb": st.column_config.NumberColumn(
+                        "Rs (scf/STB)", min_value=0.0, format="%.1f",
+                    ),
+                    "Bo_rbblstb": st.column_config.NumberColumn(
+                        "Bo (bbl/STB)", min_value=0.0, format="%.4f",
+                    ),
+                    "mu_cp": st.column_config.NumberColumn(
+                        "μo (cp)", min_value=0.0, format="%.3f",
+                    ),
+                },
+            )
+
+            # Only keep rows where P_psia is filled
+            _valid = _edited.dropna(subset=["P_psia"])
+            if not _valid.empty:
+                lab_df = _valid
+                col_info.caption(f"✅ {len(_valid)} punto(s) activo(s)")
+
+                # Download the manually entered data as CSV
+                _csv_lab = _valid.to_csv(index=False).encode("utf-8")
+                st.download_button(
+                    "⬇ Guardar datos lab (CSV)",
+                    data=_csv_lab,
+                    file_name="lab_datos_laboratorio.csv",
+                    mime="text/csv",
+                    use_container_width=True,
+                )
+            else:
+                col_info.caption("— Sin puntos activos")
 
     # =========================================================================
     # RIGHT COLUMN — results
