@@ -45,7 +45,7 @@ producción en los Llanos Orientales."
 | M1 | Historia de producción, Pwf v2 Darcy-Weisbach, esquema mecánico + 9 QC checks | ✅ Funcional | `test_well_mech_qc_service.py` (51) |
 | M2 | PVT: Rs/Bo/μo/ρo — Standing (1947), Vasquez-Beggs (1980), Beggs-Robinson (1975) | ✅ Funcional | `test_pvt_correlations.py` (46) |
 | M3 | DCA: curvas de declinación Arps | ✅ Funcional | varios |
-| M4 | RTA curvas tipo (Fetkovich, Blasingame, Agarwal-Gardner), match manual, QC | 🔧 Activo | varios |
+| M4 | RTA curvas tipo (Fetkovich, Blasingame, Agarwal-Gardner), match manual, kh/k/OOIP, export | ✅ Funcional + integrado en hub | varios |
 | M5 | Resultados integrados, dashboard 7 pestañas, exportación, tabla comparativa | ✅ Funcional + integrado en hub | `test_m5_aggregator_service.py` (29) + `test_m5_export_service.py` (26) + `test_m5_comparison_service.py` (36) |
 
 **Tests totales: 387 passed, 1 warning (Pydantic v1 @validator en `src/well_mod/models.py`)**
@@ -53,6 +53,20 @@ producción en los Llanos Orientales."
 ---
 
 ## Historial de commits relevantes (más recientes primero)
+
+### M4 integration bridges — 2026-05-21 (commit 64021b3)
+
+**`64021b3` — feat(m4): integration bridges**
+- `_init_reservoir_config_state(config, well_id, pvt_json_path)`: nueva firma
+  - Siembra `rta_well_id` desde el `well_id` del hub (antes quedaba como "W-001")
+  - Lee `bo_rb_stb` y `mu_o_cp` de `data/ui_uploads/{well_id}_pvt_config_ui.json`
+    si existe, y los usa para pre-popular `rta_Bo_rb_stb` / `rta_mu_o_cp`
+- `_run_m4_overlay`: construye path PVT y pasa `well_id` + `pvt_json_path` al init
+- Auto-carga `output/{well_id}_history_enriched.csv` si existe; `file_uploader`
+  queda como override opcional; mensaje claro si no hay ninguno de los dos
+- Corregido `st.info()` que decía "No calcula todavía kh, skin..." — reemplazado
+  por descripción precisa de capacidades actuales
+- Corregido caption en `_render_reservoir_config`: menciona pre-carga automática PVT
 
 ### UX Sprint completo — 2026-05-20/21 (commits 38caa6e, 52da594)
 
@@ -228,12 +242,12 @@ SESSION_PVT_CONFIG_PATH        = "pvt_config_ui_path"
 
 ## Pending work por módulo
 
-### M4 — pendiente
-- [ ] Panel de configuración de yacimiento: `pi_psia`, `phi`, `h`, `ct`, `rw`, `re/area`, `Bo`, `μo`, `CA`
-      → permite calcular kh, k, OOIP/contactado desde match point
-- [ ] Parámetros físicos desde match (kh, k, OOIP) usando el panel anterior
-- [ ] Exportación M4: `output/<well_id>_rta_results.csv`, `_match_summary.json`, PNG
-- [ ] Pulido UI M4
+### M4 — integración al workflow ✅ COMPLETADO (commit 64021b3)
+
+- [x] Auto-carga `output/{well_id}_history_enriched.csv`; uploader como override
+- [x] Pre-populación `rta_Bo_rb_stb` / `rta_mu_o_cp` desde `{well_id}_pvt_config_ui.json`
+- [x] `rta_well_id` sembrado desde well_id del hub (no "W-001")
+- [x] Textos obsoletos corregidos (`st.info` y caption)
 
 ### Hub / UX — pendiente
 - [ ] `render_m1_editor_embedded(well_id)` en `m1_well_editor.py` — para mostrar esquema
