@@ -38,22 +38,35 @@ producción en los Llanos Orientales."
 
 ---
 
-## Estado de módulos (actualizado 2026-05-22 — post sesión 1 bugfix)
+## Estado de módulos (actualizado 2026-05-22 — post sesión 2)
 
 | Módulo | Descripción | Estado | Tests |
 |--------|-------------|--------|-------|
 | M1 | Historia + Pwf v2 D-W + esquema mecánico + 9 QC checks + editor embebido en hub | ✅ Funcional | `test_well_mech_qc_service.py` (51) |
 | M2 | PVT: Rs/Bo/μo/ρo — Standing, Vasquez-Beggs, Beggs-Robinson; fix bug gráficas | ✅ Funcional | `test_pvt_correlations.py` (46) |
 | M3 | DCA multi-método Arps; semilog + best-fit; semáforo verde funcional; qi=último Qo | ✅ Funcional | varios |
-| M4 | RTA 60 curvas validated; tabs método; chart único por tab; P-B sin saltos; checkbox qDdi | ✅ Funcional | varios |
+| M4 | RTA 60 curvas; joystick 7 pasos + SAVE verde; leyenda BDF colores; checkbox qDdi opt-in | ✅ Funcional | varios |
 | M5 | Resultados integrados, dashboard 7 pestañas, exportación, tabla comparativa | ✅ Funcional + integrado | varios |
-| Inicio | Pantalla bienvenida: well_id, botones acción, tarjetas M1→M5, semáforo, GPL-3 | ✅ Funcional | — |
+| M2 | PVT correlaciones + botón "✅ Confirmar datos" para forzar semáforo verde sin lab | ✅ Funcional | `test_pvt_correlations.py` (46) |
+| Inicio | Tarjetas M1→M5 con logos PNG; semáforo; botones nav; GPL-3 | ✅ Funcional | — |
 
 **Tests totales: 387 passed, 1 warning (Pydantic v1 @validator en `src/well_mod/models.py`)**
 
 ---
 
 ## Historial de commits relevantes (más recientes primero)
+
+### Sesión 2 UX 2026-05-22 (commit cd48fff)
+
+**`cd48fff` — feat(sesion2): joystick 7 pasos + SAVE, logos Inicio, M2 Confirmar, BDF colores**
+- **M4 joystick:** `st.select_slider` con 7 pasos "1·MIN"→"7·MAX"; ×1.012 a ×3.162/click;
+  botón `💾 SAVE` verde + `⟳ RESET` rojo en fila debajo del D-pad; SAVE guarda en tabla comparativa
+- **M4 BDF dropdown:** leyenda de colores tab10 (cuadrado de color por curva BDF);
+  la curva seleccionada se resalta; color map sincronizado con el chart
+- **M2:** botón `✅ Confirmar datos` (secondary) → escribe `pvt_config_ui.json`
+  sin validación estricta → semáforo M2 pasa a 🟢 sin datos de laboratorio
+- **Inicio:** logos PNG M1–M5 (`assets/logo_m{1-5}.png`) sobre cada tarjeta del flujo;
+  carga condicional con `_logo_path.exists()`
 
 ### Sesión bugfix 2026-05-22 (commit e440def)
 
