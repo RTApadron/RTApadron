@@ -77,6 +77,19 @@ def _compute_pb_integrals(
 
     qDdi  = (1/tDd) * ∫₀^tDd qDd dt          (normalized cumulative)
     qDdid = −tDd * d(qDdi)/dtDd               (derivative of normalized cumulative)
+
+    Implementation notes
+    --------------------
+    * Trapezoidal integration is performed in **linear** tDd space.
+    * The derivative qDdid is computed via np.gradient in **log(tDd)** space.
+      On log-spaced grids this is far more stable than a linear-space gradient
+      because the step sizes in log space are uniform, which prevents the
+      artificial oscillations that arise when np.gradient sees tiny absolute
+      steps at small tDd and large steps at large tDd.
+
+      Chain rule:  d(qDdi)/d(tDd) = d(qDdi)/d(ln tDd) * (1/tDd)
+      So:          qDdid = |−tDd · d(qDdi)/d(tDd)|
+                         = |d(qDdi)/d(ln tDd)|
     """
     n = len(tDd_arr)
     integral = np.zeros(n)
@@ -88,10 +101,11 @@ def _compute_pb_integrals(
     with np.errstate(divide="ignore", invalid="ignore"):
         qDdi = np.where(tDd_arr > 0, integral / tDd_arr, qDd_arr)
 
-    # qDdid = -tDd * d(qDdi)/dtDd  — must be > 0
-    d_qDdi = np.gradient(qDdi, tDd_arr)
-    qDdid = np.abs(-tDd_arr * d_qDdi)
-    # Avoid zero / tiny noise at boundaries
+    # qDdid via log-space gradient — stable on log-spaced grids
+    log_tDd = np.log(np.maximum(tDd_arr, 1e-30))
+    d_qDdi_log = np.gradient(qDdi, log_tDd)   # d(qDdi)/d(ln tDd)
+    qDdid = np.abs(d_qDdi_log)                # = tDd · |d(qDdi)/dtDd|
+    # Clamp noise floor
     qDdid = np.maximum(qDdid, 1e-10)
 
     return qDdi, qDdid

@@ -247,10 +247,10 @@ def run_m3_dca_step(
     """Run M3 DCA step from the M1-M2 enriched history.
 
     Outputs:
-    - output/<well_id>_dca_fit.csv
+    - output/<well_id>_dca_fit_results.csv
     - output/<well_id>_dca_forecast.csv
     - output/<well_id>_dca_qc_report.json
-    - output/<well_id>_dca_rate_plot.png, optional
+    - output/<well_id>_dca_rate_fit.png, optional
     - output/<well_id>_dca_forecast_plot.png, optional
     """
     output_dir = Path(output_dir)
@@ -393,7 +393,7 @@ def run_m3_dca_step(
         }
     )
 
-    fit_path = output_dir / f"{well_id}_dca_fit.csv"
+    fit_path = output_dir / f"{well_id}_dca_fit_results.csv"
     forecast_path = output_dir / f"{well_id}_dca_forecast.csv"
     dca_qc_path = output_dir / f"{well_id}_dca_qc_report.json"
 
@@ -404,7 +404,7 @@ def run_m3_dca_step(
     forecast_plot_path: Path | None = None
 
     if make_plot:
-        rate_plot_path = output_dir / f"{well_id}_dca_rate_plot.png"
+        rate_plot_path = output_dir / f"{well_id}_dca_rate_fit.png"
         forecast_plot_path = output_dir / f"{well_id}_dca_forecast_plot.png"
 
         plt.figure()

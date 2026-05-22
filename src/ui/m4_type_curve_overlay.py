@@ -530,7 +530,6 @@ def _plot_all_curves_streamlit(
     buf.seek(0)
     png_bytes = buf.getvalue()
 
-    st.pyplot(fig, width="stretch")
     plt.close(fig)
     return png_bytes
 
@@ -912,35 +911,42 @@ def _run_m4_overlay(
                     else:
                         _rta_pts = _transform_points_to_overlay(_method_pts_chart)
 
-                        # Blasingame auxiliary series (qDdi, qDdid)
+                        # Blasingame auxiliary series (qDdi, qDdid) — opt-in checkbox
                         _auxiliary: list[tuple[str, list[RTAOverlayPoint]]] = []
                         if _mval == "palacio_blasingame":
-                            _pb_pts = [
-                                p for p in rta_transform_points
-                                if p.method.value == "palacio_blasingame"
-                            ]
-                            _int_pts = [
-                                RTAOverlayPoint(
-                                    x=p.material_balance_time,
-                                    y=p.blasingame_integral,
-                                    label=p.well_id,
-                                    date=p.date,
-                                )
-                                for p in _pb_pts if p.blasingame_integral is not None
-                            ]
-                            _drv_pts = [
-                                RTAOverlayPoint(
-                                    x=p.material_balance_time,
-                                    y=p.blasingame_derivative,
-                                    label=p.well_id,
-                                    date=p.date,
-                                )
-                                for p in _pb_pts if p.blasingame_derivative is not None
-                            ]
-                            if _int_pts:
-                                _auxiliary.append(("qDdi (integral norm.)", _int_pts))
-                            if _drv_pts:
-                                _auxiliary.append(("qDdid (deriv. integral)", _drv_pts))
+                            _show_pb_integrals = st.checkbox(
+                                "Mostrar series integrales (qDdi, qDdid)",
+                                value=False,
+                                key=f"show_pb_integrals_{_mval}",
+                                help="qDdi = integral normalizada · qDdid = derivada de la integral",
+                            )
+                            if _show_pb_integrals:
+                                _pb_pts = [
+                                    p for p in rta_transform_points
+                                    if p.method.value == "palacio_blasingame"
+                                ]
+                                _int_pts = [
+                                    RTAOverlayPoint(
+                                        x=p.material_balance_time,
+                                        y=p.blasingame_integral,
+                                        label=p.well_id,
+                                        date=p.date,
+                                    )
+                                    for p in _pb_pts if p.blasingame_integral is not None
+                                ]
+                                _drv_pts = [
+                                    RTAOverlayPoint(
+                                        x=p.material_balance_time,
+                                        y=p.blasingame_derivative,
+                                        label=p.well_id,
+                                        date=p.date,
+                                    )
+                                    for p in _pb_pts if p.blasingame_derivative is not None
+                                ]
+                                if _int_pts:
+                                    _auxiliary.append(("qDdi (integral norm.)", _int_pts))
+                                if _drv_pts:
+                                    _auxiliary.append(("qDdid (deriv. integral)", _drv_pts))
 
                         _match_cfg = ManualMatchConfig(
                             x_multiplier=_x_eff,

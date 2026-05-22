@@ -5213,11 +5213,12 @@ def render_artifacts(well_id: str, inputs: dict | None = None) -> None:
                     _cmd_m3_ok = False
 
                 if _cmd_m3_ok:
+                    _dca_already_run = artifacts.dca_fit_results_csv.exists()
                     _c_run_m3, _c_st_m3 = st.columns([3, 1])
                     with _c_run_m3:
                         if st.button(
-                            "▶ Ejecutar M3 — Declinación DCA",
-                            type="primary",
+                            "🔄 Re-ejecutar M3 — DCA" if _dca_already_run else "▶ Ejecutar M3 — Declinación DCA",
+                            type="secondary" if _dca_already_run else "primary",
                             use_container_width=True,
                             key="run_m3_btn",
                         ):
@@ -5231,7 +5232,7 @@ def render_artifacts(well_id: str, inputs: dict | None = None) -> None:
                                 st.toast("✅ M3 DCA ejecutado correctamente.", icon="📉")
                                 st.rerun()
                     with _c_st_m3:
-                        if artifacts.dca_fit_results_csv.exists():
+                        if _dca_already_run:
                             _ts_dca_m3 = _dt_m3.datetime.fromtimestamp(
                                 artifacts.dca_fit_results_csv.stat().st_mtime
                             ).strftime("%Y-%m-%d %H:%M")
@@ -5267,7 +5268,8 @@ def render_artifacts(well_id: str, inputs: dict | None = None) -> None:
                 _hist_fit_m3 = _hist_dca.copy()
 
             _qo_col_m3 = "qo_stb_d" if "qo_stb_d" in _hist_fit_m3.columns else None
-            _qi_default_m3 = float(_hist_fit_m3[_qo_col_m3].quantile(0.90)) if _qo_col_m3 and not _hist_fit_m3.empty else 500.0
+            # Default qi = last observed Qo in the fit window (more natural anchor for DCA)
+            _qi_default_m3 = float(_hist_fit_m3[_qo_col_m3].iloc[-1]) if _qo_col_m3 and not _hist_fit_m3.empty else 500.0
             _q_aband_def_m3 = float(inputs.get("abandonment_rate", 50.0)) if inputs else 50.0
             _fc_days_def_m3 = int(inputs.get("forecast_days", 3650)) if inputs else 3650
             _start_date_fc_m3 = _hist_dca["date"].max() if not _hist_dca.empty else pd.Timestamp.now()
@@ -5507,10 +5509,24 @@ def render_artifacts(well_id: str, inputs: dict | None = None) -> None:
                             legend={"orientation": "h", "y": -0.18},
                         )
                         _use_log_y = st.checkbox(
-                            "📐 Escala log Y (semilog)", value=True, key="dca_log_scale"
+                            "Escala semilog", value=True, key="dca_log_scale"
                         )
                         if _use_log_y:
-                            _fig_m3.update_yaxes(type="log", title_text="qo [STB/d] (log)")
+                            import math as _math_m3
+                            # Compute a sensible y-axis range to avoid Plotly auto-scaling
+                            # to extremes (e.g. 10^46) caused by near-zero forecast tail values.
+                            _q_max_val = (
+                                float(_hist_dca[_qo_col_m3].dropna().max())
+                                if _qo_col_m3 and not _hist_dca.empty
+                                else float(_qi_val_m3)
+                            )
+                            _q_max_val = max(_q_max_val, float(_qi_val_m3), 1.0)
+                            _y_max_log = min(6.0, _math_m3.ceil(_math_m3.log10(_q_max_val)) + 1)
+                            _fig_m3.update_yaxes(
+                                type="log",
+                                title_text="qo [STB/d] (log)",
+                                range=[-1, _y_max_log],
+                            )
                         st.plotly_chart(_fig_m3, use_container_width=True, key="dca_interactive_main_chart")
                     else:
                         st.info("Instala `plotly` para ver la gráfica interactiva.")
