@@ -551,11 +551,26 @@ def _clamp_multiplier(value: float) -> float:
     return min(max(float(value), MIN_MULTIPLIER), MAX_MULTIPLIER)
 
 
-_SENSITIVITY_LEVELS: dict[str, float] = {
-    "Grueso": 0.5,   # ×3.2 per click  — posicionamiento inicial rápido
-    "Medio":  0.1,   # ×1.26 per click — ajuste general (default)
-    "Fino":   0.02,  # ×1.05 per click — refinamiento de precisión
+# 7 sensitivity steps: 1=MIN (finest) … 7=MAX (coarsest)
+# Each value is log10-decades per click → step_factor = 10^decades
+_SENSITIVITY_STEPS: list[tuple[str, float]] = [
+    ("1 MIN",  0.005),  # ×1.012 / click — ajuste ultrafino
+    ("2",      0.01),   # ×1.023 / click
+    ("3",      0.02),   # ×1.047 / click — antes "Fino"
+    ("4",      0.05),   # ×1.122 / click
+    ("5",      0.1),    # ×1.259 / click — antes "Medio" (default)
+    ("6",      0.3),    # ×2.000 / click — antes "Grueso"
+    ("7 MAX",  0.5),    # ×3.162 / click — posicionamiento rápido
+]
+_SENSITIVITY_LABELS = [s[0] for s in _SENSITIVITY_STEPS]
+_SENSITIVITY_MAP:  dict[str, float] = {s[0]: s[1] for s in _SENSITIVITY_STEPS}
+_SENSITIVITY_DESC: dict[str, str] = {
+    s[0]: f"×{10**s[1]:.3f}/click" for s in _SENSITIVITY_STEPS
 }
+_SENSITIVITY_DEFAULT = "5"   # equivalent of old "Medio"
+
+# Keep legacy dict for backward-compat with any remaining references
+_SENSITIVITY_LEVELS: dict[str, float] = {s[0]: s[1] for s in _SENSITIVITY_STEPS}
 
 
 def _init_match_state() -> None:
@@ -732,7 +747,7 @@ def _run_m4_overlay(
             _slk  = f"match_sensitivity_label_{_mval}"
             _snk  = f"match_sensitivity_decades_{_mval}"
 
-            for _k, _v in [(_xk, 1.0), (_yk, 1.0), (_slk, "Medio"), (_snk, 0.1)]:
+            for _k, _v in [(_xk, 1.0), (_yk, 1.0), (_slk, _SENSITIVITY_DEFAULT), (_snk, _SENSITIVITY_MAP[_SENSITIVITY_DEFAULT])]:
                 if _k not in st.session_state:
                     st.session_state[_k] = _v
 
@@ -760,11 +775,22 @@ def _run_m4_overlay(
                 continue
 
             _bdf_families = ("arps_bdf", "radial_bdf")
-            bdf_ids = [c.curve_id for c in all_curves if c.curve_family in _bdf_families]
+            _bdf_curves   = [c for c in all_curves if c.curve_family in _bdf_families]
+            bdf_ids = [c.curve_id for c in _bdf_curves]
 
+            # Build a tab10 color map for BDF stems (matches _plot_all_curves_streamlit)
+            import matplotlib as _mpl
+            _tab10_colors = [_mpl.colormaps["tab10"](i) for i in range(len(_bdf_curves))]
+            _bdf_color_hex = {
+                cid: "#{:02x}{:02x}{:02x}".format(
+                    int(r * 255), int(g * 255), int(b * 255)
+                )
+                for cid, (r, g, b, _) in zip(bdf_ids, _tab10_colors)
+            }
+
+            _n_trans = len(all_curves) - len(bdf_ids)
             st.caption(
-                f"{len(all_curves)} curvas — {len(bdf_ids)} BDF + "
-                f"{len(all_curves) - len(bdf_ids)} transientes"
+                f"{len(all_curves)} curvas — {len(bdf_ids)} BDF + {_n_trans} transientes"
             )
 
             ref_id = st.selectbox(
@@ -772,6 +798,24 @@ def _run_m4_overlay(
                 options=bdf_ids,
                 key=f"ref_curve_{_mval}",
             )
+
+            # Color legend for BDF stems — shows which color corresponds to each curve
+            if _bdf_color_hex:
+                _legend_html = "<div style='display:flex;flex-wrap:wrap;gap:6px;margin:4px 0 8px 0'>"
+                for _cid, _hex in _bdf_color_hex.items():
+                    _is_sel = _cid == ref_id
+                    _border = "2px solid #fff" if _is_sel else "none"
+                    _opacity = "1.0" if _is_sel else "0.65"
+                    _legend_html += (
+                        f"<span style='display:inline-flex;align-items:center;gap:3px;"
+                        f"opacity:{_opacity}'>"
+                        f"<span style='width:12px;height:12px;border-radius:2px;"
+                        f"background:{_hex};outline:{_border};flex-shrink:0'></span>"
+                        f"<span style='font-size:0.72rem;color:#cbd5e1'>{_cid}</span>"
+                        f"</span>"
+                    )
+                _legend_html += "</div>"
+                st.markdown(_legend_html, unsafe_allow_html=True)
 
             # 2-column layout: chart (wide) | joystick+results (narrow)
             _chart_col, _joy_col = st.columns([3, 1.2])
@@ -789,19 +833,16 @@ def _run_m4_overlay(
                     unsafe_allow_html=True,
                 )
 
-                _sens = st.radio(
+                # 7-step sensitivity slider (MIN=1 … MAX=7)
+                _sens_idx = st.select_slider(
                     "Sensibilidad",
-                    options=list(_SENSITIVITY_LEVELS.keys()),
-                    horizontal=True,
+                    options=_SENSITIVITY_LABELS,
+                    value=st.session_state.get(_slk, _SENSITIVITY_DEFAULT),
                     key=_slk,
+                    help="1 MIN = paso más fino · 7 MAX = paso más grueso",
                 )
-                st.session_state[_snk] = _SENSITIVITY_LEVELS[_sens]
-                _sens_desc = {
-                    "Grueso": "x3.2/click",
-                    "Medio":  "x1.26/click",
-                    "Fino":   "x1.05/click",
-                }
-                st.caption(_sens_desc[_sens])
+                st.session_state[_snk] = _SENSITIVITY_MAP[_sens_idx]
+                st.caption(_SENSITIVITY_DESC[_sens_idx])
 
                 _j1, _j2 = st.columns(2)
                 with _j1:
@@ -831,7 +872,7 @@ def _run_m4_overlay(
 
                 st.markdown("</div>", unsafe_allow_html=True)
 
-                # Match parameters
+                # ── Match parameters (computed before RESET/SAVE row) ──
                 _mp = None
                 def _fmt(v: float | None, d: int = 2) -> str:
                     return f"{v:.{d}f}" if v is not None else "—"
@@ -859,28 +900,52 @@ def _run_m4_overlay(
                 except Exception as exc:
                     st.error(str(exc))
 
-                # Save match
-                if _mp is not None:
-                    st.divider()
-                    if st.button(
-                        "📌 Guardar match",
+                # ── RESET (red) + SAVE (green) row ──
+                st.markdown(
+                    f"""<style>
+                    [data-testid="stButton"]:has(button[data-testid$="jrst_{_mval}"]) button {{
+                        background:linear-gradient(160deg,#3b0a0a 0%,#1f0606 100%) !important;
+                        border-color:#ef4444 !important; color:#fca5a5 !important;
+                    }}
+                    [data-testid="stButton"]:has(button[data-testid$="jsave_{_mval}"]) button {{
+                        background:linear-gradient(160deg,#052e16 0%,#022c16 100%) !important;
+                        border-color:#22c55e !important; color:#86efac !important;
+                    }}
+                    </style>""",
+                    unsafe_allow_html=True,
+                )
+                _rs_left, _rs_right = st.columns(2)
+                with _rs_left:
+                    st.button(
+                        "⟳ RESET",
                         use_container_width=True,
-                        key=f"save_match_{_mval}",
-                        help="Guarda kh/k/N de este método para la tabla comparativa",
+                        on_click=_cb_reset,
+                        key=f"jrst_{_mval}",
+                        help="Resetea X=1, Y=1 y sensibilidad al valor por defecto",
+                    )
+                with _rs_right:
+                    _save_disabled = _mp is None
+                    if st.button(
+                        "💾 SAVE",
+                        use_container_width=True,
+                        disabled=_save_disabled,
+                        key=f"jsave_{_mval}",
+                        help="Guarda kh/k/N de este método en la tabla comparativa",
                     ):
-                        st.session_state[f"_saved_match_{_mval}"] = {
-                            "method": _mval,
-                            "ref_curve_id": ref_id,
-                            "kh_md_ft": _mp.kh_md_ft,
-                            "k_md": _mp.k_md,
-                            "n_vol_stb": _mp.n_vol_stb,
-                            "re_ft": _mp.re_ft,
-                            "area_acres": _mp.area_acres,
-                            "x_mult": _x_eff,
-                            "y_mult": _y_eff,
-                            "warnings": len(_mp.warnings),
-                        }
-                        st.success("Match guardado")
+                        if _mp is not None:
+                            st.session_state[f"_saved_match_{_mval}"] = {
+                                "method": _mval,
+                                "ref_curve_id": ref_id,
+                                "kh_md_ft": _mp.kh_md_ft,
+                                "k_md": _mp.k_md,
+                                "n_vol_stb": _mp.n_vol_stb,
+                                "re_ft": _mp.re_ft,
+                                "area_acres": _mp.area_acres,
+                                "x_mult": _x_eff,
+                                "y_mult": _y_eff,
+                                "warnings": len(_mp.warnings),
+                            }
+                            st.success("Match guardado ✅")
 
             # ---- Chart column ----
             with _chart_col:
