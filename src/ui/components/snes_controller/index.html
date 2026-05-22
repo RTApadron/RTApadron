@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: transparent; overflow: hidden; font-family: sans-serif; }
+
+    #root {
+      position: relative;
+      width: 100%;
+      display: inline-block;
+      user-select: none;
+    }
+
+    #ctrl-img {
+      width: 100%;
+      height: auto;
+      display: block;
+      -webkit-user-drag: none;
+    }
+
+    /* Invisible hotspot over each button area */
+    .hotspot {
+      position: absolute;
+      cursor: pointer;
+      border-radius: 50%;
+      background: transparent;
+      transition: background 0.08s ease;
+    }
+    .hotspot:hover  { background: rgba(255,255,255,0.28); }
+    .hotspot:active { background: rgba(255,255,255,0.55); box-shadow: 0 0 8px 3px rgba(255,255,200,0.6); }
+
+    /* D-pad arms are rectangular, not circular */
+    .dpad-arm { border-radius: 4px; }
+
+    /* Current-sensitivity readout floating above the knob */
+    #sens-overlay {
+      position: absolute;
+      pointer-events: none;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+    }
+
+    #needle-wrap {
+      position: absolute;
+      pointer-events: none;
+    }
+
+    #needle {
+      width: 3px;
+      background: linear-gradient(to top, #222, #666);
+      border-radius: 2px 2px 0 0;
+      transform-origin: bottom center;
+      position: absolute;
+      bottom: 50%;
+      left: 50%;
+      transform: translateX(-50%) rotate(0deg);
+      transition: transform 0.35s cubic-bezier(.4,1.5,.6,1);
+      box-shadow: 0 0 2px #000;
+    }
+
+    /* Pulsing glow on action feedback */
+    @keyframes glow {
+      0%   { box-shadow: 0 0 0 0 rgba(255,255,200,0.7); }
+      50%  { box-shadow: 0 0 10px 5px rgba(255,255,200,0.5); }
+      100% { box-shadow: 0 0 0 0 rgba(255,255,200,0); }
+    }
+    .hotspot.fired { animation: glow 0.3s ease-out; }
+  </style>
+</head>
+<body>
+  <div id="root">
+    <img id="ctrl-img" alt="SNES Controller" draggable="false">
+
+    <!-- ── D-pad ────────────────────────────────────── -->
+    <!-- UP -->
+    <div class="hotspot dpad-arm" id="btn-up"
+         style="left:18.5%;top:34%;width:9%;height:13%"
+         title="▲ mover nube arriba (Y ×step)"></div>
+    <!-- DOWN -->
+    <div class="hotspot dpad-arm" id="btn-down"
+         style="left:18.5%;top:53%;width:9%;height:13%"
+         title="▼ mover nube abajo (Y ÷step)"></div>
+    <!-- LEFT -->
+    <div class="hotspot dpad-arm" id="btn-left"
+         style="left:7%;top:42%;width:12%;height:12%"
+         title="◀ mover nube izquierda (X ÷step)"></div>
+    <!-- RIGHT -->
+    <div class="hotspot dpad-arm" id="btn-right"
+         style="left:28%;top:42%;width:12%;height:12%"
+         title="▶ mover nube derecha (X ×step)"></div>
+
+    <!-- ── Sensitivity knob ────────────────────────── -->
+    <!-- Left half  = decrease step (sens_dec) -->
+    <div class="hotspot" id="btn-sens-dec"
+         style="left:37%;top:28%;width:12%;height:38%;border-radius:50% 0 0 50%"
+         title="Sensibilidad -"></div>
+    <!-- Right half = increase step (sens_inc) -->
+    <div class="hotspot" id="btn-sens-inc"
+         style="left:49%;top:28%;width:12%;height:38%;border-radius:0 50% 50% 0"
+         title="Sensibilidad +"></div>
+
+    <!-- Needle (rotates on the knob visual) -->
+    <div id="needle-wrap">
+      <div id="needle"></div>
+    </div>
+
+    <!-- Step label below knob -->
+    <div id="sens-label"
+         style="position:absolute;pointer-events:none;text-align:center;
+                font-size:2.2cqw;font-weight:700;color:#1a1a1a;
+                text-shadow:0 0 4px #fff,0 0 4px #fff;"></div>
+
+    <!-- ── RESET (red) ─────────────────────────────── -->
+    <div class="hotspot" id="btn-reset"
+         style="left:71%;top:22%;width:14%;height:23%"
+         title="RESET — vuelve X=1, Y=1"></div>
+
+    <!-- ── SAVE (green) ───────────────────────────── -->
+    <div class="hotspot" id="btn-save"
+         style="left:71%;top:52%;width:14%;height:23%"
+         title="SAVE — guarda el match actual"></div>
+  </div>
+
+  <script>
+    // ── Streamlit component protocol ─────────────────────────────────────────
+    var _seq = 0;
+
+    function _post(type, extra) {
+      window.parent.postMessage(
+        Object.assign({ isStreamlitMessage: true, type: type }, extra || {}),
+        "*"
+      );
+    }
+
+    function _ready() { _post("streamlit:componentReady", { apiVersion: 1 }); }
+
+    function _setValue(value) {
+      _seq++;
+      _post("streamlit:setComponentValue", { value: { action: value, seq: _seq } });
+    }
+
+    function _setHeight() {
+      var h = document.getElementById("root").getBoundingClientRect().height;
+      _post("streamlit:setFrameHeight", { height: Math.ceil(h) + 4 });
+    }
+
+    // ── Render callback ───────────────────────────────────────────────────────
+    var _lastRenderedStep = null;
+
+    function _render(args) {
+      var img   = document.getElementById("ctrl-img");
+      var step  = parseInt(args.sens_step  || 4, 10);   // 1..7, default 4
+      var total = parseInt(args.total_steps|| 7, 10);
+
+      // Set image source once
+      if (img.dataset.loaded !== "1") {
+        img.src = "data:image/png;base64," + args.image_b64;
+        img.onload = function () {
+          _positionNeedle(step, total);
+          _positionSensLabel(step);
+          _setHeight();
+          img.dataset.loaded = "1";
+        };
+      } else {
+        _positionNeedle(step, total);
+        _positionSensLabel(step);
+      }
+      _lastRenderedStep = step;
+    }
+
+    // ── Needle rotation ───────────────────────────────────────────────────────
+    // Knob range: -120° (step=1/MIN) … +120° (step=7/MAX)
+    // step=4 (default) → 0° (straight up)
+    function _stepToDeg(step, total) {
+      var range  = 240;
+      var offset = -120;
+      return offset + ((step - 1) / (total - 1)) * range;
+    }
+
+    function _positionNeedle(step, total) {
+      var root = document.getElementById("root");
+      var W    = root.offsetWidth;
+      var H    = root.offsetHeight || W; // image is square
+
+      // Knob center approx: 50% left, 48% top, radius ~12%
+      var cx = W * 0.507;
+      var cy = H * 0.480;
+      var r  = W * 0.085;   // needle length
+      var nw = document.getElementById("needle-wrap");
+      var nd = document.getElementById("needle");
+
+      nd.style.height = r + "px";
+
+      // Position the wrap at knob center, needle extends upward from bottom
+      nw.style.left   = (cx - 2) + "px";   // 2 = half needle width
+      nw.style.top    = (cy - r) + "px";
+      nw.style.width  = "4px";
+      nw.style.height = r + "px";
+
+      var deg = _stepToDeg(step, total);
+      // rotate around the bottom of the needle (knob center)
+      nd.style.transformOrigin = "2px " + r + "px";
+      nd.style.transform       = "rotate(" + deg + "deg)";
+    }
+
+    function _positionSensLabel(step) {
+      var labels = ["1 MIN","2","3","4","5","6","7 MAX"];
+      var root = document.getElementById("root");
+      var W    = root.offsetWidth;
+      var H    = root.offsetHeight || W;
+      var lbl  = document.getElementById("sens-label");
+      lbl.style.left  = (W * 0.37) + "px";
+      lbl.style.width = (W * 0.24) + "px";
+      lbl.style.top   = (H * 0.69) + "px";
+      lbl.textContent = labels[step - 1] || step;
+    }
+
+    // ── Wire up hotspots ──────────────────────────────────────────────────────
+    function _wire(id, action) {
+      var el = document.getElementById(id);
+      if (!el) return;
+      el.addEventListener("click", function () {
+        el.classList.add("fired");
+        setTimeout(function () { el.classList.remove("fired"); }, 350);
+        _setValue(action);
+      });
+    }
+
+    _wire("btn-up",       "up");
+    _wire("btn-down",     "down");
+    _wire("btn-left",     "left");
+    _wire("btn-right",    "right");
+    _wire("btn-sens-dec", "sens_dec");
+    _wire("btn-sens-inc", "sens_inc");
+    _wire("btn-reset",    "reset");
+    _wire("btn-save",     "save");
+
+    // ── Message listener ──────────────────────────────────────────────────────
+    window.addEventListener("message", function (event) {
+      if (!event.data || !event.data.type) return;
+      if (event.data.type === "streamlit:render") {
+        _render(event.data.args || {});
+      }
+    });
+
+    // Signal ready
+    _ready();
+    _setHeight();
+
+    // Recalculate on resize
+    window.addEventListener("resize", function () {
+      if (_lastRenderedStep !== null) {
+        _positionNeedle(_lastRenderedStep, 7);
+        _positionSensLabel(_lastRenderedStep);
+      }
+      _setHeight();
+    });
+  </script>
+</body>
+</html>

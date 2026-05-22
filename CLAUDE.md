@@ -38,23 +38,39 @@ producción en los Llanos Orientales."
 
 ---
 
-## Estado de módulos (actualizado 2026-05-22 — post sesión 2)
+## Estado de módulos (actualizado 2026-05-22 — post sesión 3)
 
 | Módulo | Descripción | Estado | Tests |
 |--------|-------------|--------|-------|
 | M1 | Historia + Pwf v2 D-W + esquema mecánico + 9 QC checks + editor embebido en hub | ✅ Funcional | `test_well_mech_qc_service.py` (51) |
-| M2 | PVT: Rs/Bo/μo/ρo — Standing, Vasquez-Beggs, Beggs-Robinson; fix bug gráficas | ✅ Funcional | `test_pvt_correlations.py` (46) |
+| M2 | PVT: Rs/Bo/μo/ρo — Standing, VB, BR; botón "✅ Confirmar datos" semáforo verde | ✅ Funcional | `test_pvt_correlations.py` (46) |
 | M3 | DCA multi-método Arps; semilog + best-fit; semáforo verde funcional; qi=último Qo | ✅ Funcional | varios |
-| M4 | RTA 60 curvas; joystick 7 pasos + SAVE verde; leyenda BDF colores; checkbox qDdi opt-in | ✅ Funcional | varios |
+| M4 | RTA 60 curvas; SNES controller (componente bidireccional); joystick 7 pasos; curvas tipo sin picos; Y-axis clamped [1e-4,200] | ✅ Funcional | varios |
 | M5 | Resultados integrados, dashboard 7 pestañas, exportación, tabla comparativa | ✅ Funcional + integrado | varios |
-| M2 | PVT correlaciones + botón "✅ Confirmar datos" para forzar semáforo verde sin lab | ✅ Funcional | `test_pvt_correlations.py` (46) |
-| Inicio | Tarjetas M1→M5 con logos PNG; semáforo; botones nav; GPL-3 | ✅ Funcional | — |
+| Inicio | Tarjetas M1→M5 con logos PNG 140px; semáforo; botones nav; GPL-3 | ✅ Funcional | — |
 
 **Tests totales: 387 passed, 1 warning (Pydantic v1 @validator en `src/well_mod/models.py`)**
 
 ---
 
 ## Historial de commits relevantes (más recientes primero)
+
+### Sesión 3 fixes 2026-05-22 (commit — ver abajo)
+
+**`TBD` — fix(sesion3): SNES controller, curvas tipo sin picos, logos 140px, M2 Confirmar**
+- **M4 SNES controller:** componente Streamlit bidireccional (`declare_component`); imagen PNG
+  real del SNES superpuesta con hotspots transparentes (D-pad, perilla sensibilidad ×2, RESET, SAVE);
+  needle rotatoria −120°→+120°; protocolo `{action, seq}` con dedup por seq
+- **M4 joystick reset bug:** `"Medio"` → `_SENSITIVITY_DEFAULT` en `_cb_reset()`
+- **M4 curvas tipo Fetkovich:** pico en stem transiente eliminado con `min(qD_log, qD_early)`;
+  antes qDd saltaba de 1.19 → 7.16 en el cruce de las dos aproximaciones
+- **M4 Y-axis:** clamped a [1e-4, 200] en `_plot_all_curves_streamlit` — evita que el
+  exponencial BDF b=0 (y→1.9e-9) aplaste el rango visible
+- **CSVs regenerados:** 60 curvas, 7111 pts — Fetkovich stems monotónicamente decrecientes ✅
+- **M2:** botón "✅ Confirmar datos" en `_pvt_core_ui(well_id)` — escribe
+  `{well_id}_pvt_config_ui.json`; semáforo pasa a 🟢 sin datos de laboratorio
+- **Inicio:** logos PNG M1–M5 ampliados de 80 → 140px
+- **Nuevos archivos:** `assets/snes_controller.png`, `src/ui/components/snes_controller/index.html`
 
 ### Sesión 2 UX 2026-05-22 (commit cd48fff)
 
@@ -340,18 +356,43 @@ SESSION_PVT_CONFIG_PATH        = "pvt_config_ui_path"
 
 ## Pending work — Backlog (próximo sprint a planificar)
 
-### ✅ Sprint 2026-05-22 — COMPLETADO (commit 13cb28b)
+### ✅ Sprint 2026-05-22 sesión 3 — COMPLETADO
+- [x] M4 SNES controller (componente bidireccional real con imagen PNG)
+- [x] M4 joystick reset bug (_SENSITIVITY_DEFAULT)
+- [x] M4 curvas tipo Fetkovich: pico transiente eliminado
+- [x] M4 Y-axis clamped [1e-4, 200]
+- [x] M2 botón "Confirmar datos" en ruta correcta (_pvt_core_ui)
+- [x] Inicio logos 140px
+
+### ✅ Sprint 2026-05-22 sesiones 1-2 — COMPLETADO (commits cd48fff, e440def, 13cb28b)
 - [x] T1: `scripts/generate_type_curves.py` + 60 curvas analíticas validated
 - [x] T2: M4 rediseño UX (tabs, layout [3,1.2], sin uploader, QC visible, Pi warning)
 - [x] T3: M3 semilog + best-fit punteado + métricas R²
+- [x] M4 joystick 7 pasos + SAVE verde + leyenda BDF colores
+- [x] M2 "Confirmar datos" semáforo
+- [x] Pantalla Inicio completa
 
-### 🟡 Prioridad media (backlog)
+### 🟡 Próximo sprint — M4 sesión 4 (pendiente planificar)
 
-- **Unificar paneles geometría M1:** dos paneles de guardado en Geometría/Survey (editor embebido + formulario simple) — ambos escriben `_well_geometry.json`. Decidir: eliminar formulario simple O sub-pestañas "Esquema" | "Formulario" | "Survey".
+- **M4 SNES hotspots fine-tuning:** posiciones de botones no coinciden 100% con la imagen
+  (usuario dijo "es manejable" — baja urgencia). Ajustar `left/top/width/height` en `index.html`.
+- **M4 P-B qDdid V-shapes:** la serie derivada-integral (qDdid) aún muestra V-shapes en
+  ciertos stems. Usuario dijo "no importa" en sesión 3 — dejar para sesión 4 si afecta interpretación.
+  Causa: `np.gradient` en transición BDF→transient; posible fix: suavizado Savitzky-Golay o
+  condicional en el cálculo de `_compute_pb_integrals`.
+- **M4 auto-selección mejor stem:** algoritmo que proponga automáticamente la curva BDF más
+  cercana a los datos ajustados (distancia mínima en log-log).
+- **M4 zoom interactivo:** reemplazar `st.image(png)` por gráfica Plotly para zoom/pan nativo.
+- **M4 curvas derivada/beta-derivada:** agregar series de derivada logarítmica (diagnóstico de flujo).
+- **Semáforo hover info:** tooltip con detalle al pasar sobre cada semáforo en sidebar.
+
+### 🟡 Prioridad media — otros módulos
+
+- **Unificar paneles geometría M1:** dos paneles de guardado en Geometría/Survey (editor embebido
+  + formulario simple) — ambos escriben `_well_geometry.json`. Decidir: eliminar uno O sub-pestañas.
 - **Validar workflow end-to-end** con datos reales W001.
-- **M2 semáforo post-guardado:** `st.rerun()` al guardar PVT para actualizar semáforo en tiempo real.
 - **Módulo Ayuda:** contenido (guía flujo M1→M5, tabla unidades, referencias correlaciones).
-- **M3 pre-cargar best-fit → sliders:** Di/b/qi del best-fit automático como valores iniciales de los sliders manuales.
+- **M3 pre-cargar best-fit → sliders:** Di/b/qi del best-fit automático como valores iniciales.
 
 ### 🟢 Prioridad baja / futuro
 

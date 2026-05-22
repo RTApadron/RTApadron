@@ -5021,7 +5021,7 @@ def render_artifacts(well_id: str, inputs: dict | None = None) -> None:
             with _card_cols[_col_idx]:
                 # Logo at top of card if available
                 if _logo_path.exists():
-                    st.image(str(_logo_path), width=80)
+                    st.image(str(_logo_path), width=140)
                 st.markdown(
                     f"<div class='eco-card'>"
                     f"<div class='eco-card-title'>{_mtitle}</div>"

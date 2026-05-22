@@ -7,6 +7,7 @@ Run from the project root with:
 
 from __future__ import annotations
 
+import base64
 import io
 import json
 import math
@@ -14,6 +15,8 @@ import sys
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 from typing import Any
+
+import streamlit.components.v1 as _st_components
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
@@ -520,6 +523,11 @@ def _plot_all_curves_streamlit(
     ax.xaxis.set_minor_formatter(mticker.NullFormatter())
     ax.yaxis.set_minor_formatter(mticker.NullFormatter())
 
+    # Clamp y-axis to [1e-4, 200] — prevents the exponential BDF tail (b=0 → y≈1e-9)
+    # from collapsing the visible range and making all curves look flat.
+    _ymin, _ymax = ax.get_ylim()
+    ax.set_ylim(bottom=max(_ymin, 1e-4), top=min(_ymax, 200.0))
+
     try:
         fig.tight_layout()
     except Exception:
@@ -571,6 +579,32 @@ _SENSITIVITY_DEFAULT = "5"   # equivalent of old "Medio"
 
 # Keep legacy dict for backward-compat with any remaining references
 _SENSITIVITY_LEVELS: dict[str, float] = {s[0]: s[1] for s in _SENSITIVITY_STEPS}
+
+# ---------------------------------------------------------------------------
+# SNES controller custom component
+# ---------------------------------------------------------------------------
+
+_SNES_COMPONENT_PATH = PROJECT_ROOT / "src" / "ui" / "components" / "snes_controller"
+_SNES_CONTROLLER_IMG = PROJECT_ROOT / "assets" / "snes_controller.png"
+
+# Declare the bidirectional component (cached at module load)
+_snes_ctrl_component = _st_components.declare_component(
+    "snes_controller",
+    path=str(_SNES_COMPONENT_PATH),
+)
+
+
+def _load_ctrl_b64() -> str:
+    """Return the SNES controller image as a base-64 string (cached in session state)."""
+    _cache_key = "_snes_ctrl_b64"
+    if _cache_key not in st.session_state:
+        if _SNES_CONTROLLER_IMG.exists():
+            st.session_state[_cache_key] = base64.b64encode(
+                _SNES_CONTROLLER_IMG.read_bytes()
+            ).decode()
+        else:
+            st.session_state[_cache_key] = ""
+    return st.session_state[_cache_key]
 
 
 def _init_match_state() -> None:
@@ -762,8 +796,8 @@ def _run_m4_overlay(
                 def _reset():
                     st.session_state[_xkey] = 1.0
                     st.session_state[_ykey] = 1.0
-                    st.session_state[f"match_sensitivity_label_{_mv}"] = "Medio"
-                    st.session_state[f"match_sensitivity_decades_{_mv}"] = 0.1
+                    st.session_state[f"match_sensitivity_label_{_mv}"] = _SENSITIVITY_DEFAULT
+                    st.session_state[f"match_sensitivity_decades_{_mv}"] = _SENSITIVITY_MAP[_SENSITIVITY_DEFAULT]
                 return _left, _right, _up, _down, _reset
 
             _cb_left, _cb_right, _cb_up, _cb_down, _cb_reset = _make_cbs(_mval, _xk, _yk, _snk)
@@ -824,56 +858,61 @@ def _run_m4_overlay(
             _x_eff = _clamp_multiplier(st.session_state[_xk])
             _y_eff = _clamp_multiplier(st.session_state[_yk])
 
-            # ---- Joystick / results column ----
+            # ---- SNES Controller column ----
             with _joy_col:
-                st.markdown('<div class="arcade-panel">', unsafe_allow_html=True)
-                st.markdown('<div class="arcade-title">Match Control</div>', unsafe_allow_html=True)
-                st.markdown(
-                    '<div class="arcade-subtitle">joystick log · mueve la nube sobre la curva</div>',
-                    unsafe_allow_html=True,
+                # Current sensitivity step (1-based index into _SENSITIVITY_LABELS)
+                _cur_lbl = st.session_state.get(_slk, _SENSITIVITY_DEFAULT)
+                try:
+                    _cur_step_num = _SENSITIVITY_LABELS.index(_cur_lbl) + 1
+                except ValueError:
+                    _cur_step_num = int(_SENSITIVITY_DEFAULT)
+
+                # ── Render the SNES controller component ──────────────────
+                _snes_result = _snes_ctrl_component(
+                    image_b64=_load_ctrl_b64(),
+                    sens_step=_cur_step_num,
+                    total_steps=len(_SENSITIVITY_LABELS),
+                    key=f"snes_{_mval}",
                 )
 
-                # 7-step sensitivity slider (MIN=1 … MAX=7)
-                _sens_idx = st.select_slider(
-                    "Sensibilidad",
-                    options=_SENSITIVITY_LABELS,
-                    value=st.session_state.get(_slk, _SENSITIVITY_DEFAULT),
-                    key=_slk,
-                    help="1 MIN = paso más fino · 7 MAX = paso más grueso",
+                # ── Process action (dedup by seq number) ──────────────────
+                _snes_seq_key = f"_snes_last_seq_{_mval}"
+                if _snes_result and isinstance(_snes_result, dict):
+                    _seq_val = _snes_result.get("seq", 0)
+                    if _seq_val != st.session_state.get(_snes_seq_key, -1):
+                        st.session_state[_snes_seq_key] = _seq_val
+                        _act = _snes_result.get("action", "")
+                        if   _act == "up":    _cb_up()
+                        elif _act == "down":  _cb_down()
+                        elif _act == "left":  _cb_left()
+                        elif _act == "right": _cb_right()
+                        elif _act == "reset": _cb_reset()
+                        elif _act in ("sens_inc", "sens_dec"):
+                            try:
+                                _sidx = _SENSITIVITY_LABELS.index(_cur_lbl)
+                            except ValueError:
+                                _sidx = int(_SENSITIVITY_DEFAULT) - 1
+                            _new_sidx = (
+                                min(_sidx + 1, len(_SENSITIVITY_LABELS) - 1)
+                                if _act == "sens_inc" else max(_sidx - 1, 0)
+                            )
+                            _new_lbl = _SENSITIVITY_LABELS[_new_sidx]
+                            st.session_state[_slk] = _new_lbl
+                            st.session_state[_snk] = _SENSITIVITY_MAP[_new_lbl]
+                        elif _act == "save":
+                            # Flag for processing AFTER _mp is computed
+                            st.session_state[f"_pending_save_{_mval}"] = True
+                        st.rerun()
+
+                # ── Current position caption ──────────────────────────────
+                st.caption(
+                    f"X: {_x_eff:.4g} · Y: {_y_eff:.4g} · S{_cur_step_num} "
+                    f"({_SENSITIVITY_DESC.get(_cur_lbl, '')})"
                 )
-                st.session_state[_snk] = _SENSITIVITY_MAP[_sens_idx]
-                st.caption(_SENSITIVITY_DESC[_sens_idx])
 
-                _j1, _j2 = st.columns(2)
-                with _j1:
-                    st.number_input(
-                        "X", min_value=MIN_MULTIPLIER, max_value=MAX_MULTIPLIER,
-                        format="%.4g", key=_xk,
-                    )
-                with _j2:
-                    st.number_input(
-                        "Y", min_value=MIN_MULTIPLIER, max_value=MAX_MULTIPLIER,
-                        format="%.4g", key=_yk,
-                    )
-
-                _uc = st.columns([1, 1, 1])
-                with _uc[1]:
-                    st.button("▲", use_container_width=True, on_click=_cb_up,    key=f"jup_{_mval}")
-                _mc = st.columns([1, 1, 1])
-                with _mc[0]:
-                    st.button("◀", use_container_width=True, on_click=_cb_left,  key=f"jleft_{_mval}")
-                with _mc[1]:
-                    st.button("⟳", use_container_width=True, on_click=_cb_reset, key=f"jreset_{_mval}")
-                with _mc[2]:
-                    st.button("▶", use_container_width=True, on_click=_cb_right, key=f"jright_{_mval}")
-                _dc = st.columns([1, 1, 1])
-                with _dc[1]:
-                    st.button("▼", use_container_width=True, on_click=_cb_down,  key=f"jdown_{_mval}")
-
-                st.markdown("</div>", unsafe_allow_html=True)
-
-                # ── Match parameters (computed before RESET/SAVE row) ──
+                # ── Match parameters ───────────────────────────────────────
                 _mp = None
+
                 def _fmt(v: float | None, d: int = 2) -> str:
                     return f"{v:.{d}f}" if v is not None else "—"
 
@@ -893,59 +932,30 @@ def _run_m4_overlay(
                     st.divider()
                     st.metric("re (ft)",      _fmt(_mp.re_ft, 0))
                     st.metric("Área (acres)", _fmt(_mp.area_acres, 1))
-                    st.caption(f"X: {_x_eff:.4g}  |  Y: {_y_eff:.4g}")
                     if _mp.warnings:
                         for _w in _mp.warnings:
                             st.warning(_w, icon="⚠")
                 except Exception as exc:
                     st.error(str(exc))
 
-                # ── RESET (red) + SAVE (green) row ──
-                st.markdown(
-                    f"""<style>
-                    [data-testid="stButton"]:has(button[data-testid$="jrst_{_mval}"]) button {{
-                        background:linear-gradient(160deg,#3b0a0a 0%,#1f0606 100%) !important;
-                        border-color:#ef4444 !important; color:#fca5a5 !important;
-                    }}
-                    [data-testid="stButton"]:has(button[data-testid$="jsave_{_mval}"]) button {{
-                        background:linear-gradient(160deg,#052e16 0%,#022c16 100%) !important;
-                        border-color:#22c55e !important; color:#86efac !important;
-                    }}
-                    </style>""",
-                    unsafe_allow_html=True,
-                )
-                _rs_left, _rs_right = st.columns(2)
-                with _rs_left:
-                    st.button(
-                        "⟳ RESET",
-                        use_container_width=True,
-                        on_click=_cb_reset,
-                        key=f"jrst_{_mval}",
-                        help="Resetea X=1, Y=1 y sensibilidad al valor por defecto",
-                    )
-                with _rs_right:
-                    _save_disabled = _mp is None
-                    if st.button(
-                        "💾 SAVE",
-                        use_container_width=True,
-                        disabled=_save_disabled,
-                        key=f"jsave_{_mval}",
-                        help="Guarda kh/k/N de este método en la tabla comparativa",
-                    ):
-                        if _mp is not None:
-                            st.session_state[f"_saved_match_{_mval}"] = {
-                                "method": _mval,
-                                "ref_curve_id": ref_id,
-                                "kh_md_ft": _mp.kh_md_ft,
-                                "k_md": _mp.k_md,
-                                "n_vol_stb": _mp.n_vol_stb,
-                                "re_ft": _mp.re_ft,
-                                "area_acres": _mp.area_acres,
-                                "x_mult": _x_eff,
-                                "y_mult": _y_eff,
-                                "warnings": len(_mp.warnings),
-                            }
-                            st.success("Match guardado ✅")
+                # ── Handle SAVE flagged by SNES controller ─────────────────
+                if st.session_state.pop(f"_pending_save_{_mval}", False):
+                    if _mp is not None:
+                        st.session_state[f"_saved_match_{_mval}"] = {
+                            "method":       _mval,
+                            "ref_curve_id": ref_id,
+                            "kh_md_ft":     _mp.kh_md_ft,
+                            "k_md":         _mp.k_md,
+                            "n_vol_stb":    _mp.n_vol_stb,
+                            "re_ft":        _mp.re_ft,
+                            "area_acres":   _mp.area_acres,
+                            "x_mult":       _x_eff,
+                            "y_mult":       _y_eff,
+                            "warnings":     len(_mp.warnings),
+                        }
+                        st.success("Match guardado ✅")
+                    else:
+                        st.warning("Sin parámetros de match — mueve el joystick primero.")
 
             # ---- Chart column ----
             with _chart_col:
