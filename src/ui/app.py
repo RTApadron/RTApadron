@@ -1035,7 +1035,7 @@ def render_m2_pvt_configuration_panel(well_id: str) -> None:
     st.subheader("JSON PVT que usará el workflow")
     st.json(pvt_payload, expanded=False)
 
-    col_save, col_clear, col_download = st.columns(3)
+    col_save, col_confirm, col_clear, col_download = st.columns(4)
 
     with col_save:
         if st.button("Guardar configuración PVT UI", type="primary", use_container_width=True):
@@ -1048,6 +1048,28 @@ def render_m2_pvt_configuration_panel(well_id: str) -> None:
             st.session_state[SESSION_PVT_CONFIG_PATH] = str(saved_path)
             st.success(f"Configuración PVT guardada: `{saved_path}`")
             st.rerun()
+
+    with col_confirm:
+        if st.button(
+            "✅ Confirmar datos",
+            type="secondary",
+            use_container_width=True,
+            help="Marca M2 como configurado usando los valores actuales (sin validación estricta). "
+                 "Útil cuando no hay datos de laboratorio disponibles.",
+        ):
+            try:
+                _confirm_path = UI_INPUT_DIR / f"{well_id}_pvt_config_ui.json"
+                _confirm_path.parent.mkdir(parents=True, exist_ok=True)
+                import json as _json_m2
+                _confirm_path.write_text(
+                    _json_m2.dumps(pvt_payload, indent=2, ensure_ascii=False),
+                    encoding="utf-8",
+                )
+                st.session_state[SESSION_PVT_CONFIG_PATH] = str(_confirm_path)
+                st.success("M2 confirmado — semáforo actualizará a 🟢")
+                st.rerun()
+            except Exception as _e:
+                st.error(f"No se pudo confirmar: {_e}")
 
     with col_clear:
         if st.button("Descartar PVT UI activo", use_container_width=True):
@@ -4975,26 +4997,33 @@ def render_artifacts(well_id: str, inputs: dict | None = None) -> None:
         st.markdown(_card_css, unsafe_allow_html=True)
 
         _modules_info = [
-            ("M1", "🗂", "M1 — Pozo & Pwf",
-             "Historia de producción, estado mecánico, estimación Pwf"),
-            ("M2", "🧪", "M2 — PVT",
-             "Correlaciones PVT: Bo, Rs, μo, ρo, compresibilidad"),
-            ("M3", "📉", "M3 — DCA",
-             "Declinación de producción Arps: exponencial, hiperbólica, armónica"),
-            ("M4", "🔬", "M4 — RTA",
-             "Curvas tipo Fetkovich / Blasingame / Agarwal-Gardner"),
-            ("M5", "📊", "M5 — Resultados",
-             "Dashboard integrado, EUR, OOIP, exportación"),
+            ("M1", "M1 — Pozo & Pwf",
+             "Historia de producción, estado mecánico, estimación Pwf",
+             PROJECT_ROOT / "assets" / "logo_m1.png"),
+            ("M2", "M2 — PVT",
+             "Correlaciones PVT: Bo, Rs, μo, ρo, compresibilidad",
+             PROJECT_ROOT / "assets" / "logo_m2.png"),
+            ("M3", "M3 — DCA",
+             "Declinación de producción Arps: exponencial, hiperbólica, armónica",
+             PROJECT_ROOT / "assets" / "logo_m3.png"),
+            ("M4", "M4 — RTA",
+             "Curvas tipo Fetkovich / Blasingame / Agarwal-Gardner",
+             PROJECT_ROOT / "assets" / "logo_m4.png"),
+            ("M5", "M5 — Resultados",
+             "Dashboard integrado, EUR, OOIP, exportación",
+             PROJECT_ROOT / "assets" / "logo_m5.png"),
         ]
         _n_cards = len(_modules_info)
-        _card_cols = st.columns([1, 0.15] * (_n_cards - 1) + [1])
+        _card_cols = st.columns([1, 0.12] * (_n_cards - 1) + [1])
 
-        for _ci_card, (_mkey, _micon, _mtitle, _mdesc) in enumerate(_modules_info):
+        for _ci_card, (_mkey, _mtitle, _mdesc, _logo_path) in enumerate(_modules_info):
             _col_idx = _ci_card * 2
             with _card_cols[_col_idx]:
+                # Logo at top of card if available
+                if _logo_path.exists():
+                    st.image(str(_logo_path), width=80)
                 st.markdown(
                     f"<div class='eco-card'>"
-                    f"<div class='eco-card-icon'>{_micon}</div>"
                     f"<div class='eco-card-title'>{_mtitle}</div>"
                     f"<div class='eco-card-desc'>{_mdesc}</div>"
                     f"</div>",
