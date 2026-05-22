@@ -232,12 +232,9 @@ def _on_area_change() -> None:
 
 def _render_reservoir_config() -> RTAConfig:
     """Render the reservoir/fluid configuration panel and return current config."""
-    with st.expander("Parámetros de yacimiento / fluidos", expanded=False):
+    with st.expander("Parámetros de yacimiento / fluidos", expanded=True):
         st.caption(
-            "Estos valores alimentan el cálculo de variables RTA físicas "
-            "(Δp, tasa normalizada, MBT) y los parámetros de yacimiento desde "
-            "el match point (kh, k, skin, volumen contactado, OOIP). "
-            "Bo y μo se pre-cargan automáticamente desde la configuración PVT de M2."
+            "Bo y μo se pre-cargan desde M2. Pi con advertencia si Pi < Pwf máx."
         )
 
         col_a, col_b = st.columns(2)
@@ -643,9 +640,9 @@ def _run_m4_overlay(
     show_anchor: bool = True,
 ) -> None:
     """Core M4 overlay UI — shared by standalone main() and render_m4_joystick_embedded()."""
-    _scenario_key = f"rta_scenario_loaded_{well_id}"
+    from src.rta_type_curves.models import RTATypeCurveMethod as _RTAMethod
 
-    # Pre-load saved scenario (if any) to seed reservoir config defaults.
+    _scenario_key = f"rta_scenario_loaded_{well_id}"
     if _scenario_key not in st.session_state:
         existing = load_rta_scenario(well_id, output_dir=output_dir)
         _pvt_json_path = PROJECT_ROOT / "data" / "ui_uploads" / f"{well_id}_pvt_config_ui.json"
@@ -656,536 +653,364 @@ def _run_m4_overlay(
         )
         st.session_state[_scenario_key] = True
 
-    _init_match_state()
-    if not show_anchor:
-        # Embedded mode: force anchor off so ManualMatchConfig uses None for anchor params.
-        st.session_state["use_anchor"] = False
     _inject_arcade_css()
 
     if show_title:
-        st.title("M4 - Overlay visual datos RTA vs curvas tipo")
-        st.success("Pantalla M4 cargada correctamente.")
+        st.title("M4 — Overlay visual RTA vs curvas tipo")
 
-    st.info(
-        "Superpone puntos RTA del pozo sobre curvas tipo (Blasingame / Agarwal-Gardner). "
-        "Calcula kh, k, skin, volumen contactado y OOIP desde el match point. "
-        "Exporta PNG del overlay y resumen JSON consumido por M5."
-    )
-
+    # Load type-curve registry
     try:
         registry = _load_registry()
     except Exception as exc:
         st.error(f"No fue posible cargar el registro de curvas tipo: {exc}")
         return
 
-    available_methods = registry.list_methods()
-
-    if not available_methods:
-        st.error("No hay curvas tipo disponibles.")
-        return
-
+    # Reservoir config (expander expandido por defecto)
     reservoir_config = _render_reservoir_config()
 
-    _latest_png_bytes: bytes | None = None
-    # Will be populated inside right_col when RTA transforms are active
-    _qc_transform_points: list[RTATransformPoint] = []
-
-    left_col, right_col, params_col = st.columns([1, 2.2, 0.9])
-
-    with left_col:
-        st.subheader("Curva tipo")
-
-        method = st.selectbox(
-            "Método",
-            options=available_methods,
-            format_func=lambda value: value.value,
+    # Auto-load history ONLY from output/{well_id}_history_enriched.csv
+    _auto_history_path = output_dir / f"{well_id}_history_enriched.csv"
+    if not _auto_history_path.exists():
+        st.info(
+            "No hay historia enriquecida disponible. "
+            "Ejecuta primero el **Paso 4 (M1-M2)** para generarla."
         )
+        return
 
-        all_method_curves = registry.get_by_method(method)
+    try:
+        history_df = pd.read_csv(_auto_history_path)
+    except Exception as exc:
+        st.error(f"Error leyendo historia enriquecida: {exc}")
+        return
 
-        if not all_method_curves:
-            st.error(f"No hay curvas disponibles para el método {method.value}.")
-            return
+    st.caption(f"Historia: `{_auto_history_path.name}` — {len(history_df)} registros")
 
-        bdf_curve_ids = [
-            c.curve_id for c in all_method_curves
-            if c.curve_family != "transient_stem"
-        ]
+    # Pi warning: shown when Pi < Pwf máx
+    if "pwf_used_psia" in history_df.columns:
+        _max_pwf = float(history_df["pwf_used_psia"].dropna().max())
+        if _max_pwf > reservoir_config.pi_psia:
+            st.warning(
+                f"Pi ({reservoir_config.pi_psia:.0f} psia) < Pwf máx "
+                f"({_max_pwf:.0f} psia) — Delta-p negativo: curvas tipo no serán visibles. "
+                "Ajusta Pi en los parámetros de yacimiento."
+            )
 
-        st.caption(
-            f"{len(all_method_curves)} curvas cargadas "
-            f"({len(bdf_curve_ids)} BDF + "
-            f"{len(all_method_curves) - len(bdf_curve_ids)} transientes)"
-        )
+    # Require standard RTA columns — no manual column selection
+    if not _has_rta_transform_columns(history_df):
         st.warning(
-            "Curvas DEMO — analíticamente correctas pero no digitalizadas "
-            "desde los papers de referencia. No usar para interpretación final."
+            "El CSV de historia no tiene columnas RTA estándar "
+            "(`well_id`, `date`, `qo_stb_d`, `pwf_used_psia`). "
+            "Ejecuta M1-M2 para generar el archivo enriquecido."
         )
+        return
 
-        with st.expander("Curva de referencia (para kh / k)"):
+    try:
+        rta_transform_points = compute_rta_transforms(
+            dataframe=history_df,
+            pi_psia=reservoir_config.pi_psia,
+        )
+    except Exception as exc:
+        st.error(f"Error calculando variables RTA: {exc}")
+        return
+
+    if not rta_transform_points:
+        st.warning("Sin puntos RTA válidos (verifica Pi y datos de producción).")
+        return
+
+    # ---- Method tabs ----
+    _TAB_LABELS  = ["🔬 Fetkovich", "📊 Palacio-Blasingame", "📈 Agarwal-Gardner"]
+    _TAB_METHODS = [_RTAMethod.FETKOVICH, _RTAMethod.PALACIO_BLASINGAME, _RTAMethod.AGARWAL_GARDNER]
+    _tabs = st.tabs(_TAB_LABELS)
+
+    for _tab_idx, _tab in enumerate(_tabs):
+        method = _TAB_METHODS[_tab_idx]
+        _mval  = method.value
+
+        with _tab:
+            # Per-method session-state keys (avoids duplicate widget keys across tabs)
+            _xk   = f"x_multiplier_{_mval}"
+            _yk   = f"y_multiplier_{_mval}"
+            _slk  = f"match_sensitivity_label_{_mval}"
+            _snk  = f"match_sensitivity_decades_{_mval}"
+
+            for _k, _v in [(_xk, 1.0), (_yk, 1.0), (_slk, "Medio"), (_snk, 0.1)]:
+                if _k not in st.session_state:
+                    st.session_state[_k] = _v
+
+            # Callback closures for this method's joystick
+            def _make_cbs(_mv: str, _xkey: str, _ykey: str, _skey: str):
+                def _step() -> float:
+                    return 10 ** float(st.session_state.get(_skey, 0.1))
+                def _left():  st.session_state[_xkey] = _clamp_multiplier(st.session_state[_xkey] / _step())
+                def _right(): st.session_state[_xkey] = _clamp_multiplier(st.session_state[_xkey] * _step())
+                def _up():    st.session_state[_ykey] = _clamp_multiplier(st.session_state[_ykey] * _step())
+                def _down():  st.session_state[_ykey] = _clamp_multiplier(st.session_state[_ykey] / _step())
+                def _reset():
+                    st.session_state[_xkey] = 1.0
+                    st.session_state[_ykey] = 1.0
+                    st.session_state[f"match_sensitivity_label_{_mv}"] = "Medio"
+                    st.session_state[f"match_sensitivity_decades_{_mv}"] = 0.1
+                return _left, _right, _up, _down, _reset
+
+            _cb_left, _cb_right, _cb_up, _cb_down, _cb_reset = _make_cbs(_mval, _xk, _yk, _snk)
+
+            # Curves for this method
+            all_curves = registry.get_by_method(method)
+            if not all_curves:
+                st.error(f"Sin curvas para {_mval}.")
+                continue
+
+            _bdf_families = ("arps_bdf", "radial_bdf")
+            bdf_ids = [c.curve_id for c in all_curves if c.curve_family in _bdf_families]
+
             st.caption(
-                "Selecciona la curva BDF sobre la que visualmente cae la nube "
-                "de puntos ajustados. Se usa solo para calcular kh y k."
-            )
-            ref_curve_id = st.selectbox(
-                "Curva BDF de match",
-                options=bdf_curve_ids,
-                label_visibility="collapsed",
-            )
-            type_curve = registry.get(method, ref_curve_id)
-            st.caption(f"Familia: {type_curve.curve_family} · Fuente: {type_curve.source}")
-
-        st.subheader("Datos del pozo")
-
-        _auto_history_path = output_dir / f"{well_id}_history_enriched.csv"
-        _auto_available = _auto_history_path.exists()
-
-        if _auto_available:
-            st.caption(
-                f"✅ Historia enriquecida auto-cargada: `{_auto_history_path.name}`  "
-                f"— puedes reemplazarla con otro CSV abajo."
+                f"{len(all_curves)} curvas — {len(bdf_ids)} BDF + "
+                f"{len(all_curves) - len(bdf_ids)} transientes"
             )
 
-        uploaded_csv = st.file_uploader(
-            "Cargar otro CSV (reemplaza historia auto-cargada)" if _auto_available
-            else "Cargar historia enriquecida CSV",
-            type=["csv"],
-        )
-
-        if uploaded_csv is not None:
-            try:
-                history_df = _read_uploaded_csv(uploaded_csv)
-            except Exception as exc:
-                st.error(f"No fue posible leer el CSV cargado: {exc}")
-                return
-        elif _auto_available:
-            try:
-                history_df = pd.read_csv(_auto_history_path)
-            except Exception as exc:
-                st.error(f"No fue posible leer la historia auto-cargada: {exc}")
-                return
-        else:
-            st.info(
-                "No hay historia enriquecida disponible. "
-                "Ejecuta el **Paso 4 (M1-M2)** en el flujo de trabajo o carga un CSV aquí."
-            )
-            return
-
-        # --- Determine overlay source ---
-        # If the CSV has qo_stb_d + pwf_used_psia, compute physically-meaningful
-        # RTA transforms using pi_psia from the reservoir config panel.
-        # Otherwise fall back to arbitrary column selection.
-        use_rta_transforms = _has_rta_transform_columns(history_df)
-
-        rta_transform_points: list[RTATransformPoint] = []
-        x_column: str = ""
-        y_column: str = ""
-        label_column: str | None = "date" if "date" in history_df.columns else None
-
-        if use_rta_transforms:
-            st.success(
-                "CSV con columnas RTA detectadas (`qo_stb_d`, `pwf_used_psia`). "
-                "Usando pi = **{:.0f} psia** del panel de configuración.".format(
-                    reservoir_config.pi_psia
-                )
-            )
-            try:
-                rta_transform_points = compute_rta_transforms(
-                    dataframe=history_df,
-                    pi_psia=reservoir_config.pi_psia,
-                )
-            except Exception as exc:
-                st.error(f"Error al calcular variables RTA: {exc}")
-                return
-        else:
-            st.info(
-                "CSV sin columnas RTA estándar. Selecciona columnas X/Y manualmente. "
-                "Para usar variables físicas (MBT, tasa normalizada), el CSV debe "
-                "incluir `well_id`, `date`, `qo_stb_d`, `pwf_used_psia`."
-            )
-            numeric_columns = list_positive_numeric_columns(history_df)
-
-            if not numeric_columns:
-                st.error("El CSV no tiene columnas numéricas positivas para log-log.")
-                return
-
-            default_x_index = 0
-            default_y_index = 1 if len(numeric_columns) > 1 else 0
-
-            x_column = st.selectbox(
-                "Columna X para puntos RTA",
-                options=numeric_columns,
-                index=default_x_index,
-            )
-            y_column = st.selectbox(
-                "Columna Y para puntos RTA",
-                options=numeric_columns,
-                index=default_y_index,
+            ref_id = st.selectbox(
+                "Curva BDF de referencia (para kh/k)",
+                options=bdf_ids,
+                key=f"ref_curve_{_mval}",
             )
 
-        st.subheader("Matching manual")
+            # 2-column layout: chart (wide) | joystick+results (narrow)
+            _chart_col, _joy_col = st.columns([3, 1.2])
 
-        st.markdown('<div class="arcade-panel">', unsafe_allow_html=True)
-        st.markdown(
-            '<div class="arcade-title">Match Control</div>',
-            unsafe_allow_html=True,
-        )
-        st.markdown(
-            '<div class="arcade-subtitle">'
-            "joystick logarítmico · mueve la nube de puntos sobre la curva tipo"
-            "</div>",
-            unsafe_allow_html=True,
-        )
+            # Current multipliers (read once; updated by callbacks on next rerun)
+            _x_eff = _clamp_multiplier(st.session_state[_xk])
+            _y_eff = _clamp_multiplier(st.session_state[_yk])
 
-        _sens_label = st.radio(
-            "Sensibilidad del joystick",
-            options=list(_SENSITIVITY_LEVELS.keys()),
-            horizontal=True,
-            key="match_sensitivity_label",
-        )
-        # Sync the numeric key used by _current_step_factor()
-        st.session_state["match_sensitivity_decades"] = _SENSITIVITY_LEVELS[_sens_label]
-        _sens_descs = {
-            "Grueso": "×3.2 por click — posicionamiento inicial",
-            "Medio":  "×1.26 por click — ajuste general",
-            "Fino":   "×1.05 por click — refinamiento de precisión",
-        }
-        st.caption(_sens_descs[_sens_label])
-
-        multiplier_col1, multiplier_col2 = st.columns(2)
-
-        with multiplier_col1:
-            st.number_input(
-                "Escala X",
-                min_value=MIN_MULTIPLIER,
-                max_value=MAX_MULTIPLIER,
-                format="%.6g",
-                key="x_multiplier",
-            )
-
-        with multiplier_col2:
-            st.number_input(
-                "Escala Y",
-                min_value=MIN_MULTIPLIER,
-                max_value=MAX_MULTIPLIER,
-                format="%.6g",
-                key="y_multiplier",
-            )
-
-        st.caption(
-            f"Paso actual: ×{_current_step_factor():.6g} por pulsación"
-        )
-
-        up_cols = st.columns([1, 1, 1])
-        with up_cols[1]:
-            st.button("▲", width="stretch", on_click=_move_up)
-
-        mid_cols = st.columns([1, 1, 1])
-        with mid_cols[0]:
-            st.button("◀", width="stretch", on_click=_move_left)
-        with mid_cols[1]:
-            st.button("⟳", width="stretch", on_click=_reset_match)
-        with mid_cols[2]:
-            st.button("▶", width="stretch", on_click=_move_right)
-
-        down_cols = st.columns([1, 1, 1])
-        with down_cols[1]:
-            st.button("▼", width="stretch", on_click=_move_down)
-
-        st.markdown("</div>", unsafe_allow_html=True)
-
-        if show_anchor:
-            st.checkbox("Usar ancla y target", key="use_anchor")
-
-        if st.session_state["use_anchor"]:
-            anchor_col1, anchor_col2 = st.columns(2)
-
-            with anchor_col1:
-                st.number_input(
-                    "anchor_data_x",
-                    min_value=MIN_MULTIPLIER,
-                    max_value=MAX_MULTIPLIER,
-                    format="%.6g",
-                    key="anchor_data_x",
-                )
-                st.number_input(
-                    "anchor_data_y",
-                    min_value=MIN_MULTIPLIER,
-                    max_value=MAX_MULTIPLIER,
-                    format="%.6g",
-                    key="anchor_data_y",
+            # ---- Joystick / results column ----
+            with _joy_col:
+                st.markdown('<div class="arcade-panel">', unsafe_allow_html=True)
+                st.markdown('<div class="arcade-title">Match Control</div>', unsafe_allow_html=True)
+                st.markdown(
+                    '<div class="arcade-subtitle">joystick log · mueve la nube sobre la curva</div>',
+                    unsafe_allow_html=True,
                 )
 
-            with anchor_col2:
-                st.number_input(
-                    "target_curve_x",
-                    min_value=MIN_MULTIPLIER,
-                    max_value=MAX_MULTIPLIER,
-                    format="%.6g",
-                    key="target_curve_x",
+                _sens = st.radio(
+                    "Sensibilidad",
+                    options=list(_SENSITIVITY_LEVELS.keys()),
+                    horizontal=True,
+                    key=_slk,
                 )
-                st.number_input(
-                    "target_curve_y",
-                    min_value=MIN_MULTIPLIER,
-                    max_value=MAX_MULTIPLIER,
-                    format="%.6g",
-                    key="target_curve_y",
-                )
-
-    with right_col:
-        st.subheader("Overlay log-log")
-
-        try:
-            if use_rta_transforms and rta_transform_points:
-                from src.rta_type_curves.models import RTATypeCurveMethod
-                method_map = {m.value: m for m in RTATypeCurveMethod}
-                selected_method_enum = method_map.get(method.value, method)
-                method_points = [
-                    p for p in rta_transform_points
-                    if p.method == selected_method_enum
-                ]
-                if not method_points:
-                    st.warning(f"Sin puntos para el método {method.value}.")
-                    return
-                _qc_transform_points = method_points   # expose to params_col QC section
-                rta_points = _transform_points_to_overlay(method_points)
-                st.caption(
-                    f"Ejes: **{method_points[0].x_label}** (X) · "
-                    f"**{method_points[0].y_label}** (Y) · "
-                    f"{len(method_points)} puntos válidos"
-                )
-            else:
-                rta_points = build_overlay_points_from_dataframe(
-                    dataframe=history_df,
-                    x_column=x_column,
-                    y_column=y_column,
-                    label_column=label_column,
-                    date_column="date",
-                )
-
-            match_config = ManualMatchConfig(
-                x_multiplier=_clamp_multiplier(st.session_state["x_multiplier"]),
-                y_multiplier=_clamp_multiplier(st.session_state["y_multiplier"]),
-                anchor_data_x=(
-                    float(st.session_state["anchor_data_x"])
-                    if st.session_state["use_anchor"] else None
-                ),
-                anchor_data_y=(
-                    float(st.session_state["anchor_data_y"])
-                    if st.session_state["use_anchor"] else None
-                ),
-                target_curve_x=(
-                    float(st.session_state["target_curve_x"])
-                    if st.session_state["use_anchor"] else None
-                ),
-                target_curve_y=(
-                    float(st.session_state["target_curve_y"])
-                    if st.session_state["use_anchor"] else None
-                ),
-            )
-
-            # Build auxiliary Blasingame series (qDdi, qDdid) when available
-            _auxiliary: list[tuple[str, list[RTAOverlayPoint]]] = []
-            if use_rta_transforms and method.value == "palacio_blasingame":
-                _integral_pts = [
-                    RTAOverlayPoint(
-                        x=p.material_balance_time,
-                        y=p.blasingame_integral,
-                        label=p.well_id,
-                        date=p.date,
-                    )
-                    for p in rta_transform_points
-                    if p.method.value == "palacio_blasingame"
-                    and p.blasingame_integral is not None
-                ]
-                _deriv_pts = [
-                    RTAOverlayPoint(
-                        x=p.material_balance_time,
-                        y=p.blasingame_derivative,
-                        label=p.well_id,
-                        date=p.date,
-                    )
-                    for p in rta_transform_points
-                    if p.method.value == "palacio_blasingame"
-                    and p.blasingame_derivative is not None
-                ]
-                if _integral_pts:
-                    _auxiliary.append(("qDdi (integral norm. rate)", _integral_pts))
-                if _deriv_pts:
-                    _auxiliary.append(("qDdid (deriv. integral)", _deriv_pts))
-
-            _latest_png_bytes = _plot_all_curves_streamlit(
-                type_curves=all_method_curves,
-                raw_points=rta_points,
-                x_multiplier=match_config.effective_x_multiplier,
-                y_multiplier=match_config.effective_y_multiplier,
-                method_label=method.value,
-                selected_curve_id=type_curve.curve_id,
-                auxiliary_series=_auxiliary or None,
-            )
-
-            st.subheader("Multiplicadores efectivos")
-
-            match_info: dict[str, object] = {
-                "x_multiplier_input": match_config.x_multiplier,
-                "y_multiplier_input": match_config.y_multiplier,
-                "effective_x_multiplier": match_config.effective_x_multiplier,
-                "effective_y_multiplier": match_config.effective_y_multiplier,
-                "sensitivity_decades": st.session_state["match_sensitivity_decades"],
-                "step_factor": _current_step_factor(),
-                "points_count": len(rta_points),
-                "method": method.value,
-                "curve_id": ref_curve_id,
-                "anchor_enabled": st.session_state["use_anchor"],
-            }
-            if use_rta_transforms:
-                match_info["data_source"] = "rta_transform_service"
-                match_info["pi_psia"] = reservoir_config.pi_psia
-            else:
-                match_info["data_source"] = "manual_column_selection"
-                match_info["x_column"] = x_column
-                match_info["y_column"] = y_column
-            st.json(match_info)
-
-            with st.expander("Vista previa de datos"):
-                st.dataframe(history_df.head(50), width="stretch")
-
-        except Exception as exc:
-            st.error(f"No fue posible construir el overlay: {exc}")
-
-    # --- Parameters panel — always rendered next to the plot ---
-    with params_col:
-        st.subheader("Parámetros")
-        st.caption("DEMO")
-
-        def _fmt(val: float | None, dec: int = 2) -> str:
-            return f"{val:.{dec}f}" if val is not None else "—"
-
-        _mp = None
-        try:
-            _mp = compute_match_params(
-                config=reservoir_config,
-                effective_x_multiplier=_clamp_multiplier(
-                    st.session_state.get("x_multiplier", 1.0)
-                ),
-                effective_y_multiplier=_clamp_multiplier(
-                    st.session_state.get("y_multiplier", 1.0)
-                ),
-                method=method.value,
-            )
-            st.metric("kh (mD·ft)", _fmt(_mp.kh_md_ft, 1))
-            st.metric("k (mD)", _fmt(_mp.k_md, 3))
-            st.metric(
-                "N vol. (MM STB)",
-                f"{_mp.n_vol_stb / 1e6:.3f}" if _mp.n_vol_stb else "—",
-            )
-            st.divider()
-            st.metric("re (ft)", _fmt(_mp.re_ft, 0))
-            st.metric("Área (acres)", _fmt(_mp.area_acres, 1))
-            st.metric("ln(re/rw)−½", _fmt(_mp.ln_re_rw_term, 3))
-            st.divider()
-            st.caption(f"Escala X: {st.session_state.get('x_multiplier', 1.0):.4g}")
-            st.caption(f"Escala Y: {st.session_state.get('y_multiplier', 1.0):.4g}")
-
-            if _mp.warnings:
-                with st.expander("⚠ Advertencias", expanded=False):
-                    for w in _mp.warnings:
-                        st.warning(w, icon="⚠")
-
-            # --- QC técnico M4 ---
-            if _qc_transform_points:
-                _qc_x = _clamp_multiplier(
-                    st.session_state.get("x_multiplier", 1.0)
-                )
-                _qc_y = _clamp_multiplier(
-                    st.session_state.get("y_multiplier", 1.0)
-                )
-                _qc_results = run_rta_qc(
-                    points=_qc_transform_points,
-                    effective_x_multiplier=_qc_x,
-                    effective_y_multiplier=_qc_y,
-                )
-                _qc_level = qc_severity_level(_qc_results)
-                _qc_header = {
-                    "ok": "✅ QC técnico",
-                    "warning": "⚠️ QC técnico",
-                    "error": "🔴 QC técnico",
-                }.get(_qc_level, "QC técnico")
-                with st.expander(_qc_header, expanded=_qc_level != "ok"):
-                    for _r in _qc_results:
-                        if _r.severity == "error":
-                            st.error(f"**{_r.title}**  \n{_r.detail}", icon="🔴")
-                        elif _r.severity == "warning":
-                            st.warning(f"**{_r.title}**  \n{_r.detail}", icon="⚠️")
-                        else:
-                            st.success(f"**{_r.title}**  \n{_r.detail}", icon="✅")
-
-            with st.expander("JSON", expanded=False):
-                st.json(_mp.as_dict())
-
-        except Exception as exc:
-            st.error(str(exc))
-
-        # --- Save match for comparison table ---
-        if _mp is not None:
-            st.divider()
-            if st.button("📌 Guardar match", use_container_width=True,
-                         help="Guarda kh/k/N de este método para la tabla comparativa"):
-                st.session_state[f"_saved_match_{method.value}"] = {
-                    "method": method.value,
-                    "ref_curve_id": ref_curve_id,
-                    "kh_md_ft": _mp.kh_md_ft,
-                    "k_md": _mp.k_md,
-                    "n_vol_stb": _mp.n_vol_stb,
-                    "re_ft": _mp.re_ft,
-                    "area_acres": _mp.area_acres,
-                    "x_mult": st.session_state.get("x_multiplier", 1.0),
-                    "y_mult": st.session_state.get("y_multiplier", 1.0),
-                    "warnings": len(_mp.warnings),
+                st.session_state[_snk] = _SENSITIVITY_LEVELS[_sens]
+                _sens_desc = {
+                    "Grueso": "x3.2/click",
+                    "Medio":  "x1.26/click",
+                    "Fino":   "x1.05/click",
                 }
-                st.success("Match guardado ✓")
+                st.caption(_sens_desc[_sens])
 
-        # --- Export section ---
-        if _mp is not None and _latest_png_bytes is not None:
-            st.divider()
-            with st.expander("Exportar", expanded=False):
-                _summary = build_match_summary(
-                    match_params=_mp,
-                    ref_curve_id=ref_curve_id,
-                    config=reservoir_config,
-                )
-                _summary_bytes = json.dumps(
-                    _summary, indent=2, ensure_ascii=False
-                ).encode("utf-8")
+                _j1, _j2 = st.columns(2)
+                with _j1:
+                    st.number_input(
+                        "X", min_value=MIN_MULTIPLIER, max_value=MAX_MULTIPLIER,
+                        format="%.4g", key=_xk,
+                    )
+                with _j2:
+                    st.number_input(
+                        "Y", min_value=MIN_MULTIPLIER, max_value=MAX_MULTIPLIER,
+                        format="%.4g", key=_yk,
+                    )
 
-                st.download_button(
-                    "⬇ JSON",
-                    data=_summary_bytes,
-                    file_name=f"{reservoir_config.well_id}_rta_match_summary.json",
-                    mime="application/json",
-                    use_container_width=True,
-                )
-                st.download_button(
-                    "⬇ PNG",
-                    data=_latest_png_bytes,
-                    file_name=f"{reservoir_config.well_id}_rta_overlay.png",
-                    mime="image/png",
-                    use_container_width=True,
-                )
-                if st.button("💾 Guardar en output/", use_container_width=True):
-                    try:
-                        saved_json = save_match_summary(_summary, output_dir=OUTPUT_DIR)
-                        saved_png = save_overlay_png(
-                            _latest_png_bytes, reservoir_config.well_id, output_dir=OUTPUT_DIR
+                _uc = st.columns([1, 1, 1])
+                with _uc[1]:
+                    st.button("▲", use_container_width=True, on_click=_cb_up,    key=f"jup_{_mval}")
+                _mc = st.columns([1, 1, 1])
+                with _mc[0]:
+                    st.button("◀", use_container_width=True, on_click=_cb_left,  key=f"jleft_{_mval}")
+                with _mc[1]:
+                    st.button("⟳", use_container_width=True, on_click=_cb_reset, key=f"jreset_{_mval}")
+                with _mc[2]:
+                    st.button("▶", use_container_width=True, on_click=_cb_right, key=f"jright_{_mval}")
+                _dc = st.columns([1, 1, 1])
+                with _dc[1]:
+                    st.button("▼", use_container_width=True, on_click=_cb_down,  key=f"jdown_{_mval}")
+
+                st.markdown("</div>", unsafe_allow_html=True)
+
+                # Match parameters
+                _mp = None
+                def _fmt(v: float | None, d: int = 2) -> str:
+                    return f"{v:.{d}f}" if v is not None else "—"
+
+                try:
+                    _mp = compute_match_params(
+                        config=reservoir_config,
+                        effective_x_multiplier=_x_eff,
+                        effective_y_multiplier=_y_eff,
+                        method=_mval,
+                    )
+                    st.metric("kh (mD·ft)", _fmt(_mp.kh_md_ft, 1))
+                    st.metric("k (mD)",     _fmt(_mp.k_md, 3))
+                    st.metric(
+                        "N (MM STB)",
+                        f"{_mp.n_vol_stb / 1e6:.3f}" if _mp.n_vol_stb else "—",
+                    )
+                    st.divider()
+                    st.metric("re (ft)",      _fmt(_mp.re_ft, 0))
+                    st.metric("Área (acres)", _fmt(_mp.area_acres, 1))
+                    st.caption(f"X: {_x_eff:.4g}  |  Y: {_y_eff:.4g}")
+                    if _mp.warnings:
+                        for _w in _mp.warnings:
+                            st.warning(_w, icon="⚠")
+                except Exception as exc:
+                    st.error(str(exc))
+
+                # Save match
+                if _mp is not None:
+                    st.divider()
+                    if st.button(
+                        "📌 Guardar match",
+                        use_container_width=True,
+                        key=f"save_match_{_mval}",
+                        help="Guarda kh/k/N de este método para la tabla comparativa",
+                    ):
+                        st.session_state[f"_saved_match_{_mval}"] = {
+                            "method": _mval,
+                            "ref_curve_id": ref_id,
+                            "kh_md_ft": _mp.kh_md_ft,
+                            "k_md": _mp.k_md,
+                            "n_vol_stb": _mp.n_vol_stb,
+                            "re_ft": _mp.re_ft,
+                            "area_acres": _mp.area_acres,
+                            "x_mult": _x_eff,
+                            "y_mult": _y_eff,
+                            "warnings": len(_mp.warnings),
+                        }
+                        st.success("Match guardado")
+
+            # ---- Chart column ----
+            with _chart_col:
+                # QC warnings — visible (no expander)
+                _method_pts = [p for p in rta_transform_points if p.method == method]
+                if _method_pts:
+                    _qc_results = run_rta_qc(
+                        points=_method_pts,
+                        effective_x_multiplier=_x_eff,
+                        effective_y_multiplier=_y_eff,
+                    )
+                    _qc_level = qc_severity_level(_qc_results)
+                    if _qc_level == "error":
+                        for _r in _qc_results:
+                            if _r.severity == "error":
+                                st.error(f"**{_r.title}**  \n{_r.detail}", icon="🔴")
+                    elif _qc_level == "warning":
+                        for _r in _qc_results:
+                            if _r.severity == "warning":
+                                st.warning(f"**{_r.title}**  \n{_r.detail}", icon="⚠️")
+
+                st.subheader("Overlay log-log")
+
+                try:
+                    _method_pts_chart = [p for p in rta_transform_points if p.method == method]
+                    if not _method_pts_chart:
+                        st.warning(f"Sin puntos RTA para {_mval}.")
+                    else:
+                        _rta_pts = _transform_points_to_overlay(_method_pts_chart)
+
+                        # Blasingame auxiliary series (qDdi, qDdid)
+                        _auxiliary: list[tuple[str, list[RTAOverlayPoint]]] = []
+                        if _mval == "palacio_blasingame":
+                            _pb_pts = [
+                                p for p in rta_transform_points
+                                if p.method.value == "palacio_blasingame"
+                            ]
+                            _int_pts = [
+                                RTAOverlayPoint(
+                                    x=p.material_balance_time,
+                                    y=p.blasingame_integral,
+                                    label=p.well_id,
+                                    date=p.date,
+                                )
+                                for p in _pb_pts if p.blasingame_integral is not None
+                            ]
+                            _drv_pts = [
+                                RTAOverlayPoint(
+                                    x=p.material_balance_time,
+                                    y=p.blasingame_derivative,
+                                    label=p.well_id,
+                                    date=p.date,
+                                )
+                                for p in _pb_pts if p.blasingame_derivative is not None
+                            ]
+                            if _int_pts:
+                                _auxiliary.append(("qDdi (integral norm.)", _int_pts))
+                            if _drv_pts:
+                                _auxiliary.append(("qDdid (deriv. integral)", _drv_pts))
+
+                        _match_cfg = ManualMatchConfig(
+                            x_multiplier=_x_eff,
+                            y_multiplier=_y_eff,
                         )
-                        st.success(
-                            f"`{saved_json.name}`  \n`{saved_png.name}`"
+                        _png = _plot_all_curves_streamlit(
+                            type_curves=all_curves,
+                            raw_points=_rta_pts,
+                            x_multiplier=_match_cfg.effective_x_multiplier,
+                            y_multiplier=_match_cfg.effective_y_multiplier,
+                            method_label=_mval,
+                            selected_curve_id=ref_id,
+                            auxiliary_series=_auxiliary or None,
                         )
-                    except Exception as exc:
-                        st.error(f"Error al exportar: {exc}")
+                        st.image(_png, use_container_width=True)
+                        st.caption(
+                            f"{len(_method_pts_chart)} puntos  |  "
+                            f"X: {_x_eff:.4g}  |  Y: {_y_eff:.4g}  |  "
+                            f"Curva: {ref_id}"
+                        )
 
+                        # Export row (under chart)
+                        if _mp is not None:
+                            _e1, _e2, _e3 = st.columns(3)
+                            _summary = build_match_summary(
+                                match_params=_mp,
+                                ref_curve_id=ref_id,
+                                config=reservoir_config,
+                            )
+                            _summary_bytes = json.dumps(
+                                _summary, indent=2, ensure_ascii=False
+                            ).encode("utf-8")
+                            with _e1:
+                                st.download_button(
+                                    "⬇ JSON",
+                                    data=_summary_bytes,
+                                    file_name=f"{reservoir_config.well_id}_rta_{_mval}.json",
+                                    mime="application/json",
+                                    use_container_width=True,
+                                    key=f"dl_json_{_mval}",
+                                )
+                            with _e2:
+                                st.download_button(
+                                    "⬇ PNG",
+                                    data=_png,
+                                    file_name=f"{reservoir_config.well_id}_rta_{_mval}.png",
+                                    mime="image/png",
+                                    use_container_width=True,
+                                    key=f"dl_png_{_mval}",
+                                )
+                            with _e3:
+                                if st.button(
+                                    "💾 Guardar",
+                                    use_container_width=True,
+                                    key=f"save_disk_{_mval}",
+                                ):
+                                    try:
+                                        save_match_summary(_summary, output_dir=output_dir)
+                                        save_overlay_png(
+                                            _png, reservoir_config.well_id,
+                                            output_dir=output_dir,
+                                        )
+                                        st.success("Guardado en output/")
+                                    except Exception as exc:
+                                        st.error(str(exc))
 
-    # --- Comparison table (full-width, visible when ≥1 match saved) ---
+                except Exception as exc:
+                    st.error(f"Error construyendo overlay: {exc}")
+
+    # ---- Comparison table (full-width, below tabs) ----
     _METHOD_LABELS = {
         "fetkovich": "Fetkovich (SPE-4629)",
         "palacio_blasingame": "Palacio-Blasingame (SPE-25909)",
@@ -1201,38 +1026,36 @@ def _run_m4_overlay(
         st.divider()
         st.subheader("Comparación de métodos")
         st.caption(
-            "Cada fila corresponde al match guardado con 📌 para ese método. "
-            "Los tres métodos comparten la misma ecuación de kh — la convergencia "
-            "de resultados indica consistencia del match visual."
+            "Cada fila corresponde al match guardado con 📌. "
+            "Convergencia de kh entre métodos indica consistencia del match visual."
         )
 
         def _fmtc(val: float | None, dec: int = 2) -> str:
             return f"{val:.{dec}f}" if val is not None else "—"
 
-        rows = []
-        for m_val, data in _saved.items():
-            kh = data.get("kh_md_ft")
-            k = data.get("k_md")
-            n = data.get("n_vol_stb")
-            rows.append({
-                "Método": _METHOD_LABELS.get(m_val, m_val),
-                "kh (mD·ft)": _fmtc(kh, 1),
-                "k (mD)": _fmtc(k, 3),
-                "N vol. (MM STB)": f"{n / 1e6:.3f}" if n else "—",
-                "re (ft)": _fmtc(data.get("re_ft"), 0),
-                "Área (acres)": _fmtc(data.get("area_acres"), 1),
-                "Escala Y": f"{data['y_mult']:.4g}",
-                "Escala X": f"{data['x_mult']:.4g}",
-                "Curva ref.": data.get("ref_curve_id", "—"),
-                "⚠": str(data.get("warnings", 0)) if data.get("warnings") else "",
+        _cmp_rows = []
+        for _m_val, _data in _saved.items():
+            _kh = _data.get("kh_md_ft")
+            _k  = _data.get("k_md")
+            _n  = _data.get("n_vol_stb")
+            _cmp_rows.append({
+                "Método": _METHOD_LABELS.get(_m_val, _m_val),
+                "kh (mD·ft)": _fmtc(_kh, 1),
+                "k (mD)": _fmtc(_k, 3),
+                "N vol. (MM STB)": f"{_n / 1e6:.3f}" if _n else "—",
+                "re (ft)": _fmtc(_data.get("re_ft"), 0),
+                "Área (acres)": _fmtc(_data.get("area_acres"), 1),
+                "X": f"{_data['x_mult']:.4g}",
+                "Y": f"{_data['y_mult']:.4g}",
+                "Curva ref.": _data.get("ref_curve_id", "—"),
+                "⚠": str(_data.get("warnings", 0)) if _data.get("warnings") else "",
             })
 
-        comp_df = pd.DataFrame(rows)
-        st.dataframe(comp_df, use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(_cmp_rows), use_container_width=True, hide_index=True)
 
         if st.button("🗑 Limpiar comparación"):
-            for m_val in ("fetkovich", "palacio_blasingame", "agarwal_gardner"):
-                st.session_state.pop(f"_saved_match_{m_val}", None)
+            for _m_val in ("fetkovich", "palacio_blasingame", "agarwal_gardner"):
+                st.session_state.pop(f"_saved_match_{_m_val}", None)
             st.rerun()
 
 

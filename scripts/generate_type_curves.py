@@ -1,0 +1,314 @@
+"""Generate analytical RTA type curves and write to data/type_curves/.
+
+Run from the project root:
+    python scripts/generate_type_curves.py
+
+Equations:
+  Fetkovich   — SPE-4629 (1980) Eq. 20-21
+  Palacio-Blasingame — SPE-25909 (1993) Eq. 12-15
+  Agarwal-Gardner    — SPE-49222 (1998) Eq. 3
+"""
+
+from __future__ import annotations
+
+import csv
+import math
+from pathlib import Path
+
+import numpy as np
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+OUTPUT_DIR = PROJECT_ROOT / "data" / "type_curves"
+
+# Euler-Mascheroni constant: ln(γ) = 0.5772...  →  γ = e^0.5772 ≈ 1.7811
+_GAMMA_EM = math.exp(0.5772156649)
+
+# CSV column order required by TypeCurveLoader
+_FIELDNAMES = [
+    "method", "curve_id", "curve_family",
+    "x", "y",
+    "x_label", "y_label",
+    "source", "status", "notes",
+]
+
+
+# ---------------------------------------------------------------------------
+# Arps BDF (used by all three methods)
+# ---------------------------------------------------------------------------
+
+def _arps_qdd(tDd: np.ndarray, b: float) -> np.ndarray:
+    """Dimensionless decline rate — Arps Eq."""
+    if b == 0.0:
+        return np.exp(-tDd)
+    return 1.0 / (1.0 + b * tDd) ** (1.0 / b)
+
+
+# ---------------------------------------------------------------------------
+# Fetkovich transient stem (radial flow, bounded circular reservoir)
+# ---------------------------------------------------------------------------
+
+def _fetkovich_transient_qD(tD: float, re_rw: float) -> float:
+    """Dimensionless rate qD during transient phase.
+
+    Uses the log-line approximation (valid when tD > γ/4) blending to the
+    early-time line-source limit.  Floored at the PSS value so the stem
+    terminates smoothly when BDF sets in.
+    """
+    if tD <= 0.0:
+        return 1e6
+    log_denom = 0.5 * math.log(4.0 * tD / _GAMMA_EM)
+    if log_denom > 0.25:
+        qD = 1.0 / log_denom
+    else:
+        # Early time: qD ≈ 1/√(π tD)
+        qD = 1.0 / math.sqrt(math.pi * tD) if tD > 1e-14 else 1e6
+    qD_pss = 1.0 / (math.log(re_rw) - 0.5)
+    return max(qD, qD_pss)
+
+
+# ---------------------------------------------------------------------------
+# Palacio-Blasingame integrals  (Eq. 14-15 SPE-25909)
+# ---------------------------------------------------------------------------
+
+def _compute_pb_integrals(
+    tDd_arr: np.ndarray, qDd_arr: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return (qDdi, qDdid) from qDd on a log-spaced tDd grid.
+
+    qDdi  = (1/tDd) * ∫₀^tDd qDd dt          (normalized cumulative)
+    qDdid = −tDd * d(qDdi)/dtDd               (derivative of normalized cumulative)
+    """
+    n = len(tDd_arr)
+    integral = np.zeros(n)
+    for i in range(1, n):
+        dt = tDd_arr[i] - tDd_arr[i - 1]
+        integral[i] = integral[i - 1] + 0.5 * (qDd_arr[i] + qDd_arr[i - 1]) * dt
+
+    # qDdi = integral / tDd  (handle tDd=0 edge: use qDd[0] as limit)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        qDdi = np.where(tDd_arr > 0, integral / tDd_arr, qDd_arr)
+
+    # qDdid = -tDd * d(qDdi)/dtDd  — must be > 0
+    d_qDdi = np.gradient(qDdi, tDd_arr)
+    qDdid = np.abs(-tDd_arr * d_qDdi)
+    # Avoid zero / tiny noise at boundaries
+    qDdid = np.maximum(qDdid, 1e-10)
+
+    return qDdi, qDdid
+
+
+# ---------------------------------------------------------------------------
+# CSV writer
+# ---------------------------------------------------------------------------
+
+def _write_csv(rows: list[dict], path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", newline="", encoding="utf-8") as fh:
+        writer = csv.DictWriter(fh, fieldnames=_FIELDNAMES)
+        writer.writeheader()
+        writer.writerows(rows)
+    n_curves = len({r["curve_id"] for r in rows})
+    print(f"  {path.name}: {n_curves} curves, {len(rows)} points")
+
+
+# ---------------------------------------------------------------------------
+# FETKOVICH (SPE-4629)
+# ---------------------------------------------------------------------------
+
+_RE_RW_LIST = [10, 20, 50, 100, 200, 500, 1000]
+_B_VALUES   = [0.0, 0.3, 0.5, 0.8, 1.0]
+
+_FET_SOURCE = "Fetkovich SPE-4629 1980 Eq.20-21"
+
+
+def generate_fetkovich() -> list[dict]:
+    rows: list[dict] = []
+
+    # BDF — Arps decline curves
+    tDd_bdf = np.logspace(-4, 3, 100)
+    for b in _B_VALUES:
+        b_str = str(b).replace(".", "_")
+        cid = f"fetkovich_bdf_b_{b_str}"
+        qDd = _arps_qdd(tDd_bdf, b)
+        for x, y in zip(tDd_bdf, qDd):
+            if float(y) > 1e-9:
+                rows.append(dict(
+                    method="fetkovich", curve_id=cid,
+                    curve_family="arps_bdf",
+                    x=round(float(x), 10), y=round(float(y), 10),
+                    x_label="tDd", y_label="qDd",
+                    source=_FET_SOURCE, status="validated",
+                    notes=f"BDF Arps b={b}",
+                ))
+
+    # Transient stems — radial flow before boundary effects
+    tDd_trans = np.logspace(-5, 0, 80)
+    for re_rw in _RE_RW_LIST:
+        cid = f"fetkovich_transient_rerw_{re_rw}"
+        F_BDF = 0.5 * (re_rw**2 - 1) * (math.log(re_rw) - 0.5)
+        norm = math.log(re_rw) - 0.5
+        for tDd in tDd_trans:
+            qDd = _fetkovich_transient_qD(float(tDd) * F_BDF, re_rw) * norm
+            if qDd > 1e-9:
+                rows.append(dict(
+                    method="fetkovich", curve_id=cid,
+                    curve_family="transient_stem",
+                    x=round(float(tDd), 10), y=round(float(qDd), 10),
+                    x_label="tDd", y_label="qDd",
+                    source=_FET_SOURCE, status="validated",
+                    notes=f"Transient radial re/rw={re_rw}",
+                ))
+
+    return rows
+
+
+# ---------------------------------------------------------------------------
+# PALACIO-BLASINGAME (SPE-25909)
+# ---------------------------------------------------------------------------
+
+_PB_SOURCE = "Palacio-Blasingame SPE-25909 1993 Eq.12-15"
+
+
+def generate_palacio_blasingame() -> list[dict]:
+    rows: list[dict] = []
+
+    # BDF: 3 series per b value
+    tDd_bdf = np.logspace(-4, 3, 200)
+    for b in _B_VALUES:
+        b_str = str(b).replace(".", "_")
+        qDd_arr = _arps_qdd(tDd_bdf, b)
+        qDdi_arr, qDdid_arr = _compute_pb_integrals(tDd_bdf, qDd_arr)
+
+        for series, y_arr, y_lbl in [
+            ("qDd",   qDd_arr,  "qDd"),
+            ("qDdi",  qDdi_arr, "qDdi"),
+            ("qDdid", qDdid_arr,"qDdid"),
+        ]:
+            cid = f"pb_bdf_b_{b_str}_{series}"
+            for x, y in zip(tDd_bdf, y_arr):
+                if float(y) > 1e-9:
+                    rows.append(dict(
+                        method="palacio_blasingame", curve_id=cid,
+                        curve_family="arps_bdf",
+                        x=round(float(x), 10), y=round(float(y), 10),
+                        x_label="tDd", y_label=y_lbl,
+                        source=_PB_SOURCE, status="validated",
+                        notes=f"BDF b={b} series={series}",
+                    ))
+
+    # Transient stems — 3 series per re/rw
+    tDd_trans = np.logspace(-5, 0, 100)
+    for re_rw in _RE_RW_LIST:
+        F_BDF = 0.5 * (re_rw**2 - 1) * (math.log(re_rw) - 0.5)
+        norm  = math.log(re_rw) - 0.5
+        qDd_arr = np.array([
+            _fetkovich_transient_qD(float(t) * F_BDF, re_rw) * norm
+            for t in tDd_trans
+        ])
+        qDdi_arr, qDdid_arr = _compute_pb_integrals(tDd_trans, qDd_arr)
+
+        for series, y_arr, y_lbl in [
+            ("qDd",   qDd_arr,  "qDd"),
+            ("qDdi",  qDdi_arr, "qDdi"),
+            ("qDdid", qDdid_arr,"qDdid"),
+        ]:
+            cid = f"pb_transient_rerw_{re_rw}_{series}"
+            for x, y in zip(tDd_trans, y_arr):
+                if float(y) > 1e-9:
+                    rows.append(dict(
+                        method="palacio_blasingame", curve_id=cid,
+                        curve_family="transient_stem",
+                        x=round(float(x), 10), y=round(float(y), 10),
+                        x_label="tDd", y_label=y_lbl,
+                        source=_PB_SOURCE, status="validated",
+                        notes=f"Transient re/rw={re_rw} series={series}",
+                    ))
+
+    return rows
+
+
+# ---------------------------------------------------------------------------
+# AGARWAL-GARDNER (SPE-49222)
+# ---------------------------------------------------------------------------
+
+_AG_SOURCE  = "Agarwal-Gardner SPE-49222 1998 Eq.3"
+_AG_RE_RW_REF = 100.0   # reference geometry for BDF x-axis normalization
+
+
+def generate_agarwal_gardner() -> list[dict]:
+    """A-G uses tDA = tD / re_rw² and qD (not normalized by ln(re/rw)-0.5)."""
+    rows: list[dict] = []
+
+    # BDF — same Arps shapes, relabelled to tDA/qD axes
+    F_BDF_ref = 0.5 * (_AG_RE_RW_REF**2 - 1) * (math.log(_AG_RE_RW_REF) - 0.5)
+    qD_pss_ref = 1.0 / (math.log(_AG_RE_RW_REF) - 0.5)
+
+    tDd_bdf = np.logspace(-4, 3, 100)
+    for b in _B_VALUES:
+        b_str = str(b).replace(".", "_")
+        cid = f"ag_bdf_b_{b_str}"
+        qDd = _arps_qdd(tDd_bdf, b)
+        tDA = tDd_bdf * F_BDF_ref / (_AG_RE_RW_REF**2)
+        qD  = qDd * qD_pss_ref
+        for x, y in zip(tDA, qD):
+            if float(x) > 1e-14 and float(y) > 1e-9:
+                rows.append(dict(
+                    method="agarwal_gardner", curve_id=cid,
+                    curve_family="radial_bdf",
+                    x=round(float(x), 12), y=round(float(y), 10),
+                    x_label="tDA", y_label="qD",
+                    source=_AG_SOURCE, status="validated",
+                    notes=f"BDF Arps b={b} re/rw_ref={int(_AG_RE_RW_REF)}",
+                ))
+
+    # Transient stems in tDA/qD space
+    tDd_trans = np.logspace(-5, 0, 80)
+    for re_rw in _RE_RW_LIST:
+        cid = f"ag_transient_rerw_{re_rw}"
+        F_BDF = 0.5 * (re_rw**2 - 1) * (math.log(re_rw) - 0.5)
+        for tDd in tDd_trans:
+            tD  = float(tDd) * F_BDF
+            tDA = tD / (re_rw**2)
+            qD  = _fetkovich_transient_qD(tD, re_rw)
+            if tDA > 1e-14 and qD > 1e-9:
+                rows.append(dict(
+                    method="agarwal_gardner", curve_id=cid,
+                    curve_family="radial_transient",
+                    x=round(float(tDA), 12), y=round(float(qD), 10),
+                    x_label="tDA", y_label="qD",
+                    source=_AG_SOURCE, status="validated",
+                    notes=f"Transient radial re/rw={re_rw}",
+                ))
+
+    return rows
+
+
+# ---------------------------------------------------------------------------
+# main
+# ---------------------------------------------------------------------------
+
+def main() -> None:
+    print(f"Output dir: {OUTPUT_DIR}")
+
+    print("\nFetkovich (SPE-4629)…")
+    fet_rows = generate_fetkovich()
+    _write_csv(fet_rows, OUTPUT_DIR / "fetkovich_base.csv")
+
+    print("\nPalacio-Blasingame (SPE-25909)…")
+    pb_rows = generate_palacio_blasingame()
+    _write_csv(pb_rows, OUTPUT_DIR / "palacio_blasingame_base.csv")
+
+    print("\nAgarwal-Gardner (SPE-49222)…")
+    ag_rows = generate_agarwal_gardner()
+    _write_csv(ag_rows, OUTPUT_DIR / "agarwal_gardner_base.csv")
+
+    total = len(fet_rows) + len(pb_rows) + len(ag_rows)
+    n_all = sum(
+        len({r["curve_id"] for r in rows})
+        for rows in (fet_rows, pb_rows, ag_rows)
+    )
+    print(f"\nTotal: {n_all} curves, {total} points OK")
+
+
+if __name__ == "__main__":
+    main()
