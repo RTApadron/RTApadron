@@ -38,14 +38,14 @@ producción en los Llanos Orientales."
 
 ---
 
-## Estado de módulos (actualizado 2026-05-22 — post sprint)
+## Estado de módulos (actualizado 2026-05-22 — post sesión 1 bugfix)
 
 | Módulo | Descripción | Estado | Tests |
 |--------|-------------|--------|-------|
 | M1 | Historia + Pwf v2 D-W + esquema mecánico + 9 QC checks + editor embebido en hub | ✅ Funcional | `test_well_mech_qc_service.py` (51) |
 | M2 | PVT: Rs/Bo/μo/ρo — Standing, Vasquez-Beggs, Beggs-Robinson; fix bug gráficas | ✅ Funcional | `test_pvt_correlations.py` (46) |
-| M3 | DCA multi-método Arps; semilog checkbox + best-fit punteado + métricas R²/qi/Di | ✅ Funcional | varios |
-| M4 | RTA curvas tipo analíticas (60 curvas validated); tabs método; layout [3,1.2]; QC visible | ✅ Funcional | varios |
+| M3 | DCA multi-método Arps; semilog + best-fit; semáforo verde funcional; qi=último Qo | ✅ Funcional | varios |
+| M4 | RTA 60 curvas validated; tabs método; chart único por tab; P-B sin saltos; checkbox qDdi | ✅ Funcional | varios |
 | M5 | Resultados integrados, dashboard 7 pestañas, exportación, tabla comparativa | ✅ Funcional + integrado | varios |
 | Inicio | Pantalla bienvenida: well_id, botones acción, tarjetas M1→M5, semáforo, GPL-3 | ✅ Funcional | — |
 
@@ -54,6 +54,21 @@ producción en los Llanos Orientales."
 ---
 
 ## Historial de commits relevantes (más recientes primero)
+
+### Sesión bugfix 2026-05-22 (commit e440def)
+
+**`e440def` — fix(bugs): corrige 7 bugs post-sprint — M3 semáforo, Y-axis, charts M4**
+- **Root cause M3 semáforo siempre rojo:** `run_m3_dca_step` escribía `_dca_fit.csv`
+  pero `compute_module_status` y `WorkflowArtifacts` buscaban `_dca_fit_results.csv`;
+  también `_dca_rate_plot.png` → renombrado a `_dca_rate_fit.png`
+- **M4 charts duplicados:** eliminado `st.pyplot()` dentro de `_plot_all_curves_streamlit`
+  (se renderizaba por `st.pyplot` + `st.image` del caller)
+- **M3 Y-axis 10⁴⁶:** `update_yaxes(type="log", range=[-1, ceil(log10(qmax))+1])`
+- **M3 botón Ejecutar:** cambia a `type="secondary"` + "Re-ejecutar" cuando DCA ya existe
+- **M3 label/qi:** "Escala semilog" (sin emoji largo); qi default = `iloc[-1]` (último Qo)
+- **M4 P-B/A-G saltos:** `qDdid` calculado con `np.gradient` en `log(tDd)` en lugar de
+  lineal — estable en grids log-espaciados. CSVs regenerados (60 curvas, 7111 pts)
+- **M4 checkbox qDdi/qDdid:** off por defecto; opt-in "Mostrar series integrales"
 
 ### Sprint 2026-05-22 (commit 13cb28b)
 
@@ -205,13 +220,13 @@ tests/
 └── ...
 
 scripts/
-└── generate_type_curves.py        — ⏳ PENDIENTE CREAR — genera CSVs analíticos de papers
+└── generate_type_curves.py        — genera CSVs analíticos (Fetkovich/P-B/A-G); re-run tras cambios
 
 data/
-├── type_curves/                   — ⚠️ VACÍO — se pobla con generate_type_curves.py
-│   ├── fetkovich_base.csv         — a generar (status="validated", ~1500 pts)
-│   ├── palacio_blasingame_base.csv — a generar (status="validated", ~5000 pts con 3 series)
-│   └── agarwal_gardner_base.csv   — a generar (status="validated", ~1500 pts)
+├── type_curves/                   — 60 curvas validated; se regeneran con generate_type_curves.py
+│   ├── fetkovich_base.csv         — 12 curvas, ~1036 pts (status=validated)
+│   ├── palacio_blasingame_base.csv — 36 curvas, ~5040 pts (qDd/qDdi/qDdid; status=validated)
+│   └── agarwal_gardner_base.csv   — 12 curvas, ~1035 pts (status=validated)
 └── ui_uploads/                    — archivos guardados por la UI (no commitear)
 ```
 
