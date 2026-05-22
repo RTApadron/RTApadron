@@ -5287,6 +5287,40 @@ def render_artifacts(well_id: str, inputs: dict | None = None) -> None:
                 _b_hip_m3 = 0.8
                 _di_arm_m3 = 40.0
 
+                # ── Best-fit automático (historia en ventana de ajuste) ───
+                _bf_results: dict[str, tuple[float, float, float]] = {}
+                _t_fit_days_arr: Any = None
+                _q_fit_arr: Any = None
+                if _qo_col_m3 and not _hist_fit_m3.empty:
+                    from src.services.dca_service import (
+                        _fit_exponential as _dca_fit_exp,
+                        _fit_hyperbolic_grid as _dca_fit_hip,
+                        _fit_harmonic_grid as _dca_fit_arm,
+                    )
+                    _t_fit_raw = (
+                        _hist_fit_m3["date"] - _hist_fit_m3["date"].min()
+                    ).dt.total_seconds().values / 86400.0
+                    _q_fit_raw = _hist_fit_m3[_qo_col_m3].values.astype(float)
+                    _valid_mask = _q_fit_raw > 0
+                    _t_fit_days_arr = _t_fit_raw[_valid_mask]
+                    _q_fit_arr = _q_fit_raw[_valid_mask]
+                    if len(_t_fit_days_arr) >= 3:
+                        if _use_exp_m3:
+                            try:
+                                _bf_results["exp"] = _dca_fit_exp(_t_fit_days_arr, _q_fit_arr)
+                            except Exception:
+                                pass
+                        if _use_hip_m3:
+                            try:
+                                _bf_results["hip"] = _dca_fit_hip(_t_fit_days_arr, _q_fit_arr)
+                            except Exception:
+                                pass
+                        if _use_arm_m3:
+                            try:
+                                _bf_results["arm"] = _dca_fit_arm(_t_fit_days_arr, _q_fit_arr)
+                            except Exception:
+                                pass
+
                 _col_ctrl_m3, _col_chart_m3 = st.columns([1, 2.5])
 
                 with _col_ctrl_m3:
@@ -5311,6 +5345,16 @@ def render_artifacts(well_id: str, inputs: dict | None = None) -> None:
                             "Di exp (%/año efectivo)", 1.0, 200.0, 30.0, 1.0, key="dca_di_exp_pct",
                             help="Declinación anual efectiva para el modelo exponencial.",
                         )
+                        if "exp" in _bf_results and _t_fit_days_arr is not None:
+                            _qi_bf_e, _di_bf_e, _ = _bf_results["exp"]
+                            _di_bf_e_pct = (1.0 - _np_dca.exp(-_di_bf_e * 365.0)) * 100.0
+                            _q_pred_e = _arps_rate_svc(_t_fit_days_arr, qi=_qi_bf_e, di=_di_bf_e, b=0.0)
+                            _ss_res_e = _np_dca.sum((_q_fit_arr - _q_pred_e) ** 2)
+                            _ss_tot_e = _np_dca.sum((_q_fit_arr - _q_fit_arr.mean()) ** 2)
+                            _r2_e = 1.0 - _ss_res_e / _ss_tot_e if _ss_tot_e > 0 else 0.0
+                            st.caption(
+                                f"Best-fit: qi={_qi_bf_e:.0f} · Di={_di_bf_e_pct:.0f}%/año · R²={_r2_e:.3f}"
+                            )
                         st.markdown("---")
                     if _use_hip_m3:
                         st.markdown("🔵 **Hiperbólico**")
@@ -5321,12 +5365,32 @@ def render_artifacts(well_id: str, inputs: dict | None = None) -> None:
                             "Factor b", 0.05, 2.0, 0.8, 0.05, key="dca_b_hip",
                             help="b=0: exponencial · b=1: armónico · 0<b<1: hiperbólico típico · b>1: pronóstico conservador",
                         )
+                        if "hip" in _bf_results and _t_fit_days_arr is not None:
+                            _qi_bf_h, _di_bf_h, _b_bf_h = _bf_results["hip"]
+                            _di_bf_h_pct = (1.0 - (1.0 + _b_bf_h * _di_bf_h * 365.0) ** (-1.0 / _b_bf_h)) * 100.0 if _b_bf_h > 1e-6 else (1.0 - _np_dca.exp(-_di_bf_h * 365.0)) * 100.0
+                            _q_pred_h = _arps_rate_svc(_t_fit_days_arr, qi=_qi_bf_h, di=_di_bf_h, b=_b_bf_h)
+                            _ss_res_h = _np_dca.sum((_q_fit_arr - _q_pred_h) ** 2)
+                            _ss_tot_h = _np_dca.sum((_q_fit_arr - _q_fit_arr.mean()) ** 2)
+                            _r2_h = 1.0 - _ss_res_h / _ss_tot_h if _ss_tot_h > 0 else 0.0
+                            st.caption(
+                                f"Best-fit: qi={_qi_bf_h:.0f} · Di={_di_bf_h_pct:.0f}%/año · b={_b_bf_h:.2f} · R²={_r2_h:.3f}"
+                            )
                         st.markdown("---")
                     if _use_arm_m3:
                         st.markdown("🟠 **Armónico**")
                         _di_arm_m3 = st.slider(
                             "Di arm (%/año efectivo)", 1.0, 200.0, 40.0, 1.0, key="dca_di_arm_pct",
                         )
+                        if "arm" in _bf_results and _t_fit_days_arr is not None:
+                            _qi_bf_a, _di_bf_a, _ = _bf_results["arm"]
+                            _di_bf_a_pct = _di_bf_a / (1.0 + _di_bf_a * 365.0) * 365.0 * 100.0
+                            _q_pred_a = _arps_rate_svc(_t_fit_days_arr, qi=_qi_bf_a, di=_di_bf_a, b=1.0)
+                            _ss_res_a = _np_dca.sum((_q_fit_arr - _q_pred_a) ** 2)
+                            _ss_tot_a = _np_dca.sum((_q_fit_arr - _q_fit_arr.mean()) ** 2)
+                            _r2_a = 1.0 - _ss_res_a / _ss_tot_a if _ss_tot_a > 0 else 0.0
+                            st.caption(
+                                f"Best-fit: qi={_qi_bf_a:.0f} · Di={_di_bf_a_pct:.0f}%/año · R²={_r2_a:.3f}"
+                            )
                         st.markdown("---")
 
                 # ── Helper functions for DCA math ─────────────────────────
@@ -5393,6 +5457,39 @@ def render_artifacts(well_id: str, inputs: dict | None = None) -> None:
                                 line={"color": "#D97706", "width": 2},
                             ))
 
+                    # ── Best-fit reference traces (punteado, sobre ventana ajuste) ──
+                    if _fig_m3 is not None and _bf_results and _t_fit_days_arr is not None and len(_t_fit_days_arr) >= 2:
+                        _t_bf_span = _np_dca.arange(0.0, float(_t_fit_days_arr[-1]) + 1.0, 1.0)
+                        _bf_origin = _hist_fit_m3["date"].min()
+                        _bf_dates_m3 = [_bf_origin + pd.Timedelta(days=float(_d)) for _d in _t_bf_span]
+                        if "exp" in _bf_results:
+                            _qi_bf_e2, _di_bf_e2, _ = _bf_results["exp"]
+                            _fig_m3.add_trace(go.Scatter(
+                                x=_bf_dates_m3,
+                                y=_arps_rate_svc(_t_bf_span, qi=_qi_bf_e2, di=_di_bf_e2, b=0.0),
+                                mode="lines", name="Best-fit Exp",
+                                line={"color": "#DC2626", "width": 1.5, "dash": "dot"},
+                                opacity=0.6,
+                            ))
+                        if "hip" in _bf_results:
+                            _qi_bf_h2, _di_bf_h2, _b_bf_h2 = _bf_results["hip"]
+                            _fig_m3.add_trace(go.Scatter(
+                                x=_bf_dates_m3,
+                                y=_arps_rate_svc(_t_bf_span, qi=_qi_bf_h2, di=_di_bf_h2, b=_b_bf_h2),
+                                mode="lines", name="Best-fit Hip",
+                                line={"color": "#2563EB", "width": 1.5, "dash": "dot"},
+                                opacity=0.6,
+                            ))
+                        if "arm" in _bf_results:
+                            _qi_bf_a2, _di_bf_a2, _ = _bf_results["arm"]
+                            _fig_m3.add_trace(go.Scatter(
+                                x=_bf_dates_m3,
+                                y=_arps_rate_svc(_t_bf_span, qi=_qi_bf_a2, di=_di_bf_a2, b=1.0),
+                                mode="lines", name="Best-fit Arm",
+                                line={"color": "#D97706", "width": 1.5, "dash": "dot"},
+                                opacity=0.6,
+                            ))
+
                     if _fig_m3 is not None:
                         if float(_q_aband_m3) > 0:
                             _fig_m3.add_hline(
@@ -5409,6 +5506,11 @@ def render_artifacts(well_id: str, inputs: dict | None = None) -> None:
                             margin={"l": 20, "r": 20, "t": 50, "b": 10},
                             legend={"orientation": "h", "y": -0.18},
                         )
+                        _use_log_y = st.checkbox(
+                            "📐 Escala log Y (semilog)", value=True, key="dca_log_scale"
+                        )
+                        if _use_log_y:
+                            _fig_m3.update_yaxes(type="log", title_text="qo [STB/d] (log)")
                         st.plotly_chart(_fig_m3, use_container_width=True, key="dca_interactive_main_chart")
                     else:
                         st.info("Instala `plotly` para ver la gráfica interactiva.")

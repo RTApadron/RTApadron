@@ -38,14 +38,14 @@ producción en los Llanos Orientales."
 
 ---
 
-## Estado de módulos (actualizado 2026-05-21 — sesión tarde)
+## Estado de módulos (actualizado 2026-05-22 — sesión planning)
 
 | Módulo | Descripción | Estado | Tests |
 |--------|-------------|--------|-------|
 | M1 | Historia + Pwf v2 D-W + esquema mecánico + 9 QC checks + editor embebido en hub | ✅ Funcional | `test_well_mech_qc_service.py` (51) |
 | M2 | PVT: Rs/Bo/μo/ρo — Standing, Vasquez-Beggs, Beggs-Robinson; fix bug gráficas | ✅ Funcional | `test_pvt_correlations.py` (46) |
-| M3 | DCA multi-método Arps (exp/hip/arm) con sliders Di/b, EUR, colores, semáforo OK | ✅ Funcional | varios |
-| M4 | RTA curvas tipo, match manual joystick con sensibilidad Grueso/Medio/Fino | ✅ Funcional + integrado | varios |
+| M3 | DCA multi-método Arps; gráfica en escala lineal — **pendiente semilog + best-fit** | ⚠️ UX pendiente | varios |
+| M4 | RTA curvas tipo joystick Grueso/Medio/Fino; **pendiente tabs + layout + curvas reales** | ⚠️ UX pendiente | varios |
 | M5 | Resultados integrados, dashboard 7 pestañas, exportación, tabla comparativa | ✅ Funcional + integrado | varios |
 | Inicio | Pantalla bienvenida: well_id, botones acción, tarjetas M1→M5, semáforo, GPL-3 | ✅ Nuevo 2026-05-21 | — |
 
@@ -191,11 +191,14 @@ tests/
 ├── test_m1_m2_integration.py      — 8 tests integración historia+PVT (no romper)
 └── ...
 
+scripts/
+└── generate_type_curves.py        — ⏳ PENDIENTE CREAR — genera CSVs analíticos de papers
+
 data/
-├── type_curves/
-│   ├── fetkovich_base.csv         — ⚠️ DEMO — no usar para interpretación técnica
-│   ├── palacio_blasingame_base.csv — ⚠️ DEMO
-│   └── agarwal_gardner_base.csv   — ⚠️ DEMO
+├── type_curves/                   — ⚠️ VACÍO — se pobla con generate_type_curves.py
+│   ├── fetkovich_base.csv         — a generar (status="validated", ~1500 pts)
+│   ├── palacio_blasingame_base.csv — a generar (status="validated", ~5000 pts con 3 series)
+│   └── agarwal_gardner_base.csv   — a generar (status="validated", ~1500 pts)
 └── ui_uploads/                    — archivos guardados por la UI (no commitear)
 ```
 
@@ -294,55 +297,110 @@ SESSION_PVT_CONFIG_PATH        = "pvt_config_ui_path"
 
 ---
 
-## Pending work — para mañana (2026-05-22)
+## Pending work — Sprint 2026-05-22 (APROBADO, pendiente de ejecutar)
 
-### 🔴 Prioridad alta
+> Plan completo en `C:\Users\rpadr\.claude\plans\fancy-singing-cerf.md`
+> **Regla de sesión:** NO hacer commits en GitHub hasta que el usuario lo pida explícitamente.
 
-1. **Unificar paneles de geometría en M1** — la pestaña ⚙️ Geometría/Survey tiene dos
-   secciones de guardado: `render_m1_editor_embedded` (casing/tubing visual) y
-   `render_m1_geometry_and_survey_panel` (formulario simple + survey editable). Decidir si:
-   - Opción A: eliminar el formulario simple y dejar solo el editor embebido + survey
-   - Opción B: hacer que el editor embebido actualice automáticamente los campos del formulario
-   - Opción C: separar en sub-pestañas: "Esquema visual" | "Formulario" | "Survey"
+### 🔴 TAREA 1 — Curvas tipo analíticas desde papers (prioridad máxima)
 
-2. **Validar workflow end-to-end con datos reales** — subir `Data W001 18May2026.xlsx`
-   o `history_W001.csv`, configurar geometría, correr M1-M2, correr M3 DCA, revisar
-   semáforos, revisar que M4 auto-carga historia enriquecida.
+**Script nuevo:** `scripts/generate_type_curves.py` — genera CSVs con ecuaciones exactas.
+**Sobrescribir** `data/type_curves/fetkovich_base.csv`, `palacio_blasingame_base.csv`, `agarwal_gardner_base.csv` con `status="validated"`.
 
-3. **Feedback pendiente del usuario** — el usuario mencionó "varios feedback más" al cerrar
-   la sesión. Preguntar al inicio de la próxima sesión qué otros cambios quiere revisar.
+Columnas CSV: `method, curve_id, curve_family, x, y, x_label, y_label, source, status, notes`
 
-### 🟡 Prioridad media
+**Fetkovich (SPE-4629):**
+- BDF (Arps): b ∈ {0, 0.3, 0.5, 0.8, 1.0} — `qDd = exp(-tDd)` (b=0) o `1/(1+b·tDd)^(1/b)` (b>0)
+  - tDd ∈ [1e-4, 1e3], 100 pts log-espaciados; `curve_family = "arps_bdf"`
+- Transient stems: re/rw ∈ {10, 20, 50, 100, 200, 500, 1000}
+  - `F_BDF = 0.5 * (re_rw²-1) * (ln(re_rw)-0.5)`, normalización con `ln(re_rw)-0.5`
+  - tDd ∈ [1e-5, 1.0], 80 pts; `curve_family = "transient_stem"`
 
-4. **M2 — guardar PVT activa el semáforo 🟢** — verificar que después de hacer clic en
-   "Guardar config PVT" en M2 el semáforo cambia a verde en tiempo real (sin refresh manual).
-   Puede requerir `st.rerun()` al guardar.
+**Palacio-Blasingame (SPE-25909):**
+- Mismas familias BDF + transient, con 3 series por curva:
+  - `qDd` (= Fetkovich), `qDdi` (integral numérica), `qDdid` (derivada-integral centrada)
+  - curve_id: `pb_bdf_b_{b}_qDd`, `pb_bdf_b_{b}_qDdi`, `pb_bdf_b_{b}_qDdid`
 
-5. **Pantalla Inicio — well_id prompt** — cuando `well_id` está vacío, la tarjeta verde
-   muestra "(sin definir)". Considerar mostrar un campo de texto prominente directamente
-   en Inicio para que el usuario lo defina ahí (actualmente solo está en el sidebar).
+**Agarwal-Gardner (SPE-49222):**
+- Variables: `tDA = tD / (re/rw)²`, `qD` estándar
+- Familias equivalentes a Fetkovich; `curve_family = "radial_bdf"` / `"radial_transient"`
 
-6. **M3 — ajuste DCA desde pipeline vs interactivo** — el ajuste interactivo (sliders)
-   y el run del pipeline DCA son independientes. Revisar si hay forma de pre-cargar los
-   resultados del pipeline (Di, b, qi óptimos) como valores iniciales de los sliders.
+**Verificación:** `python scripts/generate_type_curves.py` → ≥100 curvas × 3 métodos
 
-7. **Módulo Ayuda** — actualmente solo muestra "próximamente". Podría tener:
-   - Guía rápida de flujo M1→M5
-   - Tabla de unidades
-   - Referencia de correlaciones PVT usadas
-   - Contacto (ya está: robert.padron@ecopetrol.com.co)
+---
+
+### 🔴 TAREA 2 — M4 rediseño UX completo
+
+**Archivo:** `src/ui/m4_type_curve_overlay.py` (`_run_m4_overlay()` línea 638)
+
+**2A — Tabs en lugar de dropdown:**
+```python
+_method_tabs = st.tabs(["🔬 Fetkovich", "📊 Palacio-Blasingame", "📈 Agarwal-Gardner"])
+# Cada tab renderiza overlay con método correspondiente
+```
+
+**2B — Eliminar "Datos del pozo"** (CSV uploader + validación columnas RTA, líneas 738-824).
+Historia RTA = solo `output/{well_id}_history_enriched.csv`. Si no existe → "Ejecuta M1-M2" + return.
+
+**2C — Params siempre visibles (sin expander):** `_render_reservoir_config()` → 2 columnas compactas.
+Pi con warning: `st.warning("⚠️ Pi < Pwf máx — sin curvas tipo visibles")` si `max(pwf) > pi`.
+
+**2D — Nuevo layout: `st.columns([3, 1.2])`** — chart + QC warnings a la izquierda, joystick + resultados + botones a la derecha. Elimina el scroll para usar el joystick.
+
+**2E — Quitar "Multiplicadores efectivos"** (sección `st.subheader`, líneas 1027-1048).
+
+**2F — QC warnings visibles bajo "Overlay log-log"** (sin expander colapsable).
+
+**2G — well_id auto-importado:** verificar que `rta_well_id` viene del hub (ya sembrado en `_init_reservoir_config_state()`).
+
+---
+
+### 🔴 TAREA 3 — M3 semilog + best-fit + histórico
+
+**Archivo:** `src/ui/app.py` — bloque `elif active == "M3":` (~línea 5187)
+
+**3A — Escala Y logarítmica por defecto:**
+```python
+_use_log_y = st.checkbox("📐 Escala log Y (semilog)", value=True, key="dca_log_scale")
+if _use_log_y:
+    _fig_m3.update_yaxes(type="log", title_text="qo [STB/d] (log)")
+```
+
+**3B — Best-fit como referencia fija (línea punteada):**
+- Usar `_fit_exponential()`, `_fit_shape_grid()`, `_build_di_grid()` de `src/services/dca_service.py`
+- Calcular sobre `_hist_fit_m3` (ventana de ajuste fit_from/fit_to)
+- Mostrar como `go.Scatter(..., line={"dash": "dot"})` — independiente de los sliders
+
+**3C — Métricas best-fit bajo sliders:** qi, Di (%/año efectivo), b, R² via `st.caption()`
+
+**3D — Las 3 capas ya existen:** puntos históricos (verdes) + forecast sliders (sólido) + best-fit (punteado).
+
+---
+
+### Orden de ejecución sesión 2026-05-22
+
+1. `scripts/generate_type_curves.py` → validar en M4
+2. M4: tabs + eliminar datos del pozo
+3. M4: layout columns([3, 1.2]) chart+joystick
+4. M4: params visibles + Pi warning + quitar multiplicadores
+5. M3: checkbox log Y (trivial)
+6. M3: best-fit referencia + métricas
+7. `pytest` → sin regresiones
+
+---
+
+### 🟡 Prioridad media (backlog)
+
+- **Unificar paneles geometría M1:** dos paneles de guardado en Geometría/Survey (editor embebido + formulario simple) — ambos escriben `_well_geometry.json`. Decidir: eliminar formulario simple O sub-pestañas "Esquema" | "Formulario" | "Survey".
+- **Validar workflow end-to-end** con datos reales W001.
+- **M2 semáforo post-guardado:** `st.rerun()` al guardar PVT para actualizar semáforo en tiempo real.
+- **Módulo Ayuda:** contenido (guía flujo M1→M5, tabla unidades, referencias correlaciones).
+- **M3 pre-cargar best-fit → sliders:** Di/b/qi del best-fit automático como valores iniciales de los sliders manuales.
 
 ### 🟢 Prioridad baja / futuro
 
-8. **Exportar / Importar análisis** — botón "📥 Importar análisis" en pantalla Inicio
-   está en `disabled=True`. Requiere diseñar formato de exportación (.zip con JSONs
-   + CSVs de output) y servicio de importación.
-
-9. **Curvas tipo** — datos actuales son DEMO. Digitalizar curvas reales de los papers
-   para Fetkovich (SPE-4629), Blasingame (SPE-25909), Agarwal-Gardner (SPE-49222).
-
-10. **Pydantic v1 warning** — `@validator` en `src/well_mod/models.py` → migrar a
-    `@field_validator` de Pydantic v2 (baja urgencia, no rompe nada).
+- **Importar análisis** (botón disabled en Inicio): formato .zip con JSONs + CSVs.
+- **Pydantic v1 warning** en `src/well_mod/models.py` → migrar a `@field_validator`.
 
 ### ✅ Completado sesión 2026-05-21 (mañana + tarde)
 - [x] M4 bridges: auto-carga historia, PVT pre-populate, well_id seeding
