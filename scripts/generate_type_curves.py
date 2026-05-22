@@ -50,19 +50,33 @@ def _arps_qdd(tDd: np.ndarray, b: float) -> np.ndarray:
 def _fetkovich_transient_qD(tD: float, re_rw: float) -> float:
     """Dimensionless rate qD during transient phase.
 
-    Uses the log-line approximation (valid when tD > γ/4) blending to the
-    early-time line-source limit.  Floored at the PSS value so the stem
-    terminates smoothly when BDF sets in.
+    Two complementary approximations:
+      - Log-line:   qD = 1 / [0.5 * ln(4*tD/γ)]   (valid for tD > γ/4 ≈ 0.445)
+      - Early-time: qD = 1 / √(π * tD)             (valid for small tD)
+
+    At the crossover the log-line formula diverges (→∞) while the early-time
+    formula stays finite.  Taking min(qD_log, qD_early) gives a continuously
+    decreasing curve with no spike at the transition.
+    Floored at qD_pss so the stem terminates smoothly at BDF onset.
     """
     if tD <= 0.0:
         return 1e6
-    log_denom = 0.5 * math.log(4.0 * tD / _GAMMA_EM)
-    if log_denom > 0.25:
-        qD = 1.0 / log_denom
-    else:
-        # Early time: qD ≈ 1/√(π tD)
-        qD = 1.0 / math.sqrt(math.pi * tD) if tD > 1e-14 else 1e6
+
     qD_pss = 1.0 / (math.log(re_rw) - 0.5)
+
+    # Early-time line-source approximation (valid for all tD, especially small)
+    qD_early = 1.0 / math.sqrt(math.pi * tD) if tD > 1e-14 else 1e6
+
+    # Log-line approximation (valid for tD > γ/4 ≈ 0.445)
+    arg = 4.0 * tD / _GAMMA_EM
+    if arg > 1.0:
+        log_denom = 0.5 * math.log(arg)
+        qD_log = 1.0 / log_denom
+        # min() prevents the spike: near the boundary log→∞ while early→finite
+        qD = min(qD_log, qD_early)
+    else:
+        qD = qD_early
+
     return max(qD, qD_pss)
 
 

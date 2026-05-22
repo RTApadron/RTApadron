@@ -131,8 +131,16 @@ def _draw_pvt_plots(
 # Core UI (shared between standalone and embedded modes)
 # ---------------------------------------------------------------------------
 
-def _pvt_core_ui() -> None:
-    """PVT UI body — callable from both standalone main() and render_m2_embedded()."""
+def _pvt_core_ui(well_id: str | None = None) -> None:
+    """PVT UI body — callable from both standalone main() and render_m2_embedded().
+
+    Parameters
+    ----------
+    well_id:
+        When provided (hub mode), enables the "Confirmar datos" button that
+        writes ``{well_id}_pvt_config_ui.json`` and advances the M2 semaphore.
+        When None (standalone mode), the confirm button is hidden.
+    """
 
     left_col, right_col = st.columns([0.38, 0.62], gap="large")
 
@@ -449,6 +457,44 @@ def _pvt_core_ui() -> None:
             f"T: **{t_f:.0f} °F**"
         )
 
+        # ── Confirmar datos (hub mode only) ───────────────────────────────
+        if well_id is not None:
+            st.divider()
+            _confirm_path = (
+                PROJECT_ROOT / "data" / "ui_uploads" / f"{well_id}_pvt_config_ui.json"
+            )
+            _already_saved = _confirm_path.exists()
+            _btn_label = "✅ Confirmar datos (actualizar)" if _already_saved else "✅ Confirmar datos"
+            if st.button(
+                _btn_label,
+                type="primary",
+                use_container_width=True,
+                key="m2_confirm_btn",
+                help="Guarda los parámetros PVT actuales y marca M2 como configurado (semáforo → 🟢).",
+            ):
+                try:
+                    import json as _json_m2
+                    _pvt_payload = {
+                        "well_id": well_id,
+                        "api": float(api),
+                        "gamma_g": float(gamma_g),
+                        "temp_f": float(t_f),
+                        "rsb_scf_stb": float(rsb),
+                        "pvt_model_version": "m2-editor-standing",
+                        "oil_corr": "standing",
+                    }
+                    _confirm_path.parent.mkdir(parents=True, exist_ok=True)
+                    _confirm_path.write_text(
+                        _json_m2.dumps(_pvt_payload, indent=2, ensure_ascii=False),
+                        encoding="utf-8",
+                    )
+                    st.success("M2 confirmado — semáforo actualizará a 🟢")
+                    st.rerun()
+                except Exception as _confirm_err:
+                    st.error(f"No se pudo guardar la configuración: {_confirm_err}")
+            if _already_saved:
+                st.caption(f"Guardado: `{_confirm_path.name}`")
+
 
 # ---------------------------------------------------------------------------
 # Embedded entry point (called from app.py hub)
@@ -462,7 +508,7 @@ def render_m2_embedded(well_id: str) -> None:
         "y Beggs-Robinson (1975) para viscosidad. "
         "Temperatura en **°F**, presión en **psia**."
     )
-    _pvt_core_ui()
+    _pvt_core_ui(well_id=well_id)
 
 
 # ---------------------------------------------------------------------------
