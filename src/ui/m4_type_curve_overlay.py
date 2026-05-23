@@ -267,6 +267,8 @@ def _init_reservoir_config_state(
         st.session_state["rta_Bo_rb_stb"] = bo_from_pvt
     if mu_from_pvt is not None:
         st.session_state["rta_mu_o_cp"] = mu_from_pvt
+    # Track the Pi used for this PVT computation so we can detect future changes
+    st.session_state["rta_pvt_last_pi"] = _pi
 
 
 def _current_rta_config() -> RTAConfig:
@@ -322,6 +324,34 @@ def _render_reservoir_config(hub_well_id: str = "") -> RTAConfig:
         st.caption(
             "Bo y μo se pre-cargan desde M2. Pi con advertencia si Pi < Pwf máx."
         )
+
+        # If Pi changed since the last PVT evaluation, recompute Bo/μo at new Pi.
+        _cur_pi = float(st.session_state.get("rta_pi_psia", 0.0))
+        if _cur_pi > 0 and st.session_state.get("rta_pvt_last_pi") != _cur_pi:
+            _wid = hub_well_id or str(st.session_state.get("rta_well_id", ""))
+            _pvt_p = PROJECT_ROOT / "data" / "ui_uploads" / f"{_wid}_pvt_config_ui.json"
+            if _pvt_p.exists():
+                try:
+                    _pvt = json.loads(_pvt_p.read_text(encoding="utf-8"))
+                    _api = _pvt.get("api"); _gg = _pvt.get("gamma_g")
+                    _tf  = _pvt.get("temp_f"); _rsb = _pvt.get("rsb_scf_stb")
+                    if all(v is not None for v in (_api, _gg, _tf, _rsb)):
+                        from src.services.pvt_service import PVTTableInput, compute_pvt_table
+                        _pvt_inp = PVTTableInput(
+                            api=float(_api), gamma_g=float(_gg),
+                            t_f=float(_tf), rsb_scf_stb=float(_rsb),
+                            p_min_psia=14.7, p_max_psia=max(_cur_pi, 5000.0),
+                            n_points=10,
+                            correlation=str(_pvt.get("oil_corr", "standing")),
+                        )
+                        _pb2, _pts2 = compute_pvt_table(_pvt_inp)
+                        if _pts2:
+                            _pt = min(_pts2, key=lambda p: abs(p.p_psia - _cur_pi))
+                            st.session_state["rta_Bo_rb_stb"] = _pt.bo_rb_stb
+                            st.session_state["rta_mu_o_cp"]   = _pt.mu_o_cp
+                            st.session_state["rta_pvt_last_pi"] = _cur_pi
+                except Exception:
+                    pass
 
         col_a, col_b = st.columns(2)
 
