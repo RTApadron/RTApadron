@@ -354,15 +354,16 @@ def generate_blasingame() -> list[dict]:
         ]:
             cid = f"bl_reD_{int(re_d)}_{series}"
             for _, pt in grp.iterrows():
-                x = float(pt["t_c_dd"])
-                y = float(pt[col])
-                if x > eps and y > eps:
+                x = round(float(pt["t_c_dd"]), 10)
+                y = round(float(pt[col]),      10)
+                # Filter AFTER rounding so 0.0 artefacts are excluded
+                if x > 0 and y > 0:
                     rows.append(dict(
                         method="blasingame",
                         curve_id=cid,
                         curve_family="blasingame_composite",
-                        x=round(x, 10),
-                        y=round(y, 10),
+                        x=x,
+                        y=y,
                         x_label="tcDd",
                         y_label=y_lbl,
                         source=_BL_SOURCE,
