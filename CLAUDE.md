@@ -38,7 +38,7 @@ producción en los Llanos Orientales."
 
 ---
 
-## Estado de módulos (actualizado 2026-05-23 — post sesión 6)
+## Estado de módulos (actualizado 2026-05-23 — post sesión 7)
 
 | Módulo | Descripción | Estado | Tests |
 |--------|-------------|--------|-------|
@@ -49,14 +49,39 @@ producción en los Llanos Orientales."
 | M5 | Resultados integrados, dashboard 7 pestañas, exportación; **EUR DCA + badge PRELIMINAR** | ✅ Funcional + integrado | varios |
 | Inicio | Tarjetas M1→M5 con logos PNG 140px; semáforo; botones nav; GPL-3 | ✅ Funcional | — |
 
-**Tests totales: 391 passed, 1 warning (Pydantic v1 @validator en `src/well_mod/models.py`)**
+**Tests totales: 405 passed, 1 warning (Pydantic v1 @validator en `src/well_mod/models.py`)**
 
-> Sesión 6 añadió BLASINGAME al enum — test `test_log_derivative_present_for_all_methods`
+> Sesión 7 añadió 14 tests en `test_m5_comparison_service.py` (score global, PVT trazabilidad,
+> RTA trazabilidad). Sesión 6 añadió BLASINGAME al enum — test `test_log_derivative_present_for_all_methods`
 > excluye explícitamente BLASINGAME (sin dispatch, reutiliza PB en M4).
 
 ---
 
 ## Historial de commits relevantes (más recientes primero)
+
+### Sesión 7 — 2026-05-23 (P1 Validación + P2 Trazabilidad + P5 Semáforo)
+
+**`fbf4124` — feat(P5): semáforo hover info — tooltips contextuales en sidebar nav**
+- `src/ui/app.py`: tooltips `help=` en cada botón del sidebar:
+  - 🟢 ok → confirma archivo disponible
+  - 🟡 warning → explica advertencia y cómo resolver
+  - 🔴 missing → indica qué acción exacta activa el módulo (ej. "💾 SAVE en M4")
+
+**`5252dc3` — feat(M5 P1+P2): validación badge+Excel+PDF, trazabilidad PVT/DCA/RTA**
+- `src/domain/m5_models.py`: `PVTSource` literal; `PVTSummary.pvt_source`; `RTASummary.kh_status`, `n_vol_status`
+- `src/services/m5_aggregator_service.py`: `_build_pvt_summary()` → `pvt_source="lab"` + `status="measured"` cuando calibrated=True
+- `src/services/m5_export_service.py`:
+  - `export_excel_bytes(summary, external, comparison_rows)`: hoja "Validacion" con tabla + score summary
+  - `export_pdf_bytes(summary, external, comparison_rows)`: página adicional matplotlib table + badge
+  - `save_all_exports()`: carga automática de external_reference.json para incluir validación
+- `src/ui/m5_results_dashboard.py`:
+  - `_tab_validacion`: badge "✅ VALIDADO" / "⚠️ VALIDACIÓN PARCIAL" / "🔴 DIVERGENCIA ALTA"
+  - `_tab_pvt`: badge pvt_source ("medido (laboratorio)" / "estimado (correlación)")
+  - `_tab_dca`: badge "calculado (ajuste Arps)"
+  - `_tab_rta`: badges kh y OOIP con sus status
+  - `_tab_exportar`: carga external y comparison_rows → pasa a export functions
+- `tests/test_m5_comparison_service.py`: 14 tests nuevos (P1 score, P2 PVT/RTA trazabilidad)
+- **405 tests passed** (era 391)
 
 ### Sesión 6 — 2026-05-23 (Blasingame M4 + unificación P-B + SNES fixes)
 
@@ -498,24 +523,45 @@ Commits: `cf1f89c`, `937240b`, `daf28a3`, `13b831d`, `b5e560e`, `65fccef`, `fc56
 - [ ] P2: badges per-parámetro trazabilidad M5
 - [ ] P5: semáforo hover info
 
-### 🟡 Próximo sprint — sesión 7 (prioridades)
+### ✅ Sprint sesión 7 — COMPLETADO (2026-05-23)
 
-**P1 — Validación cuantitativa vs Software Comercial** (clave para tesis):
-- Score global en `_tab_validacion`: N concordantes, N divergentes, % match+close → `st.metric()`
-- Export hoja "Validacion vs SW Comercial" en Excel existente (`m5_export_service.py`)
-- Badge "✅ VALIDADO" / "⚠️ VALIDACIÓN PARCIAL" en header del tab (condicionado a % concordancia)
-- Sección PDF "Validación vs Software Comercial" con tabla de comparación
+Commits: `5252dc3` (P1+P2), `fbf4124` (P5)
 
-**P2 — M5 trazabilidad badges per-parámetro:**
-- Badges medido/estimado/calculado en tabs PVT/DCA/RTA de M5
-- `PVTSummary` campos: `pvt_source`, `kh_status`, `n_vol_status`
-- `_build_pvt_summary()`: calibrated_flag → status "measured" vs "estimated"
+**P1 — Validación cuantitativa vs Software Comercial — COMPLETADO:**
+- [x] Badge "✅ VALIDADO" / "⚠️ VALIDACIÓN PARCIAL" / "🔴 DIVERGENCIA ALTA" en header del tab
+      (condicionado a pct_ok: ≥80% / 50-80% / <50%)
+- [x] Hoja "Validacion" en Excel: tabla comparativa completa + score summary por colores
+- [x] Página PDF adicional: matplotlib table + badge + score al pie
+- [x] `_tab_exportar`: carga automática de external_reference.json → incluye validación en Excel/PDF
+- [x] `save_all_exports`: idem para exportación programática
 
-**P4b — SNES hotspots ajuste fino:**
-- Ajustar coordenadas CSS de los 9 botones hasta coincidir al 100% con el PNG nuevo
+**P2 — M5 trazabilidad badges per-parámetro — COMPLETADO:**
+- [x] `PVTSummary.pvt_source: PVTSource = "correlation"` (nuevo campo)
+- [x] `RTASummary.kh_status: DataStatus = "estimated"` (nuevo campo)
+- [x] `RTASummary.n_vol_status: DataStatus = "estimated"` (nuevo campo)
+- [x] `_build_pvt_summary()`: calibrated_flag=True → pvt_source="lab", status="measured"
+- [x] `_tab_pvt`: badge "medido (laboratorio)" / "estimado (correlación)" / "valores por defecto"
+- [x] `_tab_dca`: badge "calculado (ajuste Arps)"
+- [x] `_tab_rta`: badges "kh · k — estimado (match)" + "OOIP — estimado (volumétrico)"
+- [x] 14 tests nuevos en `test_m5_comparison_service.py` → 405 passed
 
-**P5 — Semáforo hover info:**
-- Tooltip `help="..."` en indicadores semáforo sidebar con detalle de qué archivo activa cada módulo
+**P5 — Semáforo hover info — COMPLETADO:**
+- [x] `app.py` sidebar: tooltips contextuales en cada botón de módulo
+  - 🟢 ok → confirma qué archivo está disponible
+  - 🟡 warning → explica qué advertencia y cómo resolver
+  - 🔴 missing → indica exactamente qué acción activa el módulo
+
+### 🟡 Próximo sprint — sesión 8 (backlog residual)
+
+**P4b — SNES hotspots ajuste fino (baja urgencia):**
+- Los botones mejoraron en sesión 6 pero no están al 100%
+- Requiere screenshots precisos del PNG para calibrar coordenadas CSS
+
+**Pendientes adicionales:**
+- Validación cuantitativa con datos W001 vs Software Comercial (ingreso manual en M5 tab Validación)
+- Merge feature/m4-type-curve-overlay → main cuando tesis esté lista
+- Importar análisis (botón disabled en Inicio): formato .zip con JSONs + CSVs
+- Pydantic v1 warning en `src/well_mod/models.py` → migrar a `@field_validator`
 
 ### 🟢 Prioridad baja / futuro
 
