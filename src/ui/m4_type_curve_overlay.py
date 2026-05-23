@@ -494,10 +494,10 @@ def _generate_overlay_png(
             markersize=4, label="Datos ajustados", zorder=6, alpha=0.85,
         )
 
-    # --- Auxiliary Blasingame series (qDdi, qDdid) ---
+    # --- Auxiliary series (qDdi, qDdid, log-log derivative) ---
     if auxiliary_series:
-        _aux_colors = ["#4ade80", "#f472b6"]   # green=integral, pink=derivative
-        _aux_markers = ["s", "^"]
+        _aux_colors = ["#4ade80", "#f472b6", "#facc15"]   # green, pink, yellow
+        _aux_markers = ["s", "^", "D"]
         for idx, (series_label, series_pts) in enumerate(auxiliary_series):
             if not series_pts:
                 continue
@@ -505,8 +505,8 @@ def _generate_overlay_png(
             ax_y = [p.y * y_multiplier for p in series_pts]
             ax.loglog(
                 ax_x, ax_y,
-                linestyle="", marker=_aux_markers[idx % 2],
-                color=_aux_colors[idx % 2],
+                linestyle="", marker=_aux_markers[idx % len(_aux_markers)],
+                color=_aux_colors[idx % len(_aux_colors)],
                 markersize=4, label=series_label, zorder=6, alpha=0.75,
             )
 
@@ -620,10 +620,10 @@ def _plot_all_curves_plotly(
             marker=dict(color="#22d3ee", size=5, opacity=0.85),
         ))
 
-    # --- Auxiliary Blasingame series (qDdi, qDdid) ---
+    # --- Auxiliary series (Blasingame qDdi/qDdid + log-log diagnostic) ---
     if auxiliary_series:
-        _aux_colors  = ["#4ade80", "#f472b6"]
-        _aux_symbols = ["square", "triangle-up"]
+        _aux_colors  = ["#4ade80", "#f472b6", "#facc15"]   # green, pink, yellow
+        _aux_symbols = ["square", "triangle-up", "diamond"]
         for idx, (series_label, series_pts) in enumerate(auxiliary_series):
             if not series_pts:
                 continue
@@ -634,9 +634,9 @@ def _plot_all_curves_plotly(
                 mode="markers",
                 name=series_label,
                 marker=dict(
-                    color=_aux_colors[idx % 2],
+                    color=_aux_colors[idx % len(_aux_colors)],
                     size=5,
-                    symbol=_aux_symbols[idx % 2],
+                    symbol=_aux_symbols[idx % len(_aux_symbols)],
                     opacity=0.75,
                 ),
             ))
@@ -1200,8 +1200,9 @@ def _run_m4_overlay(
                     else:
                         _rta_pts = _transform_points_to_overlay(_method_pts_chart)
 
-                        # Blasingame auxiliary series (qDdi, qDdid) — opt-in checkbox
                         _auxiliary: list[tuple[str, list[RTAOverlayPoint]]] = []
+
+                        # Blasingame auxiliary series (qDdi, qDdid) — opt-in checkbox
                         if _mval == "palacio_blasingame":
                             _show_pb_integrals = st.checkbox(
                                 "Mostrar series integrales (qDdi, qDdid)",
@@ -1236,6 +1237,31 @@ def _run_m4_overlay(
                                     _auxiliary.append(("qDdi (integral norm.)", _int_pts))
                                 if _drv_pts:
                                     _auxiliary.append(("qDdid (deriv. integral)", _drv_pts))
+
+                        # Log-log diagnostic derivative — opt-in, all three methods
+                        _show_log_deriv = st.checkbox(
+                            "Derivada log-log (diagnóstico de flujo)",
+                            value=False,
+                            key=f"show_log_deriv_{_mval}",
+                            help=(
+                                "Muestra -d(ln(q/Δp))/d(ln(MBT)) × (q/Δp) en las mismas unidades.\n"
+                                "Pendiente ≈ -1 → BDF · -0.5 → flujo lineal · -0.25 → biflujo"
+                            ),
+                        )
+                        if _show_log_deriv:
+                            _ld_pts = [
+                                RTAOverlayPoint(
+                                    x=p.material_balance_time,
+                                    y=p.normalized_rate * p.log_derivative,
+                                    label=p.well_id,
+                                    date=p.date,
+                                )
+                                for p in _method_pts_chart
+                                if p.log_derivative is not None
+                                and p.normalized_rate * p.log_derivative > 0
+                            ]
+                            if _ld_pts:
+                                _auxiliary.append(("Deriv. log-log (diag.)", _ld_pts))
 
                         _match_cfg = ManualMatchConfig(
                             x_multiplier=_x_eff,
