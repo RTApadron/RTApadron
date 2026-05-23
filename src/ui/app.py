@@ -5030,7 +5030,7 @@ def render_artifacts(well_id: str, inputs: dict | None = None) -> None:
             with _card_cols[_col_idx]:
                 # Logo at top of card if available
                 if _logo_path.exists():
-                    st.image(str(_logo_path), width=140)
+                    st.image(str(_logo_path), use_container_width=True)
                 st.markdown(
                     f"<div class='eco-card'>"
                     f"<div class='eco-card-title'>{_mtitle}</div>"
@@ -5972,7 +5972,28 @@ Python 3.11 · Pydantic v2 · pandas · matplotlib · Plotly · Streamlit · pyt
                         render_dataframe_from_csv(artifacts.dca_forecast_csv, "forecast")
                         render_json_report(artifacts.dca_qc_report_json, "dca_qc_report")
                     with _m3_out_tabs[2]:
-                        render_dca_graphs_tab(artifacts)
+                        st.subheader("Gráficas PNG del backend")
+                        st.caption(
+                            "PNG generados por el backend para compatibilidad con "
+                            "`plot_dca_rate_fit` y `plot_dca_forecast`."
+                        )
+                        _col_fit_png, _col_fc_png = st.columns(2)
+                        with _col_fit_png:
+                            render_png(artifacts.dca_rate_fit_png, "Ajuste de tasa PNG")
+                            render_download_button(
+                                artifacts.dca_rate_fit_png,
+                                "Descargar ajuste PNG",
+                                "image/png",
+                                key_suffix="m3_tab_rate_fit_png",
+                            )
+                        with _col_fc_png:
+                            render_png(artifacts.dca_forecast_plot_png, "Forecast DCA PNG")
+                            render_download_button(
+                                artifacts.dca_forecast_plot_png,
+                                "Descargar forecast PNG",
+                                "image/png",
+                                key_suffix="m3_tab_forecast_png",
+                            )
 
     # ── M4 — RTA tipo curves overlay ──────────────────────────────────────
     elif active == "M4":

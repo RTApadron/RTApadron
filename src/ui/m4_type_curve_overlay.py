@@ -165,45 +165,115 @@ def _init_reservoir_config_state(
         pvt_json_path: Path to ``{well_id}_pvt_config_ui.json``; when present,
             Bo and μo are read from it to pre-populate the PVT fields.
     """
-    defaults = config or RTAConfig(well_id=well_id or "W-001")
+    _model_defaults = RTAConfig(well_id=well_id or "W-001")
 
-    # Read Bo / μo from M2 PVT JSON when available.
+    # Sanity-filter scenario values: if a saved value equals the widget minimum
+    # (meaning it was saved accidentally at minimum), fall back to model defaults.
+    def _safe(saved: float | None, lo: float, hi: float, default: float) -> float:
+        if saved is None or not (lo < saved <= hi):
+            return default
+        return saved
+
+    # Determine Pi first — needed to evaluate PVT at reservoir pressure.
+    _pi = (
+        _safe(config.pi_psia, 500.0, 20000.0, _model_defaults.pi_psia)
+        if config is not None
+        else _model_defaults.pi_psia
+    )
+
+    # Read Bo/μo from M2 PVT JSON — always takes priority over saved scenario.
     bo_from_pvt: float | None = None
     mu_from_pvt: float | None = None
     if pvt_json_path is not None and pvt_json_path.exists():
         try:
             _pvt = json.loads(pvt_json_path.read_text(encoding="utf-8"))
+            # Direct saved values (present when user saved via M2 panel)
             _bo = _pvt.get("bo_rb_stb")
             _mu = _pvt.get("mu_o_cp")
             if _bo is not None:
                 bo_from_pvt = float(_bo)
             if _mu is not None:
                 mu_from_pvt = float(_mu)
+            # Fall back: compute from correlation at Pi using the M2 correlation inputs
+            if (bo_from_pvt is None or mu_from_pvt is None) and all(
+                _pvt.get(k) for k in ("api", "gamma_g", "temp_f", "rsb_scf_stb")
+            ):
+                from src.services.pvt_service import PVTTableInput, compute_pvt_table
+                _pvt_inp = PVTTableInput(
+                    api=float(_pvt["api"]),
+                    gamma_g=float(_pvt["gamma_g"]),
+                    t_f=float(_pvt["temp_f"]),
+                    rsb_scf_stb=float(_pvt["rsb_scf_stb"]),
+                    p_min_psia=14.7,
+                    p_max_psia=max(float(_pi), 5000.0),
+                    n_points=10,
+                    correlation=str(_pvt.get("oil_corr", "standing")),
+                )
+                _pb, _pts = compute_pvt_table(_pvt_inp)
+                if _pts:
+                    _pt_pi = min(_pts, key=lambda p: abs(p.p_psia - _pi))
+                    if bo_from_pvt is None:
+                        bo_from_pvt = _pt_pi.bo_rb_stb
+                    if mu_from_pvt is None:
+                        mu_from_pvt = _pt_pi.mu_o_cp
         except Exception:
             pass  # If PVT file is unreadable, fall back to scenario / defaults.
 
+    if config is not None:
+        # _pi already computed above
+        _phi   = _safe(config.phi_frac,  0.005,  1.0,     _model_defaults.phi_frac)
+        _h     = _safe(config.h_ft,      0.5,    5000.0,  _model_defaults.h_ft)
+        _ct    = _safe(config.ct_1psi,   1e-7,   1e-2,    _model_defaults.ct_1psi)
+        _rw    = _safe(config.rw_ft,     0.05,   5.0,     _model_defaults.rw_ft)
+        _ca    = _safe(config.CA,        1.0,    200.0,   _model_defaults.CA)
+        _re    = config.re_ft if (config.re_ft and config.re_ft > 1.0) else None
+        _area  = config.area_acres if (config.area_acres and config.area_acres > 0.001) else None
+        _swi   = config.swi_frac if config.swi_frac is not None else 0.0
+        # Bo and μo: M2 PVT takes priority; only fall back to scenario if PVT unavailable
+        _bo    = bo_from_pvt if bo_from_pvt is not None else _safe(config.Bo_rb_stb, 0.7, 5.0, _model_defaults.Bo_rb_stb)
+        _mu    = mu_from_pvt if mu_from_pvt is not None else _safe(config.mu_o_cp,  0.05, 1000.0, _model_defaults.mu_o_cp)
+    else:
+        _phi   = _model_defaults.phi_frac
+        _h     = _model_defaults.h_ft
+        _ct    = _model_defaults.ct_1psi
+        _rw    = _model_defaults.rw_ft
+        _ca    = _model_defaults.CA          # 31.62 circular drainage default
+        _re    = None
+        _area  = None
+        _swi   = 0.0
+        _bo    = bo_from_pvt if bo_from_pvt is not None else _model_defaults.Bo_rb_stb
+        _mu    = mu_from_pvt if mu_from_pvt is not None else _model_defaults.mu_o_cp
+
     _ss_defaults: dict[str, object] = {
-        "rta_well_id": well_id or defaults.well_id,
-        "rta_pi_psia": defaults.pi_psia,
-        "rta_phi_frac": defaults.phi_frac,
-        "rta_h_ft": defaults.h_ft,
-        "rta_ct_1psi": defaults.ct_1psi,
-        "rta_rw_ft": defaults.rw_ft,
-        "rta_re_ft": defaults.re_ft or 0.0,
-        "rta_area_acres": defaults.area_acres or 0.0,
-        "rta_Bo_rb_stb": bo_from_pvt if bo_from_pvt is not None else defaults.Bo_rb_stb,
-        "rta_mu_o_cp": mu_from_pvt if mu_from_pvt is not None else defaults.mu_o_cp,
-        "rta_CA": defaults.CA,
+        "rta_well_id": well_id or (config.well_id if config else "W-001"),
+        "rta_pi_psia": _pi,
+        "rta_phi_frac": _phi,
+        "rta_h_ft": _h,
+        "rta_ct_1psi": _ct,
+        "rta_rw_ft": _rw,
+        "rta_re_ft": _re or 0.0,
+        "rta_area_acres": _area or 0.0,
+        "rta_swi_frac": _swi,
+        "rta_Bo_rb_stb": _bo,
+        "rta_mu_o_cp": _mu,
+        "rta_CA": _ca,
     }
     for key, value in _ss_defaults.items():
         if key not in st.session_state:
             st.session_state[key] = value
+
+    # Always force Bo/μo from M2 PVT (even if session_state already had a value)
+    if bo_from_pvt is not None:
+        st.session_state["rta_Bo_rb_stb"] = bo_from_pvt
+    if mu_from_pvt is not None:
+        st.session_state["rta_mu_o_cp"] = mu_from_pvt
 
 
 def _current_rta_config() -> RTAConfig:
     """Build RTAConfig from current session state values."""
     re_ft_val = float(st.session_state["rta_re_ft"])
     area_val = float(st.session_state["rta_area_acres"])
+    swi_val = float(st.session_state["rta_swi_frac"])
     return RTAConfig(
         well_id=str(st.session_state["rta_well_id"]).strip() or "W-001",
         pi_psia=float(st.session_state["rta_pi_psia"]),
@@ -213,6 +283,7 @@ def _current_rta_config() -> RTAConfig:
         rw_ft=float(st.session_state["rta_rw_ft"]),
         re_ft=re_ft_val if re_ft_val > 0 else None,
         area_acres=area_val if area_val > 0 else None,
+        swi_frac=swi_val if swi_val > 0 else None,
         Bo_rb_stb=float(st.session_state["rta_Bo_rb_stb"]),
         mu_o_cp=float(st.session_state["rta_mu_o_cp"]),
         CA=float(st.session_state["rta_CA"]),
@@ -240,8 +311,13 @@ def _on_area_change() -> None:
         )
 
 
-def _render_reservoir_config() -> RTAConfig:
+def _render_reservoir_config(hub_well_id: str = "") -> RTAConfig:
     """Render the reservoir/fluid configuration panel and return current config."""
+    # Always force rta_well_id to match the hub's well_id so saved files are
+    # consistently named and M5 can find them.
+    if hub_well_id:
+        st.session_state["rta_well_id"] = hub_well_id
+
     with st.expander("Parámetros de yacimiento / fluidos", expanded=True):
         st.caption(
             "Bo y μo se pre-cargan desde M2. Pi con advertencia si Pi < Pwf máx."
@@ -250,7 +326,7 @@ def _render_reservoir_config() -> RTAConfig:
         col_a, col_b = st.columns(2)
 
         with col_a:
-            st.text_input("ID del pozo", key="rta_well_id")
+            st.text_input("ID del pozo", key="rta_well_id", disabled=bool(hub_well_id))
             st.number_input(
                 "pi — Presión inicial (psia)",
                 min_value=100.0,
@@ -338,6 +414,18 @@ def _render_reservoir_config() -> RTAConfig:
                 help="31.62 = drene circular (default). Ver Tabla B-1, Earlougher 1977.",
                 key="rta_CA",
             )
+            st.number_input(
+                "Swi — Saturación de agua irreducible (fracción)",
+                min_value=0.0,
+                max_value=0.999,
+                step=0.01,
+                format="%.4f",
+                help=(
+                    "Corrige el OOIP volumétrico: N = φ·h·A·(1−Swi)/(5.615·Bo). "
+                    "Deja en 0 si no tienes datos (sobreestima OOIP)."
+                ),
+                key="rta_swi_frac",
+            )
 
         try:
             config = _current_rta_config()
@@ -345,7 +433,22 @@ def _render_reservoir_config() -> RTAConfig:
             st.error(f"Configuración inválida: {exc}")
             config = RTAConfig(well_id="W-001")
 
-        save_col, status_col = st.columns([1, 3])
+        # Sanity check — warn when parameters look like widget minimums
+        _phys_warnings = []
+        if config.pi_psia < 500:
+            _phys_warnings.append(f"⚠ Pi = {config.pi_psia:.0f} psia parece muy bajo — ¿está en mínimo del slider?")
+        if config.phi_frac < 0.01:
+            _phys_warnings.append(f"⚠ φ = {config.phi_frac:.4f} parece muy bajo — revisa la porosidad.")
+        if config.h_ft < 1.0:
+            _phys_warnings.append(f"⚠ h = {config.h_ft:.2f} ft parece muy bajo — revisa el espesor neto.")
+        if config.Bo_rb_stb < 0.8:
+            _phys_warnings.append(f"⚠ Bo = {config.Bo_rb_stb:.3f} RB/STB parece muy bajo.")
+        if config.re_ft is None and config.area_acres is None:
+            _phys_warnings.append("⚠ re y área no definidos — N volumétrico no se puede calcular.")
+        if _phys_warnings:
+            st.warning("\n\n".join(_phys_warnings))
+
+        save_col, reset_col, status_col = st.columns([1, 1, 3])
         with save_col:
             if st.button("Guardar escenario", type="primary"):
                 try:
@@ -353,6 +456,18 @@ def _render_reservoir_config() -> RTAConfig:
                     st.session_state["rta_scenario_saved"] = str(saved_path)
                 except Exception as exc:
                     st.error(f"No se pudo guardar: {exc}")
+
+        with reset_col:
+            if st.button("🔄 Reset", help="Recarga el escenario desde disco y resetea los sliders."):
+                # Clear all rta_* widget keys so _init_reservoir_config_state re-seeds them
+                _keys_to_clear = [k for k in st.session_state if k.startswith("rta_")]
+                for _k in _keys_to_clear:
+                    del st.session_state[_k]
+                # Also clear the scenario-loaded guard so init runs again
+                _guard = f"rta_scenario_loaded_{config.well_id}"
+                st.session_state.pop(_guard, None)
+                st.session_state.pop("rta_scenario_saved", None)
+                st.rerun()
 
         with status_col:
             saved = st.session_state.get("rta_scenario_saved")
@@ -905,8 +1020,8 @@ def _run_m4_overlay(
         st.error(f"No fue posible cargar el registro de curvas tipo: {exc}")
         return
 
-    # Reservoir config (expander expandido por defecto)
-    reservoir_config = _render_reservoir_config()
+    # Reservoir config — pass hub well_id so it stays locked to the correct ID
+    reservoir_config = _render_reservoir_config(hub_well_id=well_id)
 
     # Auto-load history ONLY from output/{well_id}_history_enriched.csv
     _auto_history_path = output_dir / f"{well_id}_history_enriched.csv"
@@ -1024,6 +1139,13 @@ def _run_m4_overlay(
             _y_eff = _clamp_multiplier(st.session_state[_yk])
 
             # Selectbox + 🎯 Auto-selección del mejor stem
+            # Apply pending auto-selection BEFORE instantiating the widget
+            _auto_pending_key = f"auto_pending_{_mval}"
+            if _auto_pending_key in st.session_state:
+                _pending_id = st.session_state.pop(_auto_pending_key)
+                if _pending_id and _pending_id in bdf_ids:
+                    st.session_state[f"ref_curve_{_mval}"] = _pending_id
+
             _sel_col, _auto_col = st.columns([3, 1])
             with _sel_col:
                 ref_id = st.selectbox(
@@ -1048,7 +1170,7 @@ def _run_m4_overlay(
                         _bdf_curves, _rta_pts_auto, _x_eff, _y_eff
                     )
                     if _best_id and _best_id in bdf_ids:
-                        st.session_state[f"ref_curve_{_mval}"] = _best_id
+                        st.session_state[_auto_pending_key] = _best_id
                         st.rerun()
 
             # Color legend for BDF stems — shows which color corresponds to each curve
@@ -1069,7 +1191,24 @@ def _run_m4_overlay(
                 _legend_html += "</div>"
                 st.markdown(_legend_html, unsafe_allow_html=True)
 
-            # 2-column layout: chart (wide) | joystick+results (narrow)
+            # Compute match params before columns so both can reference _mp
+            _mp = None
+            _mp_error: str | None = None
+
+            def _fmt(v: float | None, d: int = 2) -> str:
+                return f"{v:.{d}f}" if v is not None else "—"
+
+            try:
+                _mp = compute_match_params(
+                    config=reservoir_config,
+                    effective_x_multiplier=_x_eff,
+                    effective_y_multiplier=_y_eff,
+                    method=_mval,
+                )
+            except Exception as _mp_exc:
+                _mp_error = str(_mp_exc)
+
+            # 2-column layout: chart (wide) | joystick (narrow)
             _chart_col, _joy_col = st.columns([3, 1.2])
 
             # ---- SNES Controller column ----
@@ -1123,34 +1262,6 @@ def _run_m4_overlay(
                     f"X: {_x_eff:.4g} · Y: {_y_eff:.4g} · S{_cur_step_num} "
                     f"({_SENSITIVITY_DESC.get(_cur_lbl, '')})"
                 )
-
-                # ── Match parameters ───────────────────────────────────────
-                _mp = None
-
-                def _fmt(v: float | None, d: int = 2) -> str:
-                    return f"{v:.{d}f}" if v is not None else "—"
-
-                try:
-                    _mp = compute_match_params(
-                        config=reservoir_config,
-                        effective_x_multiplier=_x_eff,
-                        effective_y_multiplier=_y_eff,
-                        method=_mval,
-                    )
-                    st.metric("kh (mD·ft)", _fmt(_mp.kh_md_ft, 1))
-                    st.metric("k (mD)",     _fmt(_mp.k_md, 3))
-                    st.metric(
-                        "N (MM STB)",
-                        f"{_mp.n_vol_stb / 1e6:.3f}" if _mp.n_vol_stb else "—",
-                    )
-                    st.divider()
-                    st.metric("re (ft)",      _fmt(_mp.re_ft, 0))
-                    st.metric("Área (acres)", _fmt(_mp.area_acres, 1))
-                    if _mp.warnings:
-                        for _w in _mp.warnings:
-                            st.warning(_w, icon="⚠")
-                except Exception as exc:
-                    st.error(str(exc))
 
                 # ── Handle SAVE flagged by SNES controller ─────────────────
                 if st.session_state.pop(f"_pending_save_{_mval}", False):
@@ -1249,17 +1360,16 @@ def _run_m4_overlay(
                             ),
                         )
                         if _show_log_deriv:
-                            _ld_pts = [
-                                RTAOverlayPoint(
-                                    x=p.material_balance_time,
-                                    y=p.normalized_rate * p.log_derivative,
-                                    label=p.well_id,
-                                    date=p.date,
-                                )
-                                for p in _method_pts_chart
-                                if p.log_derivative is not None
-                                and p.normalized_rate * p.log_derivative > 0
-                            ]
+                            _ld_pts = []
+                            for p in _method_pts_chart:
+                                _ld = getattr(p, "log_derivative", None)
+                                if _ld is not None and p.normalized_rate * _ld > 0:
+                                    _ld_pts.append(RTAOverlayPoint(
+                                        x=p.material_balance_time,
+                                        y=p.normalized_rate * _ld,
+                                        label=p.well_id,
+                                        date=p.date,
+                                    ))
                             if _ld_pts:
                                 _auxiliary.append(("Deriv. log-log (diag.)", _ld_pts))
 
@@ -1280,6 +1390,8 @@ def _run_m4_overlay(
                             selected_curve_id=ref_id,
                             auxiliary_series=_auxiliary or None,
                         )
+                        # uirevision stable key → Plotly preserves zoom/pan on rerun
+                        _fig.update_layout(uirevision=f"rta_overlay_{_mval}")
                         st.plotly_chart(_fig, use_container_width=True, key=f"plotly_{_mval}")
 
                         # PNG generado sólo para botones de descarga
@@ -1329,22 +1441,57 @@ def _run_m4_overlay(
                                 )
                             with _e3:
                                 if st.button(
-                                    "💾 Guardar",
+                                    "💾 Guardar para M5",
                                     use_container_width=True,
                                     key=f"save_disk_{_mval}",
+                                    help="Guarda el match a disco — requerido para que M5 muestre los resultados RTA.",
                                 ):
                                     try:
-                                        save_match_summary(_summary, output_dir=output_dir)
+                                        _saved = save_match_summary(_summary, output_dir=output_dir)
                                         save_overlay_png(
                                             _png, reservoir_config.well_id,
                                             output_dir=output_dir,
                                         )
-                                        st.success("Guardado en output/")
+                                        # Also persist the config so next session loads correct params
+                                        save_rta_scenario(reservoir_config, output_dir=output_dir)
+                                        st.session_state[f"_m4_saved_to_disk_{_mval}"] = str(_saved.name)
+                                        st.rerun()
                                     except Exception as exc:
                                         st.error(str(exc))
+                                _disk_saved = st.session_state.get(f"_m4_saved_to_disk_{_mval}")
+                                if _disk_saved:
+                                    st.success(f"✅ `{_disk_saved}` listo para M5")
 
                 except Exception as exc:
                     st.error(f"Error construyendo overlay: {exc}")
+
+            # ── Métricas de match — fila horizontal debajo del overlay ──────
+            if _mp_error:
+                st.error(f"Error calculando parámetros: {_mp_error}")
+            elif _mp is not None:
+                _mc1, _mc2, _mc3, _mc4, _mc5 = st.columns(5)
+                _mc1.metric("kh (mD·ft)", _fmt(_mp.kh_md_ft, 1))
+                _mc2.metric("k (mD)", _fmt(_mp.k_md, 3))
+                # N: show STB when value rounds to 0.000 MM STB
+                if _mp.n_vol_stb is not None and _mp.n_vol_stb > 0:
+                    _n_mm = _mp.n_vol_stb / 1e6
+                    _n_str = f"{_n_mm:.3f}" if _n_mm >= 0.0005 else f"~{_mp.n_vol_stb:.0f} STB"
+                else:
+                    _n_str = "—"
+                _mc3.metric(
+                    "N (MM STB)",
+                    _n_str,
+                    help=(
+                        f"φ={reservoir_config.phi_frac:.3f} · h={reservoir_config.h_ft:.1f} ft · "
+                        f"A={_fmt(_mp.area_acres, 1)} acres · Swi={reservoir_config.swi_frac or 0:.2f} · "
+                        f"Bo={reservoir_config.Bo_rb_stb:.3f} RB/STB"
+                    ),
+                )
+                _mc4.metric("re (ft)", _fmt(_mp.re_ft, 0))
+                _mc5.metric("Área (acres)", _fmt(_mp.area_acres, 1))
+                if _mp.warnings:
+                    for _w in _mp.warnings:
+                        st.warning(_w, icon="⚠")
 
     # ---- Comparison table (full-width, below tabs) ----
     _METHOD_LABELS = {

@@ -184,27 +184,42 @@ def _build_rta_summary(match_summary: dict) -> RTASummary | None:
     if not match_summary:
         return None
 
-    params = match_summary.get("match_params", match_summary)
-    qc_raw = match_summary.get("qc_warnings", [])
+    # New format: results nested under "results" key; multipliers under "match" key.
+    # Legacy format: flat dict with "match_params" key. Support both.
+    results = (
+        match_summary.get("results")
+        or match_summary.get("match_params")
+        or match_summary
+    )
+    match_mults = match_summary.get("match", {})
+
+    qc_raw = match_summary.get("warnings", match_summary.get("qc_warnings", []))
     if isinstance(qc_raw, dict):
         qc_warnings = [str(v) for v in qc_raw.values() if v]
     else:
-        qc_warnings = [str(w) for w in qc_raw]
+        qc_warnings = [str(w) for w in qc_raw if w]
 
-    def _f(key: str) -> float | None:
-        v = params.get(key)
+    def _f(key: str, src: dict = results) -> float | None:
+        v = src.get(key)
+        return float(v) if v is not None else None
+
+    def _f_mult(key: str) -> float | None:
+        # New format: match["x_multiplier"]; Legacy: match_params["effective_x_multiplier"]
+        v = match_mults.get(key)
+        if v is None:
+            v = results.get(f"effective_{key}") or results.get(key)
         return float(v) if v is not None else None
 
     return RTASummary(
-        method=params.get("method") or match_summary.get("method"),
+        method=match_summary.get("method"),
         kh_md_ft=_f("kh_md_ft"),
         k_md=_f("k_md"),
         n_vol_stb=_f("n_vol_stb"),
         re_ft=_f("re_ft"),
         area_acres=_f("area_acres"),
-        x_multiplier=_f("effective_x_multiplier"),
-        y_multiplier=_f("effective_y_multiplier"),
-        status="demo",
+        x_multiplier=_f_mult("x_multiplier"),
+        y_multiplier=_f_mult("y_multiplier"),
+        status=match_summary.get("status", "demo"),
         qc_warnings=qc_warnings,
     )
 
