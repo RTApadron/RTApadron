@@ -1103,8 +1103,8 @@ def _run_m4_overlay(
         return
 
     # ---- Method tabs ----
-    _TAB_LABELS  = ["🔬 Fetkovich", "📊 Palacio-Blasingame", "📈 Agarwal-Gardner", "🔵 Blasingame"]
-    _TAB_METHODS = [_RTAMethod.FETKOVICH, _RTAMethod.PALACIO_BLASINGAME, _RTAMethod.AGARWAL_GARDNER, _RTAMethod.BLASINGAME]
+    _TAB_LABELS  = ["🔬 Fetkovich", "📊 Palacio-Blasingame", "📈 Agarwal-Gardner"]
+    _TAB_METHODS = [_RTAMethod.FETKOVICH, _RTAMethod.BLASINGAME, _RTAMethod.AGARWAL_GARDNER]
     _tabs = st.tabs(_TAB_LABELS)
 
     for _tab_idx, _tab in enumerate(_tabs):
@@ -1349,30 +1349,31 @@ def _run_m4_overlay(
 
                 st.subheader("Overlay log-log")
 
-                # ── Blasingame: independent type-curve series checkboxes ──────────
+                # ── Blasingame composite: checkbox unificado (curvas tipo + nube) ──
                 if method == _RTAMethod.BLASINGAME:
-                    _bl_col1, _bl_col2, _bl_col3 = st.columns(3)
-                    with _bl_col1:
-                        _bl_tc_qdd = st.checkbox(
-                            "Curvas qDd", value=True, key=f"bl_tc_qdd_{_mval}",
-                            help="Serie qDd de las curvas tipo Blasingame"
+                    _ck1, _ck2, _ck3 = st.columns(3)
+                    with _ck1:
+                        _show_qdd = st.checkbox(
+                            "qDd", value=True, key=f"bl_qdd_{_mval}",
+                            help="Serie qDd — activa/desactiva curvas tipo y nube de puntos",
                         )
-                    with _bl_col2:
-                        _bl_tc_qddi = st.checkbox(
-                            "Curvas qDdi", value=True, key=f"bl_tc_qddi_{_mval}",
-                            help="Serie qDdi de las curvas tipo Blasingame"
+                    with _ck2:
+                        _show_qddi = st.checkbox(
+                            "qDdi", value=True, key=f"bl_qddi_{_mval}",
+                            help="Serie qDdi — activa/desactiva curvas tipo y nube de puntos",
                         )
-                    with _bl_col3:
-                        _bl_tc_qddid = st.checkbox(
-                            "Curvas qDdid", value=True, key=f"bl_tc_qddid_{_mval}",
-                            help="Serie qDdid de las curvas tipo Blasingame"
+                    with _ck3:
+                        _show_qddid = st.checkbox(
+                            "qDdid", value=True, key=f"bl_qddid_{_mval}",
+                            help="Serie qDdid — activa/desactiva curvas tipo y nube de puntos",
                         )
                     _sel_ylabels: list[str] = []
-                    if _bl_tc_qdd:   _sel_ylabels.append("qDd")
-                    if _bl_tc_qddi:  _sel_ylabels.append("qDdi")
-                    if _bl_tc_qddid: _sel_ylabels.append("qDdid")
+                    if _show_qdd:   _sel_ylabels.append("qDd")
+                    if _show_qddi:  _sel_ylabels.append("qDdi")
+                    if _show_qddid: _sel_ylabels.append("qDdid")
                     display_curves = [c for c in all_curves if c.y_label in _sel_ylabels] or all_curves
                 else:
+                    _show_qdd = _show_qddi = _show_qddid = True
                     display_curves = all_curves
 
                 try:
@@ -1384,38 +1385,13 @@ def _run_m4_overlay(
 
                         _auxiliary: list[tuple[str, list[RTAOverlayPoint]]] = []
 
-                        # Scatter series — 3 independent checkboxes for P-B and Blasingame
-                        if _mval in ("palacio_blasingame", "blasingame"):
-                            _sc_col1, _sc_col2, _sc_col3 = st.columns(3)
-                            with _sc_col1:
-                                _show_sc_qdd = st.checkbox(
-                                    "Nube qDd",
-                                    value=True,
-                                    key=f"sc_qdd_{_mval}",
-                                    help="Tasa normalizada qDd = q/Δp",
-                                )
-                            with _sc_col2:
-                                _show_sc_qddi = st.checkbox(
-                                    "Nube qDdi",
-                                    value=True,
-                                    key=f"sc_qddi_{_mval}",
-                                    help="Integral normalizada de la tasa (qDdi)",
-                                )
-                            with _sc_col3:
-                                _show_sc_qddid = st.checkbox(
-                                    "Nube qDdid",
-                                    value=True,
-                                    key=f"sc_qddid_{_mval}",
-                                    help="Derivada de la integral normalizada (qDdid)",
-                                )
-
-                            # PB source points (Blasingame tab reuses PB transform)
+                        # Blasingame composite scatter — usa checkboxes unificados de arriba
+                        if method == _RTAMethod.BLASINGAME:
                             _pb_src = [
                                 p for p in rta_transform_points
                                 if p.method.value == "palacio_blasingame"
                             ]
-
-                            if _show_sc_qddi:
+                            if _show_qddi:
                                 _int_pts = [
                                     RTAOverlayPoint(
                                         x=p.material_balance_time,
@@ -1427,8 +1403,7 @@ def _run_m4_overlay(
                                 ]
                                 if _int_pts:
                                     _auxiliary.append(("qDdi (integral norm.)", _int_pts))
-
-                            if _show_sc_qddid:
+                            if _show_qddid:
                                 _drv_pts = [
                                     RTAOverlayPoint(
                                         x=p.material_balance_time,
@@ -1440,9 +1415,7 @@ def _run_m4_overlay(
                                 ]
                                 if _drv_pts:
                                     _auxiliary.append(("qDdid (deriv. integral)", _drv_pts))
-
-                            # qDd scatter: hide if unchecked
-                            if not _show_sc_qdd:
+                            if not _show_qdd:
                                 _rta_pts = []
 
                         # Log-log diagnostic derivative — opt-in, all three methods

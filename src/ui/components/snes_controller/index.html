@@ -78,29 +78,29 @@
     <!-- ── D-pad ────────────────────────────────────── -->
     <!-- UP -->
     <div class="hotspot dpad-arm" id="btn-up"
-         style="left:18.5%;top:34%;width:9%;height:13%"
+         style="left:14%;top:22%;width:8%;height:20%"
          title="▲ mover nube arriba (Y ×step)"></div>
     <!-- DOWN -->
     <div class="hotspot dpad-arm" id="btn-down"
-         style="left:18.5%;top:53%;width:9%;height:13%"
+         style="left:14%;top:59%;width:8%;height:20%"
          title="▼ mover nube abajo (Y ÷step)"></div>
     <!-- LEFT -->
     <div class="hotspot dpad-arm" id="btn-left"
-         style="left:7%;top:42%;width:12%;height:12%"
+         style="left:4%;top:41%;width:12%;height:18%"
          title="◀ mover nube izquierda (X ÷step)"></div>
     <!-- RIGHT -->
     <div class="hotspot dpad-arm" id="btn-right"
-         style="left:28%;top:42%;width:12%;height:12%"
+         style="left:22%;top:41%;width:12%;height:18%"
          title="▶ mover nube derecha (X ×step)"></div>
 
     <!-- ── Sensitivity knob ────────────────────────── -->
     <!-- Left half  = decrease step (sens_dec) -->
     <div class="hotspot" id="btn-sens-dec"
-         style="left:37%;top:28%;width:12%;height:38%;border-radius:50% 0 0 50%"
+         style="left:34%;top:17%;width:18%;height:60%;border-radius:50% 0 0 50%"
          title="Sensibilidad -"></div>
     <!-- Right half = increase step (sens_inc) -->
     <div class="hotspot" id="btn-sens-inc"
-         style="left:49%;top:28%;width:12%;height:38%;border-radius:0 50% 50% 0"
+         style="left:52%;top:17%;width:18%;height:60%;border-radius:0 50% 50% 0"
          title="Sensibilidad +"></div>
 
     <!-- Needle (rotates on the knob visual) -->
@@ -116,17 +116,17 @@
 
     <!-- ── RESET (red) ─────────────────────────────── -->
     <div class="hotspot" id="btn-reset"
-         style="left:71%;top:22%;width:14%;height:23%"
+         style="left:77%;top:14%;width:15%;height:22%"
          title="RESET — vuelve X=1, Y=1"></div>
 
     <!-- ── SAVE (green) ───────────────────────────── -->
     <div class="hotspot" id="btn-save"
-         style="left:71%;top:52%;width:14%;height:23%"
+         style="left:77%;top:39%;width:15%;height:22%"
          title="SAVE — guarda el match actual"></div>
 
     <!-- ── AUTO (yellow) ────────────────────────── -->
     <div class="hotspot" id="btn-auto"
-         style="left:71%;top:74%;width:14%;height:23%"
+         style="left:77%;top:63%;width:15%;height:22%"
          title="AUTO — selección automática de curva"></div>
   </div>
 
@@ -218,9 +218,9 @@
       var W    = root.offsetWidth;
       var H    = root.offsetHeight || W;
       var lbl  = document.getElementById("sens-label");
-      lbl.style.left  = (W * 0.37) + "px";
-      lbl.style.width = (W * 0.24) + "px";
-      lbl.style.top   = (H * 0.69) + "px";
+      lbl.style.left  = (W * 0.43) + "px";
+      lbl.style.width = (W * 0.20) + "px";
+      lbl.style.top   = (H * 0.80) + "px";
       lbl.textContent = labels[step - 1] || step;
     }
 
