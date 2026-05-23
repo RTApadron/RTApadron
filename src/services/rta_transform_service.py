@@ -490,7 +490,9 @@ def compute_rta_transforms(
     all_points: list[RTATransformPoint] = []
 
     for method in active_methods:
-        transform_fn = _TRANSFORM_DISPATCH[method]
+        transform_fn = _TRANSFORM_DISPATCH.get(method)
+        if transform_fn is None:
+            continue  # método sin transformación definida (ej. BLASINGAME usa PB en M4)
         method_points = transform_fn(base_df)
         all_points.extend(method_points)
 

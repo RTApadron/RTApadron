@@ -432,12 +432,20 @@ def test_rta_points_to_dataframe_includes_blasingame_columns() -> None:
 # ---------------------------------------------------------------------------
 
 def test_log_derivative_present_for_all_methods() -> None:
-    """log_derivative field is populated for Fetkovich, PB, and AG."""
+    """log_derivative field is populated for Fetkovich, PB, and AG.
+
+    BLASINGAME intentionally has no dispatch entry — it reuses PB points
+    in M4 — so it is excluded from this check.
+    """
     points = compute_rta_transforms(
         dataframe=_DECLINING_HISTORY,
         pi_psia=PI_PSIA,
     )
-    for method in RTATypeCurveMethod:
+    _dispatched_methods = [
+        m for m in RTATypeCurveMethod
+        if m != RTATypeCurveMethod.BLASINGAME
+    ]
+    for method in _dispatched_methods:
         method_pts = [p for p in points if p.method == method]
         # At least one interior point should have a valid log derivative
         with_ld = [p for p in method_pts if p.log_derivative is not None]
