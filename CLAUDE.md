@@ -38,7 +38,7 @@ producción en los Llanos Orientales."
 
 ---
 
-## Estado de módulos (actualizado 2026-05-22 — post sesión 5)
+## Estado de módulos (actualizado 2026-05-23 — post sesión 6)
 
 | Módulo | Descripción | Estado | Tests |
 |--------|-------------|--------|-------|
@@ -51,22 +51,35 @@ producción en los Llanos Orientales."
 
 **Tests totales: 391 passed, 1 warning (Pydantic v1 @validator en `src/well_mod/models.py`)**
 
+> Sesión 6 añadió BLASINGAME al enum — test `test_log_derivative_present_for_all_methods`
+> excluye explícitamente BLASINGAME (sin dispatch, reutiliza PB en M4).
+
 ---
 
 ## Historial de commits relevantes (más recientes primero)
 
-### Sesión 6 — 2026-05-23 (motor Blasingame + documentación QC)
+### Sesión 6 — 2026-05-23 (Blasingame tab M4 + fixes críticos)
 
-**`<próximo>` — feat: motor Blasingame numérico + script QC slides**
-- `src/rta_type_curves/blasingame.py` (NUEVO): solver implícito radial en coordenadas ln(rD);
-  genera qDd/qDdi/qDdid vs tcDd para 8 valores de reD; `BlasingameCurveConfig` dataclass,
-  `BlasingameCurveSet` con método `to_csv()`; pendiente integración en loader/registry y
-  validación cuantitativa vs Software Comercial.
+**`937240b` — feat(M4+M5): Blasingame tab, 3-series checkboxes, SNES AUTO, DataStatus fix**
+- `src/domain/m5_models.py`: añade `"preliminary"` a `DataStatus` literal (corrige crash Pydantic M5)
+- `src/rta_type_curves/models.py`: añade `BLASINGAME = "blasingame"` al enum `RTATypeCurveMethod`
+- `src/services/rta_transform_service.py`: dispatch seguro con `.get()` + `continue` para BLASINGAME
+- `scripts/generate_type_curves.py`: genera `blasingame_base.csv` (24 curvas, 5203 pts, 8 reD × 3 series qDd/qDdi/qDdid)
+- `data/type_curves/blasingame_base.csv` (NUEVO): curvas tipo Blasingame composite, status=demo
+- `src/ui/m4_type_curve_overlay.py`:
+  - Tab "🔵 Blasingame" añadido a `_TAB_LABELS`/`_TAB_METHODS`
+  - Tab Blasingame: reusa puntos PB para scatter (misma física — BLASINGAME no está en dispatch)
+  - 3 checkboxes independientes para curvas tipo Blasingame (qDd/qDdi/qDdid) → `display_curves`
+  - 3 checkboxes independientes para nube de puntos (P-B y Blasingame): Nube qDd / qDdi / qDdid
+  - Acción "auto" del SNES controller dispara `_find_best_bdf_stem` + pending key
+  - Rango aguja SNES: 270° (era 240°), offset -135° (era -120°); labels ["MIN","1","2","3","4","5","MAX"]
+  - Botón AUTO (yellow) integrado en HTML del SNES controller
+- `tests/test_rta_transform_service.py`: excluye BLASINGAME del test de log_derivative
+
+**`cf1f89c` — feat: motor Blasingame numérico + script QC slides** (commit anterior sesión 6)
+- `src/rta_type_curves/blasingame.py` (NUEVO): solver implícito radial en coordenadas ln(rD)
 - `scripts/generate_qc_slides.py` (NUEVO): genera `output/ecoRTA_QC_tecnico_M4.pptx`
-  (12 diapositivas, paleta arcade dark) documentando los 6 checks de `rta_qc_service.py`,
-  arquitectura, casos borde, cobertura de tests y marco teórico de no-unicidad.
-- `HANDOFF_PARA_CLAUDE_CODE.md` (NUEVO): documento de traspaso legacy — reemplazado por
-  CLAUDE.md como fuente de verdad; se mantiene por referencia histórica.
+- `HANDOFF_PARA_CLAUDE_CODE.md` (NUEVO): documento de traspaso legacy
 
 ### Sesión 5 — 2026-05-22 (bugfixes + features con datos reales W001)
 
@@ -437,13 +450,26 @@ SESSION_PVT_CONFIG_PATH        = "pvt_config_ui_path"
 - [x] M5: badge DEMO → PRELIMINAR cuando curvas tienen status=validated
 - [x] Push branch a origin — sincronizado
 
-### 🟡 Próximo sprint — sesión 6 (a planificar en esta sesión)
+### ✅ Sprint sesión 6 — COMPLETADO (2026-05-23)
 
-- Validación cuantitativa vs Software Comercial (flujo pendiente confirmar)
-- M5: QC final y trazabilidad (badges medido/estimado/calculado)
-- Integración `blasingame.py` en loader/registry como cuarto método
-- Semáforo hover info (baja urgencia)
-- M4 SNES hotspots fine-tuning (baja urgencia)
+- [x] BUG CRÍTICO M5: "preliminary" añadido a DataStatus (corrige crash Pydantic)
+- [x] BLASINGAME añadido al enum RTATypeCurveMethod
+- [x] Dispatch seguro en rta_transform_service (.get() + continue)
+- [x] generate_type_curves.py: genera blasingame_base.csv (24 curvas, 5203 pts)
+- [x] M4 tab "🔵 Blasingame" con curvas tipo composite (8 reD × qDd/qDdi/qDdid)
+- [x] 3 checkboxes independientes para curvas tipo Blasingame (display_curves filter)
+- [x] 3 checkboxes independientes para nube de puntos (P-B + Blasingame)
+- [x] SNES AUTO action: dispara _find_best_bdf_stem desde botón físico
+- [x] SNES HTML: rango 270° (era 240°), labels ["MIN","1","2","3","4","5","MAX"]
+- [x] SNES HTML: botón AUTO (yellow) integrado
+- [x] 391 tests passed
+
+### 🟡 Próximo sprint — sesión 7 (backlog P1/P2/P5)
+
+- **P1** Validación cuantitativa vs Software Comercial: score global, export Excel/PDF, badge
+- **P2** M5 trazabilidad: badges per-parámetro (medido/estimado/calculado)
+- **P5** Semáforo hover info: tooltip con detalle en sidebar
+- SNES PNG nuevo (usuario debe guardar imagen del PDF a `assets/snes_controller.png`)
 
 ### 🟢 Prioridad baja / futuro
 
