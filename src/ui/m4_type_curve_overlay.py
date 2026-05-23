@@ -26,6 +26,7 @@ if str(PROJECT_ROOT) not in sys.path:
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
 import pandas as pd
+import plotly.graph_objects as go
 import streamlit as st
 
 from src.rta.models import RTAConfig
@@ -59,6 +60,12 @@ from src.services.rta_transform_service import (
 
 MIN_MULTIPLIER = 1e-12
 MAX_MULTIPLIER = 1e12
+
+# Standard matplotlib tab10 palette (matches _generate_overlay_png color order)
+_TAB10_HEX = [
+    "#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd",
+    "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22", "#17becf",
+]
 
 OUTPUT_DIR = PROJECT_ROOT / "output"
 
@@ -417,7 +424,7 @@ def _plot_overlay_streamlit(overlay_result: Any) -> None:
     plt.close(fig)
 
 
-def _plot_all_curves_streamlit(
+def _generate_overlay_png(
     type_curves: list[Any],
     raw_points: list[RTAOverlayPoint],
     x_multiplier: float,
@@ -426,7 +433,7 @@ def _plot_all_curves_streamlit(
     selected_curve_id: str | None = None,
     auxiliary_series: list[tuple[str, list[RTAOverlayPoint]]] | None = None,
 ) -> bytes:
-    """Plot the full type-curve family + data cloud on one log-log figure."""
+    """Generate PNG bytes of the type-curve overlay (used for download buttons)."""
     from src.rta_type_curves.models import TypeCurve  # local to avoid circular
 
     fig, ax = plt.subplots(figsize=(11, 7))
@@ -540,6 +547,143 @@ def _plot_all_curves_streamlit(
 
     plt.close(fig)
     return png_bytes
+
+
+def _plot_all_curves_plotly(
+    type_curves: list[Any],
+    raw_points: list[RTAOverlayPoint],
+    x_multiplier: float,
+    y_multiplier: float,
+    method_label: str,
+    selected_curve_id: str | None = None,
+    auxiliary_series: list[tuple[str, list[RTAOverlayPoint]]] | None = None,
+) -> go.Figure:
+    """Build an interactive Plotly log-log figure for the overlay (zoom/pan native)."""
+    fig = go.Figure()
+
+    bdf_curves = [c for c in type_curves if c.curve_family != "transient_stem"]
+    transient_curves = [c for c in type_curves if c.curve_family == "transient_stem"]
+
+    # --- BDF stems (solid, tab10 colors) ---
+    for i, curve in enumerate(bdf_curves):
+        xs = [p.x for p in curve.points]
+        ys = [p.y for p in curve.points]
+        is_selected = curve.curve_id == selected_curve_id
+        color = _TAB10_HEX[i % len(_TAB10_HEX)]
+        fig.add_trace(go.Scatter(
+            x=xs, y=ys,
+            mode="lines",
+            name=curve.curve_id,
+            line=dict(color=color, width=2.5 if is_selected else 1.2, dash="solid"),
+            opacity=1.0 if is_selected else 0.75,
+            legendgroup="bdf",
+        ))
+
+    # --- Transient stems (dashed, autumn palette) ---
+    n_trans = len(transient_curves)
+    for i, curve in enumerate(transient_curves):
+        xs = [p.x for p in curve.points]
+        ys = [p.y for p in curve.points]
+        frac = 0.15 + 0.7 * (i / max(n_trans - 1, 1))
+        g = int(255 * frac)
+        color = f"rgba(255, {g}, 0, 0.65)"
+        re_rw_label = (
+            curve.curve_id.split("re_rw_")[-1]
+            if "re_rw_" in curve.curve_id else curve.curve_id
+        )
+        show_leg = i == 0 or i == n_trans - 1
+        fig.add_trace(go.Scatter(
+            x=xs, y=ys,
+            mode="lines",
+            name=f"re/rw={re_rw_label}" if show_leg else "_",
+            line=dict(color=color, width=0.9, dash="dash"),
+            legendgroup="transient",
+            showlegend=show_leg,
+        ))
+
+    # --- Raw data points ---
+    if raw_points:
+        raw_x = [p.x for p in raw_points]
+        raw_y = [p.y for p in raw_points]
+        fig.add_trace(go.Scatter(
+            x=raw_x, y=raw_y,
+            mode="markers",
+            name="Datos raw",
+            marker=dict(color="#f97316", size=5, opacity=0.55),
+        ))
+        matched_x = [v * x_multiplier for v in raw_x]
+        matched_y = [v * y_multiplier for v in raw_y]
+        fig.add_trace(go.Scatter(
+            x=matched_x, y=matched_y,
+            mode="markers",
+            name="Datos ajustados",
+            marker=dict(color="#22d3ee", size=5, opacity=0.85),
+        ))
+
+    # --- Auxiliary Blasingame series (qDdi, qDdid) ---
+    if auxiliary_series:
+        _aux_colors  = ["#4ade80", "#f472b6"]
+        _aux_symbols = ["square", "triangle-up"]
+        for idx, (series_label, series_pts) in enumerate(auxiliary_series):
+            if not series_pts:
+                continue
+            ax_x = [p.x * x_multiplier for p in series_pts]
+            ax_y = [p.y * y_multiplier for p in series_pts]
+            fig.add_trace(go.Scatter(
+                x=ax_x, y=ax_y,
+                mode="markers",
+                name=series_label,
+                marker=dict(
+                    color=_aux_colors[idx % 2],
+                    size=5,
+                    symbol=_aux_symbols[idx % 2],
+                    opacity=0.75,
+                ),
+            ))
+
+    x_lbl = type_curves[0].x_label if type_curves else "tDd"
+    y_lbl = type_curves[0].y_label if type_curves else "qDd"
+
+    fig.update_layout(
+        title=dict(
+            text=f"{method_label} — familia completa de curvas tipo",
+            font=dict(size=13),
+        ),
+        xaxis=dict(
+            title=x_lbl,
+            type="log",
+            showgrid=True,
+            gridcolor="rgba(180,180,180,0.25)",
+            minor=dict(showgrid=True, gridcolor="rgba(180,180,180,0.12)"),
+            showline=True,
+            linecolor="#aaa",
+        ),
+        yaxis=dict(
+            title=y_lbl,
+            type="log",
+            range=[math.log10(1e-4), math.log10(200.0)],
+            showgrid=True,
+            gridcolor="rgba(180,180,180,0.25)",
+            minor=dict(showgrid=True, gridcolor="rgba(180,180,180,0.12)"),
+            showline=True,
+            linecolor="#aaa",
+        ),
+        legend=dict(
+            font=dict(size=8),
+            orientation="v",
+            x=1.01, y=1.0,
+            bgcolor="rgba(255,255,255,0.9)",
+            bordercolor="#ccc",
+            borderwidth=1,
+        ),
+        height=520,
+        margin=dict(l=60, r=20, t=45, b=50),
+        plot_bgcolor="white",
+        paper_bgcolor="white",
+        hovermode="closest",
+    )
+
+    return fig
 
 
 def _read_uploaded_csv(uploaded_file: Any) -> pd.DataFrame:
@@ -812,7 +956,7 @@ def _run_m4_overlay(
             _bdf_curves   = [c for c in all_curves if c.curve_family in _bdf_families]
             bdf_ids = [c.curve_id for c in _bdf_curves]
 
-            # Build a tab10 color map for BDF stems (matches _plot_all_curves_streamlit)
+            # Build a tab10 color map for BDF stems (matches _generate_overlay_png color order)
             import matplotlib as _mpl
             _tab10_colors = [_mpl.colormaps["tab10"](i) for i in range(len(_bdf_curves))]
             _bdf_color_hex = {
@@ -1027,16 +1171,31 @@ def _run_m4_overlay(
                             x_multiplier=_x_eff,
                             y_multiplier=_y_eff,
                         )
-                        _png = _plot_all_curves_streamlit(
+                        _xm = _match_cfg.effective_x_multiplier
+                        _ym = _match_cfg.effective_y_multiplier
+
+                        # Interactive Plotly chart (zoom/pan/hover nativo)
+                        _fig = _plot_all_curves_plotly(
                             type_curves=all_curves,
                             raw_points=_rta_pts,
-                            x_multiplier=_match_cfg.effective_x_multiplier,
-                            y_multiplier=_match_cfg.effective_y_multiplier,
+                            x_multiplier=_xm,
+                            y_multiplier=_ym,
                             method_label=_mval,
                             selected_curve_id=ref_id,
                             auxiliary_series=_auxiliary or None,
                         )
-                        st.image(_png, use_container_width=True)
+                        st.plotly_chart(_fig, use_container_width=True, key=f"plotly_{_mval}")
+
+                        # PNG generado sólo para botones de descarga
+                        _png = _generate_overlay_png(
+                            type_curves=all_curves,
+                            raw_points=_rta_pts,
+                            x_multiplier=_xm,
+                            y_multiplier=_ym,
+                            method_label=_mval,
+                            selected_curve_id=ref_id,
+                            auxiliary_series=_auxiliary or None,
+                        )
                         st.caption(
                             f"{len(_method_pts_chart)} puntos  |  "
                             f"X: {_x_eff:.4g}  |  Y: {_y_eff:.4g}  |  "
