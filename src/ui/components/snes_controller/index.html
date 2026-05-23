@@ -115,18 +115,21 @@
                 text-shadow:0 0 4px #fff,0 0 4px #fff;"></div>
 
     <!-- ── RESET (red) ─────────────────────────────── -->
+    <!-- RED button center ≈ 27% of image height -->
     <div class="hotspot" id="btn-reset"
-         style="left:77%;top:14%;width:15%;height:22%"
+         style="left:77%;top:16%;width:15%;height:22%"
          title="RESET — vuelve X=1, Y=1"></div>
 
     <!-- ── SAVE (green) ───────────────────────────── -->
+    <!-- GREEN button center ≈ 52% of image height -->
     <div class="hotspot" id="btn-save"
-         style="left:77%;top:39%;width:15%;height:22%"
+         style="left:77%;top:41%;width:15%;height:22%"
          title="SAVE — guarda el match actual"></div>
 
     <!-- ── AUTO (yellow) ────────────────────────── -->
+    <!-- YELLOW button center ≈ 76% of image height -->
     <div class="hotspot" id="btn-auto"
-         style="left:77%;top:63%;width:15%;height:22%"
+         style="left:77%;top:65%;width:15%;height:22%"
          title="AUTO — selección automática de curva"></div>
   </div>
 
@@ -148,9 +151,21 @@
       _post("streamlit:setComponentValue", { value: { action: value, seq: _seq } });
     }
 
+    // Use the image's own height — avoids inflation from absolute-positioned children
+    // (sens-label can extend beyond the image bounds before the image loads, making
+    // root.getBoundingClientRect().height report a larger value than the image).
+    function _imgH() {
+      var img = document.getElementById("ctrl-img");
+      var W   = document.getElementById("root").offsetWidth || 300;
+      // If image is loaded: compute rendered height from natural aspect ratio
+      if (img.naturalWidth && img.naturalHeight) {
+        return Math.round(W * img.naturalHeight / img.naturalWidth);
+      }
+      return img.offsetHeight || Math.round(W * 0.5); // 2:1 landscape fallback
+    }
+
     function _setHeight() {
-      var h = document.getElementById("root").getBoundingClientRect().height;
-      _post("streamlit:setFrameHeight", { height: Math.ceil(h) + 4 });
+      _post("streamlit:setFrameHeight", { height: _imgH() + 4 });
     }
 
     // ── Render callback ───────────────────────────────────────────────────────
@@ -173,6 +188,7 @@
       } else {
         _positionNeedle(step, total);
         _positionSensLabel(step);
+        _setHeight(); // always refresh iframe height on rerenders
       }
       _lastRenderedStep = step;
     }
@@ -189,7 +205,7 @@
     function _positionNeedle(step, total) {
       var root = document.getElementById("root");
       var W    = root.offsetWidth;
-      var H    = root.offsetHeight || W; // image is square
+      var H    = _imgH(); // real rendered image height (2:1 landscape)
 
       // Knob center approx: 50% left, 48% top, radius ~12%
       var cx = W * 0.507;
@@ -216,7 +232,7 @@
       var labels = ["MIN","1","2","3","4","5","MAX"];
       var root = document.getElementById("root");
       var W    = root.offsetWidth;
-      var H    = root.offsetHeight || W;
+      var H    = _imgH(); // real rendered image height (2:1 landscape)
       var lbl  = document.getElementById("sens-label");
       lbl.style.left  = (W * 0.43) + "px";
       lbl.style.width = (W * 0.20) + "px";
