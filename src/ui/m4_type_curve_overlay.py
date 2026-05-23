@@ -1118,7 +1118,12 @@ def _run_m4_overlay(
             _slk  = f"match_sensitivity_label_{_mval}"
             _snk  = f"match_sensitivity_decades_{_mval}"
 
-            for _k, _v in [(_xk, 1.0), (_yk, 1.0), (_slk, _SENSITIVITY_DEFAULT), (_snk, _SENSITIVITY_MAP[_SENSITIVITY_DEFAULT])]:
+            for _k, _v in [
+                (_xk, 1.0), (_yk, 1.0),
+                (_slk, _SENSITIVITY_DEFAULT), (_snk, _SENSITIVITY_MAP[_SENSITIVITY_DEFAULT]),
+                # Checkbox series — persistidas explícitamente para sobrevivir st.rerun()
+                (f"bl_qdd_{_mval}", True), (f"bl_qddi_{_mval}", True), (f"bl_qddid_{_mval}", True),
+            ]:
                 if _k not in st.session_state:
                     st.session_state[_k] = _v
 
@@ -1244,6 +1249,38 @@ def _run_m4_overlay(
             except Exception as _mp_exc:
                 _mp_error = str(_mp_exc)
 
+            # ── Blasingame composite: checkboxes de serie ANTES de las columnas ──────
+            # Deben renderizarse antes del with _joy_col: para que st.rerun() del
+            # joystick no los encuentre "no registrados" y los resetee al default.
+            if method == _RTAMethod.BLASINGAME:
+                _ck1, _ck2, _ck3 = st.columns(3)
+                with _ck1:
+                    _show_qdd = st.checkbox(
+                        "qDd", value=st.session_state[f"bl_qdd_{_mval}"],
+                        key=f"bl_qdd_{_mval}",
+                        help="Serie qDd — curvas tipo y nube de puntos",
+                    )
+                with _ck2:
+                    _show_qddi = st.checkbox(
+                        "qDdi", value=st.session_state[f"bl_qddi_{_mval}"],
+                        key=f"bl_qddi_{_mval}",
+                        help="Serie qDdi — curvas tipo y nube de puntos",
+                    )
+                with _ck3:
+                    _show_qddid = st.checkbox(
+                        "qDdid", value=st.session_state[f"bl_qddid_{_mval}"],
+                        key=f"bl_qddid_{_mval}",
+                        help="Serie qDdid — curvas tipo y nube de puntos",
+                    )
+                _sel_ylabels: list[str] = []
+                if _show_qdd:   _sel_ylabels.append("qDd")
+                if _show_qddi:  _sel_ylabels.append("qDdi")
+                if _show_qddid: _sel_ylabels.append("qDdid")
+                display_curves = [c for c in all_curves if c.y_label in _sel_ylabels] or all_curves
+            else:
+                _show_qdd = _show_qddi = _show_qddid = True
+                display_curves = all_curves
+
             # 2-column layout: chart (wide) | joystick (narrow)
             _chart_col, _joy_col = st.columns([3, 1.2])
 
@@ -1348,33 +1385,6 @@ def _run_m4_overlay(
                                 st.warning(f"**{_r.title}**  \n{_r.detail}", icon="⚠️")
 
                 st.subheader("Overlay log-log")
-
-                # ── Blasingame composite: checkbox unificado (curvas tipo + nube) ──
-                if method == _RTAMethod.BLASINGAME:
-                    _ck1, _ck2, _ck3 = st.columns(3)
-                    with _ck1:
-                        _show_qdd = st.checkbox(
-                            "qDd", value=True, key=f"bl_qdd_{_mval}",
-                            help="Serie qDd — activa/desactiva curvas tipo y nube de puntos",
-                        )
-                    with _ck2:
-                        _show_qddi = st.checkbox(
-                            "qDdi", value=True, key=f"bl_qddi_{_mval}",
-                            help="Serie qDdi — activa/desactiva curvas tipo y nube de puntos",
-                        )
-                    with _ck3:
-                        _show_qddid = st.checkbox(
-                            "qDdid", value=True, key=f"bl_qddid_{_mval}",
-                            help="Serie qDdid — activa/desactiva curvas tipo y nube de puntos",
-                        )
-                    _sel_ylabels: list[str] = []
-                    if _show_qdd:   _sel_ylabels.append("qDd")
-                    if _show_qddi:  _sel_ylabels.append("qDdi")
-                    if _show_qddid: _sel_ylabels.append("qDdid")
-                    display_curves = [c for c in all_curves if c.y_label in _sel_ylabels] or all_curves
-                else:
-                    _show_qdd = _show_qddi = _show_qddid = True
-                    display_curves = all_curves
 
                 try:
                     _method_pts_chart = [p for p in rta_transform_points if p.method == _chart_method]
