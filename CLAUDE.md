@@ -55,6 +55,19 @@ producción en los Llanos Orientales."
 
 ## Historial de commits relevantes (más recientes primero)
 
+### Sesión 6 — 2026-05-23 (motor Blasingame + documentación QC)
+
+**`<próximo>` — feat: motor Blasingame numérico + script QC slides**
+- `src/rta_type_curves/blasingame.py` (NUEVO): solver implícito radial en coordenadas ln(rD);
+  genera qDd/qDdi/qDdid vs tcDd para 8 valores de reD; `BlasingameCurveConfig` dataclass,
+  `BlasingameCurveSet` con método `to_csv()`; pendiente integración en loader/registry y
+  validación cuantitativa vs Software Comercial.
+- `scripts/generate_qc_slides.py` (NUEVO): genera `output/ecoRTA_QC_tecnico_M4.pptx`
+  (12 diapositivas, paleta arcade dark) documentando los 6 checks de `rta_qc_service.py`,
+  arquitectura, casos borde, cobertura de tests y marco teórico de no-unicidad.
+- `HANDOFF_PARA_CLAUDE_CODE.md` (NUEVO): documento de traspaso legacy — reemplazado por
+  CLAUDE.md como fuente de verdad; se mantiene por referencia histórica.
+
 ### Sesión 5 — 2026-05-22 (bugfixes + features con datos reales W001)
 
 **`fe25798` — M3/M5: save DCA model summaries + M4 status from curve registry**
@@ -258,7 +271,8 @@ src/
 │                                    ExternalSoftwareResult, ComparisonRow
 ├── rta_type_curves/
 │   ├── overlay.py                 — ManualMatchConfig, build_overlay()
-│   └── models.py                  — RTATypeCurveMethod, TypeCurve, CurveDataStatus
+│   ├── models.py                  — RTATypeCurveMethod, TypeCurve, CurveDataStatus
+│   └── blasingame.py              — solver implícito radial; genera qDd/qDdi/qDdid (pendiente integración)
 └── pipeline/
     └── run_full_workflow.py       — orquesta M1-M2-M3; flags: --skip-dca, --dca-only
 
@@ -273,7 +287,8 @@ tests/
 └── ...
 
 scripts/
-└── generate_type_curves.py        — genera CSVs analíticos (Fetkovich/P-B/A-G); re-run tras cambios
+├── generate_type_curves.py        — genera CSVs analíticos (Fetkovich/P-B/A-G); re-run tras cambios
+└── generate_qc_slides.py          — genera output/ecoRTA_QC_tecnico_M4.pptx (12 slides, paleta arcade dark)
 
 data/
 ├── type_curves/                   — 60 curvas validated; se regeneran con generate_type_curves.py
@@ -422,9 +437,13 @@ SESSION_PVT_CONFIG_PATH        = "pvt_config_ui_path"
 - [x] M5: badge DEMO → PRELIMINAR cuando curvas tienen status=validated
 - [x] Push branch a origin — sincronizado
 
-### 🟡 Próximo sprint — sesión 6 (a planificar)
+### 🟡 Próximo sprint — sesión 6 (a planificar en esta sesión)
 
-- **Pendiente definir** — ver planning mode.
+- Validación cuantitativa vs Software Comercial (flujo pendiente confirmar)
+- M5: QC final y trazabilidad (badges medido/estimado/calculado)
+- Integración `blasingame.py` en loader/registry como cuarto método
+- Semáforo hover info (baja urgencia)
+- M4 SNES hotspots fine-tuning (baja urgencia)
 
 ### 🟢 Prioridad baja / futuro
 
