@@ -38,15 +38,15 @@ producción en los Llanos Orientales."
 
 ---
 
-## Estado de módulos (actualizado 2026-05-22 — post sesión 3)
+## Estado de módulos (actualizado 2026-05-22 — post sesión 5)
 
 | Módulo | Descripción | Estado | Tests |
 |--------|-------------|--------|-------|
 | M1 | Historia + Pwf v2 D-W + esquema mecánico + 9 QC checks + editor embebido en hub | ✅ Funcional | `test_well_mech_qc_service.py` (51) |
 | M2 | PVT: Rs/Bo/μo/ρo — Standing, VB, BR; botón "✅ Confirmar datos" semáforo verde | ✅ Funcional | `test_pvt_correlations.py` (46) |
-| M3 | DCA multi-método Arps; semilog + best-fit; semáforo verde funcional; qi=último Qo | ✅ Funcional | varios |
-| M4 | RTA 60 curvas; Plotly zoom interactivo; botón 🎯 Auto stem; derivada log-log; SNES controller; joystick 7 pasos | ✅ Funcional | varios |
-| M5 | Resultados integrados, dashboard 7 pestañas, exportación, tabla comparativa | ✅ Funcional + integrado | varios |
+| M3 | DCA multi-método Arps; semilog + best-fit; semáforo verde; **botón "💾 Guardar DCA para M5"** | ✅ Funcional | varios |
+| M4 | RTA 60 curvas; Plotly zoom; 🎯 Auto stem; derivada log-log; SNES; **Bo/μo desde correlación a Pi** | ✅ Funcional | varios |
+| M5 | Resultados integrados, dashboard 7 pestañas, exportación; **EUR DCA + badge PRELIMINAR** | ✅ Funcional + integrado | varios |
 | Inicio | Tarjetas M1→M5 con logos PNG 140px; semáforo; botones nav; GPL-3 | ✅ Funcional | — |
 
 **Tests totales: 391 passed, 1 warning (Pydantic v1 @validator en `src/well_mod/models.py`)**
@@ -54,6 +54,30 @@ producción en los Llanos Orientales."
 ---
 
 ## Historial de commits relevantes (más recientes primero)
+
+### Sesión 5 — 2026-05-22 (bugfixes + features con datos reales W001)
+
+**`fe25798` — M3/M5: save DCA model summaries + M4 status from curve registry**
+- M3: nuevo botón "💾 Guardar DCA para M5" → escribe `_dca_model_summary.csv` (1 fila/modelo: qi, Di_nominal, b, EUR_stb, R², RMSE, forecast_days, n_points). R²/RMSE calculados en el momento del save con los sliders actuales.
+- M5 aggregator: lee `_dca_model_summary.csv` primero; si `_dca_fit_results.csv` no tiene columnas de modelo, advierte al usuario que use el nuevo botón.
+- M4/M5 badge: `build_match_summary` acepta `curve_status`; cuando la curva tiene `status=validated`, el match se graba como `"preliminary"` (no `"demo"`). M5 muestra "△ PRELIMINAR" en lugar de "⚠️ DEMO".
+
+**`1d22825` — M4: recompute Bo/μo from PVT correlations when Pi changes**
+- Detecta en cada render si Pi widget cambió vs `rta_pvt_last_pi`; si cambió, llama `compute_pvt_table` al nuevo Pi y actualiza `rta_Bo_rb_stb` / `rta_mu_o_cp` en session_state antes de que los widgets rendericen.
+
+**`c90aa5c` — M4/M5: compute Bo/μo at Pi from PVT correlations + fix legacy match JSON format**
+- `_init_reservoir_config_state`: determina Pi antes de leer PVT; si `pvt_config_ui.json` no tiene `bo_rb_stb`/`mu_o_cp` (archivo viejo), llama `compute_pvt_table` con los inputs de correlación (api/gamma_g/temp_f/rsb) y elige el punto más cercano a Pi. Para W001 Pi=3800 psia → Bo≈1.08, μo≈8.88.
+- `_build_rta_summary`: añade `_f_mult()` que intenta `match["x_multiplier"]` (formato nuevo) y luego `match_params["effective_x_multiplier"]` (formato legacy). Corrige test que fallaba.
+
+**Commits sesión 5 — parte 1 (bug fixes con datos reales):**
+- Fix duplicate Streamlit key en M3 tab "Gráficas PNG" — inline PNG rendering sin `render_dca_graphs_tab`
+- Fix `session_state.ref_curve_fetkovich cannot be modified after widget instantiated` — patrón `auto_pending_{mval}`
+- Fix `RTATransformPoint object has no attribute log_derivative` — `getattr` defensivo + limpiar `__pycache__`
+- Fix `rta_well_id` mismatch M4→M5 — fuerza `rta_well_id = hub_well_id` en `_render_reservoir_config`
+- Fix Bo/μo siempre mínimos — override incondicional desde PVT al final de `_init_reservoir_config_state`
+- Fix CA defaulting a 0.1 — `_safe(config.CA, 1.0, 200.0, 31.62)` rechaza valores ≤ 1.0
+- Fix parámetros reseteando a mínimos — filtro `_safe()` + `save_rta_scenario` al guardar match
+- Fix M5 mostrando "—" para todos los parámetros RTA — `_build_rta_summary` leía claves del nivel incorrecto en JSON anidado
 
 ### Sesión 3 fixes 2026-05-22 (commit — ver abajo)
 
@@ -347,7 +371,7 @@ SESSION_PVT_CONFIG_PATH        = "pvt_config_ui_path"
 |---------|----------|--------|
 | `src/rta_pvt/pvt_tools.py` | `a_standing()` usa `(T_F - 460)` en vez de `T_F` — Pb incorrecto (~3× bajo) | ⚠️ Conocido, no corregido (legacy) |
 | `src/well_mod/models.py` | `@validator` de Pydantic v1 — genera deprecation warning | ⚠️ Conocido, no urgente |
-| Curvas tipo | Datos digitalizados son DEMO, no calibrados contra papers | ⏳ Pendiente digitalizar |
+| Curvas tipo | Curvas analíticas validadas (status=validated). Match marcado "PRELIMINAR". Pendiente validación cuantitativa vs Software Comercial. | ⏳ Sesión 6 |
 | `app.py` M1 Geometría | Dos paneles de guardado en la misma pestaña (`render_m1_editor_embedded` + `render_m1_geometry_and_survey_panel`). Ambos escriben `_well_geometry.json` — el último en guardar gana. Revisar si unificar o eliminar uno. | ⚠️ Revisar mañana |
 
 **Regla:** usar siempre `src/services/pvt_correlations.py` para PVT nuevo, nunca `pvt_tools.py`.
@@ -387,11 +411,20 @@ SESSION_PVT_CONFIG_PATH        = "pvt_config_ui_path"
 - M4 P-B qDdid V-shapes (usuario dijo "no importa")
 - Semáforo hover info: tooltip con detalle en sidebar
 
-### 🟡 Próximo sprint — sesión 5
+### ✅ Sprint sesión 5 — COMPLETADO (2026-05-22)
 
-- **Validar workflow end-to-end** con datos reales W001 (archivos disponibles en raíz del proyecto).
-- **M5 QC final y trazabilidad:** badges medido/estimado/calculado en dashboard.
-- **Push branch** `feature/m4-type-curve-overlay` al origin (16 commits adelante).
+- [x] Validar workflow end-to-end con datos reales W001 — funcionando correctamente
+- [x] Fix cascada de bugs encontrados durante prueba con W001 (ver sesión 5 arriba)
+- [x] M4: Bo/μo calculados desde correlación PVT a Pi (no más mínimos)
+- [x] M4: recomputar Bo/μo cuando Pi cambia
+- [x] M3: botón "💾 Guardar DCA para M5" → `_dca_model_summary.csv`
+- [x] M5: EUR DCA aparece en comparativo (leía formato de serie de tiempo, no resumen)
+- [x] M5: badge DEMO → PRELIMINAR cuando curvas tienen status=validated
+- [x] Push branch a origin — sincronizado
+
+### 🟡 Próximo sprint — sesión 6 (a planificar)
+
+- **Pendiente definir** — ver planning mode.
 
 ### 🟢 Prioridad baja / futuro
 
@@ -476,7 +509,7 @@ Parámetros desde match:
 4. Agregar pruebas antes de integrar features complejas
 5. Mantener compatibilidad hacia atrás (esp. `m2_pvt_adapter.py` y `test_m1_m2_integration.py`)
 6. `pytest` en verde antes de cada commit — sin excepciones
-7. Las curvas tipo actuales son DEMO — no usar para interpretación técnica real
+7. Las curvas tipo son analíticas validadas (status=validated). Match se graba como "preliminary". No citar como definitivo hasta validar vs Software Comercial.
 8. No nombrar software comercial por nombre — usar "Software Comercial" como etiqueta
 
 ---
@@ -518,5 +551,5 @@ python src/pipeline/run_full_workflow.py \
 python src/pipeline/run_full_workflow.py \
     --well-id W001 --history-csv ... --pvt-config-json ... \
     --skip-dca                                              # solo M1-M2
-git push origin feature/m4-type-curve-overlay              # push (15 commits adelante de origin)
+git push origin feature/m4-type-curve-overlay              # push al origin
 ```
