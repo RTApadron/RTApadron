@@ -14,6 +14,9 @@ from pydantic import BaseModel, Field
 
 DataStatus = Literal["measured", "estimated", "calculated", "demo", "preliminary", "missing"]
 
+# Fuente de datos PVT (sub-tipo para claridad en reportes)
+PVTSource = Literal["lab", "correlation", "default"]
+
 
 class WellInfoSummary(BaseModel):
     """Resumen estático del pozo (M1)."""
@@ -37,6 +40,7 @@ class PVTSummary(BaseModel):
 
     oil_corr: str | None = None
     calibrated: bool = False
+    pvt_source: PVTSource = "correlation"   # "lab" si calibrated=True, "correlation" por defecto
     avg_bo_rb_stb: float | None = None
     avg_rs_scf_stb: float | None = None
     avg_mu_o_cp: float | None = None
@@ -86,6 +90,9 @@ class RTASummary(BaseModel):
     area_acres: float | None = None
     x_multiplier: float | None = None
     y_multiplier: float | None = None
+    # Trazabilidad por parámetro
+    kh_status: DataStatus = "estimated"   # kh/k: siempre estimado del match
+    n_vol_status: DataStatus = "estimated"  # OOIP: estimado volumétrico desde config
     status: DataStatus = "demo"
     qc_warnings: list[str] = Field(default_factory=list)
 

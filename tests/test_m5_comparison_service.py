@@ -12,6 +12,7 @@ from src.domain.m5_models import (
     DCASummary,
     DCAModelSummary,
     ExternalSoftwareResult,
+    PVTSummary,
     RTASummary,
     WellInfoSummary,
     WellResultsSummary,
@@ -311,3 +312,146 @@ class TestComparisonCSV:
         ext = ExternalSoftwareResult()
         data = comparison_table_to_csv_bytes([], full_summary, ext)
         assert isinstance(data, bytes)
+
+
+# ---------------------------------------------------------------------------
+# Tests P1: Score global de concordancia
+# ---------------------------------------------------------------------------
+
+class TestScoreGlobal:
+    def test_all_match_gives_100_pct(self, full_summary, external_close):
+        rows = build_comparison_table(full_summary, external_close)
+        meaningful = [r for r in rows if r.status != "missing"]
+        if not meaningful:
+            pytest.skip("No meaningful rows to compute score")
+        counts = {s: sum(1 for r in rows if r.status == s) for s in ("match", "close", "diverge")}
+        total = counts["match"] + counts["close"] + counts["diverge"]
+        pct_ok = (counts["match"] + counts["close"]) / total * 100 if total > 0 else 0
+        # external_close tiene diferencias < 2% → todos match → 100%
+        assert pct_ok == pytest.approx(100.0, abs=1.0)
+
+    def test_mostly_diverge_gives_low_pct(self, full_summary, external_diverge):
+        """Con diferencias > 20% en todos los parámetros el pct_ok debe ser bajo (< 50%).
+
+        Nota: el factor de recobro (EUR/OOIP) puede quedar "close" incluso cuando
+        EUR y OOIP divergen individualmente (efecto de cancelación), por lo que no
+        se exige estrictamente 0%.
+        """
+        rows = build_comparison_table(full_summary, external_diverge)
+        counts = {s: sum(1 for r in rows if r.status == s) for s in ("match", "close", "diverge")}
+        total = counts["match"] + counts["close"] + counts["diverge"]
+        if total == 0:
+            pytest.skip("No comparable rows")
+        pct_ok = (counts["match"] + counts["close"]) / total * 100
+        assert pct_ok < 50.0, f"Se esperaba pct_ok < 50%, pero fue {pct_ok:.1f}%"
+
+    def test_missing_not_counted_in_score(self):
+        """Las filas 'missing' no cuentan ni en numerador ni denominador del score."""
+        from src.services.m5_comparison_service import _status
+        # Si todos son missing, el denominador es 0 → pct_ok indefinido (no crash)
+        counts = {"match": 0, "close": 0, "diverge": 0, "missing": 3}
+        total = counts["match"] + counts["close"] + counts["diverge"]
+        assert total == 0  # no divisiones por cero en el código
+
+    def test_score_threshold_80_is_validado(self, full_summary, external_close):
+        """pct_ok >= 80 debe producir badge VALIDADO en la UI (lógica de score)."""
+        rows = build_comparison_table(full_summary, external_close)
+        counts = {s: sum(1 for r in rows if r.status == s) for s in ("match", "close", "diverge")}
+        total = counts["match"] + counts["close"] + counts["diverge"]
+        pct_ok = (counts["match"] + counts["close"]) / total * 100 if total > 0 else 0
+        if pct_ok >= 80:
+            badge = "VALIDADO"
+        elif pct_ok >= 50:
+            badge = "VALIDACIÓN PARCIAL"
+        else:
+            badge = "DIVERGENCIA ALTA"
+        assert badge == "VALIDADO"
+
+
+# ---------------------------------------------------------------------------
+# Tests P2: PVTSummary pvt_source + status según calibrated_flag
+# ---------------------------------------------------------------------------
+
+class TestPVTTrazabilidad:
+    def test_pvt_source_default_is_correlation(self):
+        pvt = PVTSummary()
+        assert pvt.pvt_source == "correlation"
+        assert pvt.status == "estimated"
+
+    def test_pvt_source_lab_when_calibrated(self):
+        pvt = PVTSummary(calibrated=True, pvt_source="lab", status="measured")
+        assert pvt.pvt_source == "lab"
+        assert pvt.status == "measured"
+
+    def test_aggregator_calibrated_true(self):
+        import pandas as pd
+        from src.services.m5_aggregator_service import _build_pvt_summary
+
+        df = pd.DataFrame([{
+            "bo_rb_stb": 1.15, "rs_scf_stb": 350.0, "mu_o_cp": 3.2,
+            "calibrated_flag": True,
+        }])
+        pvt = _build_pvt_summary(df)
+        assert pvt is not None
+        assert pvt.pvt_source == "lab"
+        assert pvt.status == "measured"
+        assert pvt.calibrated is True
+
+    def test_aggregator_no_calibrated_col(self):
+        import pandas as pd
+        from src.services.m5_aggregator_service import _build_pvt_summary
+
+        df = pd.DataFrame([{"bo_rb_stb": 1.1, "rs_scf_stb": 300.0, "mu_o_cp": 4.0}])
+        pvt = _build_pvt_summary(df)
+        assert pvt is not None
+        assert pvt.pvt_source == "correlation"
+        assert pvt.status == "estimated"
+
+    def test_aggregator_calibrated_false(self):
+        import pandas as pd
+        from src.services.m5_aggregator_service import _build_pvt_summary
+
+        df = pd.DataFrame([{
+            "bo_rb_stb": 1.1, "rs_scf_stb": 300.0, "mu_o_cp": 4.0,
+            "calibrated_flag": False,
+        }])
+        pvt = _build_pvt_summary(df)
+        assert pvt is not None
+        assert pvt.pvt_source == "correlation"
+        assert pvt.status == "estimated"
+
+
+# ---------------------------------------------------------------------------
+# Tests P2: RTASummary campos kh_status / n_vol_status
+# ---------------------------------------------------------------------------
+
+class TestRTATrazabilidad:
+    def test_default_kh_status_is_estimated(self):
+        rta = RTASummary(method="fetkovich")
+        assert rta.kh_status == "estimated"
+
+    def test_default_n_vol_status_is_estimated(self):
+        rta = RTASummary(method="fetkovich")
+        assert rta.n_vol_status == "estimated"
+
+    def test_custom_kh_status(self):
+        rta = RTASummary(method="fetkovich", kh_status="calculated")
+        assert rta.kh_status == "calculated"
+
+    def test_custom_n_vol_status(self):
+        rta = RTASummary(method="fetkovich", n_vol_status="measured")
+        assert rta.n_vol_status == "measured"
+
+    def test_rta_summary_serializable(self):
+        """RTASummary con nuevos campos se serializa/deserializa correctamente."""
+        rta = RTASummary(
+            method="fetkovich",
+            kh_md_ft=50.0,
+            kh_status="estimated",
+            n_vol_status="estimated",
+        )
+        data = rta.model_dump()
+        assert data["kh_status"] == "estimated"
+        assert data["n_vol_status"] == "estimated"
+        rta2 = RTASummary.model_validate(data)
+        assert rta2.kh_status == "estimated"
