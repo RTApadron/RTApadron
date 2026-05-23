@@ -5078,13 +5078,357 @@ def render_artifacts(well_id: str, inputs: dict | None = None) -> None:
             unsafe_allow_html=True,
         )
 
-    # ── Ayuda — placeholder ────────────────────────────────────────────────
+    # ── Ayuda ──────────────────────────────────────────────────────────────
     elif active == "Ayuda":
-        st.header("❓ Ayuda")
-        st.info(
-            "La documentación detallada estará disponible próximamente.  \n\n"
-            "Soporte técnico y contacto: **robert.padron@ecopetrol.com.co**"
+        st.header("❓ Ayuda — ecoRTA")
+        st.caption(
+            "Herramienta digital para RTA (Rate Transient Analysis) de pozos exploratorios "
+            "en pruebas extensas de producción · Maestría Ingeniería de Yacimientos · UdeA Bogotá"
         )
+
+        _help_tabs = st.tabs([
+            "🗺 Flujo M1→M5",
+            "📐 Unidades",
+            "📖 Correlaciones",
+            "📚 Bibliografía",
+            "ℹ️ Licencia y contacto",
+        ])
+
+        # ─── Tab 1: Guía de flujo ─────────────────────────────────────────
+        with _help_tabs[0]:
+            st.subheader("Flujo de trabajo M1 → M5")
+            st.markdown(
+                """
+**ecoRTA** sigue un flujo secuencial de cinco módulos. Cada módulo produce artefactos
+que alimentan al siguiente. El orden recomendado es M1 → M2 → M3 → M4 → M5.
+
+---
+
+### M1 — Historia de producción y estado mecánico
+
+**Propósito:** Cargar la historia de tasas y presiones, configurar el estado mecánico del pozo
+y calcular la presión de fondo fluyente (Pwf).
+
+**Entradas:**
+- CSV de producción: `date`, `qo_stb_d`, `qg_mscf_d`, `qw_stb_d`, `whp_psia`, `t_wh_f`
+- Opcional: `pwf_measured_psia` (dato directo de sensor en el fondo)
+
+**Salidas:**
+- Historia enriquecida con Pwf calculada (Darcy-Weisbach / Churchill)
+- Esquema mecánico del pozo (PNG exportable)
+- QC mecánico: 9 verificaciones de compatibilidad dimensional
+
+**Pasos:**
+1. Carga el CSV en la pestaña **📊 Historia** y mapea columnas si es necesario
+2. Configura el estado mecánico en **⚙️ Geometría / Survey → 🛢 Esquema mecánico**
+3. Carga o edita el survey en **📐 Survey y profundidades**
+4. Ejecuta **▶ Paso 4 — Actualizar Historia** en el checklist
+
+---
+
+### M2 — PVT
+
+**Propósito:** Calcular propiedades PVT del aceite (Rs, Bo, μo, ρo) para las condiciones
+de yacimiento. Usadas por M1 para el cálculo de Pwf y por M4 para los parámetros de match.
+
+**Entradas:**
+- Condiciones del yacimiento: T (°F), gravedad API, γg
+- Opcionalmente: datos de laboratorio (Pb, Rs medidos)
+
+**Correlaciones disponibles:**
+- Rs, Bo: Standing (1947) · Vasquez-Beggs (1980)
+- μo: Beggs-Robinson (1975)
+
+**Pasos:**
+1. Ingresa las propiedades del fluido en la sección **M2 — PVT**
+2. Confirma con el botón **✅ Confirmar datos** para activar el semáforo verde
+
+---
+
+### M3 — DCA (Decline Curve Analysis)
+
+**Propósito:** Ajustar curvas de declinación tipo Arps a la historia de tasas y proyectar
+la producción futura (pronóstico).
+
+**Entradas:**
+- Historia enriquecida de M1 (tasas Qo vs tiempo)
+- Ventana de ajuste (fecha inicio / fin)
+
+**Salidas:**
+- Parámetros de declinación: qi, Di, b por método
+- Curvas de pronóstico multi-método
+- EUR estimado (MSTB / MM STB)
+
+**Modelos:**
+- Exponencial (b = 0)
+- Hiperbólico (0 < b < 1; b > 1 para pronóstico conservador)
+- Armónico (b = 1)
+
+**Pasos:**
+1. Ajusta la ventana de fechas de ajuste en la barra lateral
+2. Presiona **▶ Ejecutar M3 — Declinación DCA**
+3. Ajusta los sliders Di/b/qi; el best-fit automático pre-carga los valores iniciales
+4. Activa **📐 Escala log Y** para análisis semilog
+
+---
+
+### M4 — RTA (Rate Transient Analysis)
+
+**Propósito:** Ajuste visual de datos de campo sobre curvas tipo analíticas para estimar
+permeabilidad efectiva (kh), daño de formación (skin) y volumen drenado.
+
+**Entradas:**
+- Historia enriquecida de M1-M2
+- Parámetros de yacimiento: Pi, φ, h, ct, rw, re, Bo, μo
+
+**Variables calculadas:**
+- Tiempo balance de materiales: t̄ = Np / qo [días]
+- Tasa normalizada: (q/Δp) = qo / (Pi − Pwf) [STB/d/psi]
+
+**Métodos disponibles:**
+- **Fetkovich (SPE-4629):** qDd vs tDd — transiente + BDF
+- **Palacio-Blasingame (SPE-25909):** qDd + qDdi + qDdid vs MBT
+- **Agarwal-Gardner (SPE-49222):** 1/pwD vs tDA
+
+**Pasos:**
+1. Configura los parámetros de yacimiento en el panel superior
+2. Navega a la pestaña del método deseado
+3. Usa el **controlador SNES** o el botón **🎯 Auto** para posicionar los datos
+4. Lee kh, k, N desde el panel de resultados a la derecha
+5. Guarda el match con el botón 💾 del controlador
+
+**Herramientas diagnósticas:**
+- `Derivada log-log (diagnóstico de flujo)` → identifica régimen de flujo
+- Pendiente ≈ -1: BDF · -0.5: flujo lineal · -0.25: biflujo
+
+---
+
+### M5 — Resultados integrados
+
+**Propósito:** Dashboard consolidado con resultados de todos los módulos, exportación
+y comparación con Software Comercial de referencia.
+
+**Entradas:** Artefactos de M1-M4 (CSV, JSON, PNG)
+
+**Salidas:**
+- Dashboard multi-pestaña (historia, PVT, DCA, RTA, comparativa)
+- Exportación CSV / JSON / Excel / PDF
+- Tabla comparativa ecoRTA vs Software Comercial
+                """
+            )
+
+        # ─── Tab 2: Tabla de unidades ─────────────────────────────────────
+        with _help_tabs[1]:
+            st.subheader("Tabla de unidades del sistema")
+            st.markdown("Todas las variables internas usan el **sistema de campo (field units)** de la industria petrolera.")
+
+            _units_data = {
+                "Variable": [
+                    "Caudal de aceite (qo)", "Caudal de gas (qg)", "Caudal de agua (qw)",
+                    "Presión (P, Pi, Pwf, WHP)", "Temperatura", "Profundidad (MD, TVD)",
+                    "Diámetro de tubing/casing", "Tiempo / días de producción",
+                    "Viscosidad (μo)", "Factor volumétrico aceite (Bo)", "GOR (Rs, Rsb)",
+                    "Compresibilidad (ct)", "Porosidad (φ)", "Saturación (Sw, Swi)",
+                    "Espesor neto (h)", "Radio de pozo (rw)", "Radio de drene (re)",
+                    "Área de drene", "Permeabilidad efectiva (k)", "kh",
+                    "Tasa normalizada (q/Δp)", "MBT (t̄)", "EUR",
+                ],
+                "Símbolo": [
+                    "qo", "qg", "qw",
+                    "P", "T", "MD/TVD",
+                    "OD/ID", "t", "μo", "Bo", "Rs",
+                    "ct", "φ", "Sw",
+                    "h", "rw", "re",
+                    "A", "k", "kh",
+                    "q/Δp", "t̄", "EUR",
+                ],
+                "Unidad": [
+                    "STB/d", "MSCF/d", "STB/d",
+                    "psia", "°F", "ft",
+                    "in", "días", "cp", "RB/STB", "scf/STB",
+                    "1/psi", "fracción", "fracción",
+                    "ft", "ft", "ft",
+                    "acres", "mD", "mD·ft",
+                    "STB/d/psi", "días", "MSTB o MM STB",
+                ],
+                "Descripción": [
+                    "Aceite producido en superficie", "Gas producido en superficie", "Agua producida",
+                    "Presión absoluta", "Temperatura en °F (no °C)", "Medido/Vertical verdadero",
+                    "Diámetros de tubería", "Días calendario", "Viscosidad dinámica",
+                    "FVF del aceite a condiciones de yacimiento", "Gas disuelto en aceite",
+                    "Compresibilidad total del sistema", "Fracción de poros", "Fracción de agua",
+                    "Zona productora neta", "Radio del pozo completado", "Radio drenado estimado",
+                    "1 acre = 43 560 ft²", "Permeabilidad efectiva al aceite", "Capacidad de flujo",
+                    "Tasa normalizada por Δp", "Tiempo de balance de materiales Np/q",
+                    "Reservas totales recuperables",
+                ],
+            }
+            import pandas as _pd_units
+            st.dataframe(
+                _pd_units.DataFrame(_units_data),
+                use_container_width=True,
+                hide_index=True,
+            )
+
+            st.markdown("""
+**Conversiones frecuentes:**
+| De | A | Factor |
+|----|---|--------|
+| 1 acre | ft² | 43 560 |
+| 1 bbl | ft³ | 5.615 |
+| 1 STB | RB | Bo (varía con P) |
+| T °C | T °F | T×9/5 + 32 |
+| 1 mD | cm² | 9.869 × 10⁻¹² |
+| 1 cp | Pa·s | 1 × 10⁻³ |
+            """)
+
+        # ─── Tab 3: Correlaciones ─────────────────────────────────────────
+        with _help_tabs[2]:
+            st.subheader("Correlaciones PVT implementadas")
+            st.markdown("""
+**Fuente:** `src/services/pvt_correlations.py`
+
+---
+
+#### Standing (1947)
+
+```
+a   = 0.0125·API − 0.00091·T_F          (T en °F directamente)
+Rs  = γg · [(P/18.2 + 1.4) · 10^a]^1.2048   [scf/STB]
+Pb  = 18.2 · [(Rsb/γg)^0.83 · 10^(−a) − 1.4] [psia]
+Bo  = 0.972 + 0.000147 · F^1.175
+      F = Rs·(γg/γo)^0.5 + 1.25·T
+```
+
+**Rango de validez:** 22–325 °API, 130–7000 scf/STB, 1200–9480 psia.
+
+---
+
+#### Vasquez-Beggs (1980)
+
+```
+API ≤ 30: C1=0.0362, C2=1.0937, C3=25.724
+API > 30: C1=0.0178, C2=1.1870, C3=23.931
+Rs  = C1·γg·P^C2·exp(C3·API/(T+460))
+```
+
+**Rango de validez:** amplio, crudos de EE.UU. y América del Sur.
+
+---
+
+#### Beggs-Robinson (1975) — Viscosidad
+
+```
+μ_dead = 10^x − 1;   x = T^(−1.163) · exp(13.108 − 6.591/γo)
+μ_sat  = A · μ_dead^B
+         A = 10.715·(Rs+100)^(−0.515)
+         B = 5.44·(Rs+150)^(−0.338)
+μ_us   = μ_b · (P/Pb)^m
+         m = 2.6·P^1.187·exp(−11.513 − 8.98e-5·P)
+```
+
+---
+
+#### Darcy-Weisbach / Churchill (1977) — Cálculo de Pwf
+
+```
+ΔP = f · (L/D) · (ρ·v²/2g)    [Darcy-Weisbach]
+f  = Churchill (1977)           [válido todos los regímenes]
+```
+
+**Implementación:** `src/well_mod/pwf.py` → `estimate_pwf_v2()`
+
+---
+
+#### Arps (1945) — Declinación DCA
+
+```
+Exponencial (b=0):   q(t) = qi · exp(-di·t)
+Hiperbólico (0<b<1): q(t) = qi · (1 + b·di·t)^(-1/b)
+Armónico (b=1):      q(t) = qi / (1 + di·t)
+EUR = ∫₀^T q(t) dt   hasta tasa de abandono
+```
+
+---
+
+#### Variables RTA (Fetkovich, Palacio-Blasingame, Agarwal-Gardner)
+
+Ver pestaña **📚 Bibliografía** para ecuaciones adimensionales completas.
+            """)
+
+        # ─── Tab 4: Bibliografía ─────────────────────────────────────────
+        with _help_tabs[3]:
+            st.subheader("Referencias bibliográficas")
+            _refs = {
+                "Referencia": [
+                    "Fetkovich (1980)", "Palacio-Blasingame (1993)", "Agarwal-Gardner (1998/1999)",
+                    "Arps (1945)", "Standing (1947)", "Vasquez-Beggs (1980)",
+                    "Beggs-Robinson (1975)", "Churchill (1977)",
+                ],
+                "Autores": [
+                    "M.J. Fetkovich", "J.C. Palacio, T.A. Blasingame",
+                    "R.G. Agarwal, D.C. Gardner et al.",
+                    "J.J. Arps", "M.B. Standing", "M.E. Vasquez, H.D. Beggs",
+                    "H.D. Beggs, J.R. Robinson", "S.W. Churchill",
+                ],
+                "Fuente": [
+                    "SPE-4629", "SPE-25909", "SPE-49222",
+                    "Trans. AIME 160", "API Drill. Prod. Pract.",
+                    "JPT Jun-1980", "JPT Sep-1975", "Chem. Eng. 84(24)",
+                ],
+                "Tema": [
+                    "qDd/tDd, kh desde match visual", "MBT, qDdi/qDdid, BDF en variación de tasas",
+                    "1/pwD vs tDA, derivadas de flujo",
+                    "Declinación exponencial / hiperbólica / armónica",
+                    "Rs, Pb, Bo — aceites del Golfo de México",
+                    "Rs, Bo — dos rangos API (≤30 y >30)",
+                    "μo dead/sat/undersat", "Factor de fricción todos los regímenes (Re: laminar→turbulento)",
+                ],
+            }
+            import pandas as _pd_refs
+            st.dataframe(
+                _pd_refs.DataFrame(_refs),
+                use_container_width=True,
+                hide_index=True,
+            )
+            st.markdown("""
+**Archivos PDF disponibles en el proyecto:**
+- `fetkovich1980.pdf`
+- `SPE_25909_Palacio-Blasingame_Gas_Well_Dec_TC_Anl1993.pdf`
+- `agarwal1998.pdf`
+            """)
+
+        # ─── Tab 5: Licencia y contacto ───────────────────────────────────
+        with _help_tabs[4]:
+            st.subheader("Licencia y contacto")
+            st.markdown("""
+**ecoRTA** es software libre distribuido bajo los términos de la
+[GNU General Public License v3.0](https://www.gnu.org/licenses/gpl-3.0.html).
+
+Puedes redistribuirlo y/o modificarlo bajo los términos de la GPL-3.
+**Sin garantía de ningún tipo.** Úsalo bajo tu propia responsabilidad.
+
+---
+
+**Autor:**
+Robert Eduardo Padrón García
+Maestría en Ingeniería de Yacimientos
+Fundación Universidad de América — Bogotá, Colombia
+
+**Aplicación:** Ecopetrol SA / Hocol — Gerencia de Exploración
+Pozos objetivo: CPO-9, Llanos-123, Llanos-87 (Llanos Orientales, Colombia)
+
+**Contacto técnico:**
+📧 robert.padron@ecopetrol.com.co
+
+---
+
+**Versión de software de referencia:** Software Comercial de análisis RTA/DCA
+(no se menciona por nombre por razones de licenciamiento)
+
+**Stack técnico:**
+Python 3.11 · Pydantic v2 · pandas · matplotlib · Plotly · Streamlit · pytest
+            """)
 
     # ── M1 — Pozo & Pwf ───────────────────────────────────────────────────
     elif active == "M1":
