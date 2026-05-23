@@ -20,15 +20,25 @@ def build_match_summary(
     match_params: RTAMatchParams,
     ref_curve_id: str,
     config: RTAConfig,
+    curve_status: str = "demo",
 ) -> dict:
     """Assemble the match summary dict for JSON export."""
-    return {
-        "exported_at": datetime.now(timezone.utc).isoformat(),
-        "status": "demo",
-        "notes": (
+    if curve_status == "validated":
+        _status = "preliminary"
+        _notes = (
+            "Curvas tipo analíticas validadas. "
+            "Interpretación preliminar — pendiente validación vs software comercial."
+        )
+    else:
+        _status = "demo"
+        _notes = (
             "DEMO — curvas tipo no digitalizadas/validadas. "
             "No usar para interpretación técnica final."
-        ),
+        )
+    return {
+        "exported_at": datetime.now(timezone.utc).isoformat(),
+        "status": _status,
+        "notes": _notes,
         "well_id": config.well_id,
         "method": match_params.method,
         "ref_curve_id": ref_curve_id,

@@ -1443,10 +1443,16 @@ def _run_m4_overlay(
                         # Export row (under chart)
                         if _mp is not None:
                             _e1, _e2, _e3 = st.columns(3)
+                            try:
+                                _ref_curve_obj = registry.get(_mval, ref_id)
+                                _curve_status = _ref_curve_obj.status.value
+                            except Exception:
+                                _curve_status = "demo"
                             _summary = build_match_summary(
                                 match_params=_mp,
                                 ref_curve_id=ref_id,
                                 config=reservoir_config,
+                                curve_status=_curve_status,
                             )
                             _summary_bytes = json.dumps(
                                 _summary, indent=2, ensure_ascii=False

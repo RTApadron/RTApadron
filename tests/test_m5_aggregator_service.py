@@ -306,7 +306,7 @@ class TestBuildWellResultsIntegration:
         minimal_history_df.to_csv(tmp_path / "W001_history_enriched.csv", index=False)
         summary = build_well_results(well_id="W001", output_dir=tmp_path)
         assert summary.dca is None
-        assert any("dca_fit_results" in w for w in summary.consolidated_warnings)
+        assert any("dca" in w.lower() for w in summary.consolidated_warnings)
 
     def test_missing_rta_file_adds_warning(self, tmp_path: Path, minimal_history_df: pd.DataFrame):
         minimal_history_df.to_csv(tmp_path / "W001_history_enriched.csv", index=False)

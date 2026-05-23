@@ -5957,6 +5957,50 @@ Python 3.11 · Pydantic v2 · pandas · matplotlib · Plotly · Streamlit · pyt
                             )
                             _eur_cols_m3[_ci_m3].metric(_mn_m3, _eur_str)
 
+                        # ── Save DCA model summaries for M5 ─────────────────
+                        _dca_summary_path = OUTPUT_DIR / f"{well_id}_dca_model_summary.csv"
+                        _save_dca_col, _status_dca_col = st.columns([1, 2])
+                        with _save_dca_col:
+                            if st.button("💾 Guardar DCA para M5", key="dca_save_m5_btn",
+                                         use_container_width=True):
+                                def _r2_rmse(q_pred, q_act):
+                                    if q_act is None or len(q_act) < 2:
+                                        return 0.0, 0.0
+                                    ss_res = float(_np_dca.sum((q_act - q_pred) ** 2))
+                                    ss_tot = float(_np_dca.sum((q_act - q_act.mean()) ** 2))
+                                    r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else 0.0
+                                    rmse = float(_np_dca.sqrt(ss_res / max(len(q_act), 1)))
+                                    return round(r2, 6), round(rmse, 4)
+
+                                _n_pts = len(_t_fit_days_arr) if _t_fit_days_arr is not None else 0
+                                _model_rows_m3 = []
+                                if "Exponencial" in _eur_results_m3:
+                                    _qp = _arps_rate_svc(_t_fit_days_arr, qi=float(_qi_val_m3), di=_di_nom_exp, b=0.0) if _n_pts >= 2 else _np_dca.array([])
+                                    _r2e, _rmse_e = _r2_rmse(_qp, _q_fit_arr)
+                                    _model_rows_m3.append({"model": "exponential", "qi_stb_d": float(_qi_val_m3), "di_nominal_d": float(_di_nom_exp), "b": 0.0, "eur_stb": _eur_results_m3["Exponencial"], "r2": _r2e, "rmse_stb_d": _rmse_e, "forecast_days": int(_fc_days_m3), "n_points": _n_pts})
+                                if "Hiperbólico" in _eur_results_m3:
+                                    _qp = _arps_rate_svc(_t_fit_days_arr, qi=float(_qi_val_m3), di=_di_nom_hip, b=_b_hip_m3) if _n_pts >= 2 else _np_dca.array([])
+                                    _r2h, _rmse_h = _r2_rmse(_qp, _q_fit_arr)
+                                    _model_rows_m3.append({"model": "hyperbolic", "qi_stb_d": float(_qi_val_m3), "di_nominal_d": float(_di_nom_hip), "b": float(_b_hip_m3), "eur_stb": _eur_results_m3["Hiperbólico"], "r2": _r2h, "rmse_stb_d": _rmse_h, "forecast_days": int(_fc_days_m3), "n_points": _n_pts})
+                                if "Armónico" in _eur_results_m3:
+                                    _qp = _arps_rate_svc(_t_fit_days_arr, qi=float(_qi_val_m3), di=_di_nom_arm, b=1.0) if _n_pts >= 2 else _np_dca.array([])
+                                    _r2a, _rmse_a = _r2_rmse(_qp, _q_fit_arr)
+                                    _model_rows_m3.append({"model": "harmonic", "qi_stb_d": float(_qi_val_m3), "di_nominal_d": float(_di_nom_arm), "b": 1.0, "eur_stb": _eur_results_m3["Armónico"], "r2": _r2a, "rmse_stb_d": _rmse_a, "forecast_days": int(_fc_days_m3), "n_points": _n_pts})
+
+                                if _model_rows_m3:
+                                    pd.DataFrame(_model_rows_m3).to_csv(_dca_summary_path, index=False)
+                                    st.session_state["dca_m5_saved"] = str(_dca_summary_path)
+
+                        with _status_dca_col:
+                            if st.session_state.get("dca_m5_saved"):
+                                st.success(f"✅ `{Path(st.session_state['dca_m5_saved']).name}` listo para M5")
+                            elif _dca_summary_path.exists():
+                                import datetime as _dt_dca
+                                _ts_dca = _dt_dca.datetime.fromtimestamp(
+                                    _dca_summary_path.stat().st_mtime
+                                ).strftime("%Y-%m-%d %H:%M")
+                                st.info(f"Guardado previo: {_ts_dca}")
+
             st.divider()
 
             # ── Pipeline outputs from last run ────────────────────────────

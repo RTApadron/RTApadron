@@ -255,13 +255,24 @@ def build_well_results(
 
     qc_report = _load_json(out / f"{well_id}_qc_report.json")
 
-    # M3: resultados DCA
+    # M3: resultados DCA — prefer the interactive model summary over the pipeline time-series CSV
+    dca_summary_path = out / f"{well_id}_dca_model_summary.csv"
     dca_path = out / f"{well_id}_dca_fit_results.csv"
-    if dca_path.exists():
-        dca_df = pd.read_csv(dca_path)
+    if dca_summary_path.exists():
+        dca_df = pd.read_csv(dca_summary_path)
+    elif dca_path.exists():
+        _raw = pd.read_csv(dca_path)
+        if "model" in _raw.columns and "eur_stb" in _raw.columns:
+            dca_df = _raw
+        else:
+            dca_df = pd.DataFrame()
+            warnings.append(
+                f"M3: {dca_path.name} contiene datos de serie de tiempo, no resumen por modelo. "
+                "Use '💾 Guardar DCA para M5' en M3."
+            )
     else:
         dca_df = pd.DataFrame()
-        warnings.append(f"M3: {dca_path.name} no encontrado — sin resultados DCA.")
+        warnings.append(f"M3: {dca_summary_path.name} no encontrado — sin resultados DCA.")
 
     # M4: match summary RTA
     rta_path = out / f"{well_id}_rta_match_summary.json"

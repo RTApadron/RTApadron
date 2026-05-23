@@ -41,6 +41,7 @@ _STATUS_COLORS = {
     "calculated": "#2980b9",
     "estimated": "#e67e22",
     "demo": "#8e44ad",
+    "preliminary": "#d35400",
     "missing": "#e74c3c",
 }
 
@@ -194,11 +195,19 @@ def _tab_rta(summary: WellResultsSummary) -> None:
     rta = summary.rta
     st.subheader("Análisis de Transiente de Flujo — Match RTA (M4)")
 
-    st.markdown(
-        _badge("⚠️ DEMO — curvas tipo no validadas", "demo"),
-        unsafe_allow_html=True,
-    )
-    st.caption("Los parámetros siguientes son preliminares hasta que las curvas tipo sean digitalizadas y validadas.")
+    _rta_status = (rta.status or "demo") if rta else "demo"
+    if _rta_status == "preliminary":
+        st.markdown(
+            _badge("△ PRELIMINAR — curvas tipo analíticas validadas", "preliminary"),
+            unsafe_allow_html=True,
+        )
+        st.caption("Parámetros basados en curvas tipo analíticas. Pendiente validación vs software comercial.")
+    else:
+        st.markdown(
+            _badge("⚠️ DEMO — curvas tipo no validadas", "demo"),
+            unsafe_allow_html=True,
+        )
+        st.caption("Los parámetros siguientes son preliminares hasta que las curvas tipo sean digitalizadas y validadas.")
 
     c1, c2, c3 = st.columns(3)
     c1.metric("Método", (rta.method or "—").replace("_", " ").title())
@@ -305,7 +314,7 @@ def _tab_comparativo(summary: WellResultsSummary) -> None:
             "Fuente": "RTA M4",
             "Método": f"OOIP vol. ({(summary.rta.method or '').replace('_', ' ')})",
             "Volumen (MM STB)": round(summary.rta.n_vol_stb / 1e6, 4),
-            "Status": "DEMO",
+            "Status": (summary.rta.status or "demo").upper(),
             "R² / Confianza": "—",
         })
 
@@ -321,7 +330,7 @@ def _tab_comparativo(summary: WellResultsSummary) -> None:
             "⚠️ El OOIP es preliminar (curvas DEMO). Usar solo como referencia de orden de magnitud."
         )
 
-    if summary.rta and summary.rta.status == "demo":
+    if summary.rta and summary.rta.status not in ("preliminary", None):
         st.markdown(
             _badge("Resultados RTA — DEMO. No usar para toma de decisiones.", "demo"),
             unsafe_allow_html=True,
@@ -584,7 +593,7 @@ def _tab_validacion(summary: WellResultsSummary) -> None:
         )
 
     # ── Advertencia status DEMO ───────────────────────────────────────────────
-    if summary.rta and summary.rta.status == "demo":
+    if summary.rta and summary.rta.status not in ("preliminary", None):
         st.divider()
         st.markdown(
             _badge(
