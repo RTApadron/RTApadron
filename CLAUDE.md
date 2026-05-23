@@ -58,25 +58,45 @@ producción en los Llanos Orientales."
 
 ## Historial de commits relevantes (más recientes primero)
 
-### Sesión 6 — 2026-05-23 (Blasingame tab M4 + fixes críticos)
+### Sesión 6 — 2026-05-23 (Blasingame M4 + unificación P-B + SNES fixes)
+
+**`32e4634` — assets: actualiza snes_controller.png con diseño nuevo (knob sin línea, 270°)**
+- PNG nuevo del SNES controller (sin línea vertical en el knob)
+
+**`fc56bbb` — fix(SNES): _imgH() con naturalWidth/naturalHeight + hotspots recalibrados**
+- `src/ui/components/snes_controller/index.html`:
+  - Nueva función `_imgH()` calcula altura real desde `img.naturalWidth/naturalHeight` — evita inflación del iframe por elementos absolutamente posicionados (sens-label)
+  - Antes: `H = root.offsetHeight || W` usaba W como fallback cuadrado → `H = W = 340px` para imagen 2:1 de 170px real → todos los `top:%` CSS se computaban mal
+  - `_setHeight()`, `_positionNeedle()`, `_positionSensLabel()` usan `_imgH()` consistentemente
+  - Hotspots recalibrados para imagen 2:1: UP top:22%, DOWN top:59%, LEFT/RIGHT top:41%, RESET top:16%, SAVE top:41%, AUTO top:65%
+
+**`65fccef` — fix(M4): checkboxes Blasingame persisten durante st.rerun() del SNES**
+- Checkboxes qDd/qDdi/qDdid se renderizan ANTES de `st.columns()` — evita que el rerun del joystick destruya el registro del widget
+- Keys pre-inicializadas en el bloque `_init_match_state()` para cada método
+
+**`b5e560e` — feat(M4): unifica tab P-B con Blasingame, 3 checkboxes qDd/qDdi/qDdid**
+- `_TAB_LABELS = ["🔬 Fetkovich", "📊 Palacio-Blasingame", "📈 Agarwal-Gardner"]` — Blasingame unificado en P-B
+- `_TAB_METHODS = [FETKOVICH, BLASINGAME, AGARWAL_GARDNER]` — P-B tab carga blasingame_base.csv
+- Scatter sigue usando PALACIO_BLASINGAME transform points (misma física)
+- 3 checkboxes unificados (curvas tipo + nube simultáneos) en lugar de 6 separados
+- `display_curves` filtra por `y_label` según checkboxes → ambos `_fig` y `_png` lo respetan
+
+**`13b831d` — fix(generate_type_curves): filtro y>0 DESPUÉS de round para eliminar y=0.0**
+- Antes: `if y > eps: rows.append(...)` + `y=round(y,10)` → round podía producir exactamente 0.0 pasando el filtro
+- Corregido: `y = round(...); if x > 0 and y > 0:` — blasingame_base.csv: 4237 pts (era 5203 con y=0.0)
 
 **`937240b` — feat(M4+M5): Blasingame tab, 3-series checkboxes, SNES AUTO, DataStatus fix**
 - `src/domain/m5_models.py`: añade `"preliminary"` a `DataStatus` literal (corrige crash Pydantic M5)
 - `src/rta_type_curves/models.py`: añade `BLASINGAME = "blasingame"` al enum `RTATypeCurveMethod`
 - `src/services/rta_transform_service.py`: dispatch seguro con `.get()` + `continue` para BLASINGAME
-- `scripts/generate_type_curves.py`: genera `blasingame_base.csv` (24 curvas, 5203 pts, 8 reD × 3 series qDd/qDdi/qDdid)
-- `data/type_curves/blasingame_base.csv` (NUEVO): curvas tipo Blasingame composite, status=demo
-- `src/ui/m4_type_curve_overlay.py`:
-  - Tab "🔵 Blasingame" añadido a `_TAB_LABELS`/`_TAB_METHODS`
-  - Tab Blasingame: reusa puntos PB para scatter (misma física — BLASINGAME no está en dispatch)
-  - 3 checkboxes independientes para curvas tipo Blasingame (qDd/qDdi/qDdid) → `display_curves`
-  - 3 checkboxes independientes para nube de puntos (P-B y Blasingame): Nube qDd / qDdi / qDdid
-  - Acción "auto" del SNES controller dispara `_find_best_bdf_stem` + pending key
-  - Rango aguja SNES: 270° (era 240°), offset -135° (era -120°); labels ["MIN","1","2","3","4","5","MAX"]
-  - Botón AUTO (yellow) integrado en HTML del SNES controller
+- `scripts/generate_type_curves.py`: función `generate_blasingame()` + escritura `blasingame_base.csv`
+- `data/type_curves/blasingame_base.csv` (NUEVO): 24 curvas, status=demo
+- `src/ui/m4_type_curve_overlay.py`: SNES AUTO dispara `_find_best_bdf_stem` + pending key
+- Rango aguja SNES: 270° (era 240°), offset -135°; labels ["MIN","1","2","3","4","5","MAX"]
+- Botón AUTO (yellow) cableado en HTML del SNES controller
 - `tests/test_rta_transform_service.py`: excluye BLASINGAME del test de log_derivative
 
-**`cf1f89c` — feat: motor Blasingame numérico + script QC slides** (commit anterior sesión 6)
+**`cf1f89c` — feat: motor Blasingame numérico + script QC slides** (commit inicial sesión 6)
 - `src/rta_type_curves/blasingame.py` (NUEVO): solver implícito radial en coordenadas ln(rD)
 - `scripts/generate_qc_slides.py` (NUEVO): genera `output/ecoRTA_QC_tecnico_M4.pptx`
 - `HANDOFF_PARA_CLAUDE_CODE.md` (NUEVO): documento de traspaso legacy
@@ -304,10 +324,11 @@ scripts/
 └── generate_qc_slides.py          — genera output/ecoRTA_QC_tecnico_M4.pptx (12 slides, paleta arcade dark)
 
 data/
-├── type_curves/                   — 60 curvas validated; se regeneran con generate_type_curves.py
+├── type_curves/                   — 84 curvas (60 validated + 24 demo); regenerar con generate_type_curves.py
 │   ├── fetkovich_base.csv         — 12 curvas, ~1036 pts (status=validated)
 │   ├── palacio_blasingame_base.csv — 36 curvas, ~5040 pts (qDd/qDdi/qDdid; status=validated)
-│   └── agarwal_gardner_base.csv   — 12 curvas, ~1035 pts (status=validated)
+│   ├── agarwal_gardner_base.csv   — 12 curvas, ~1035 pts (status=validated)
+│   └── blasingame_base.csv        — 24 curvas, ~4237 pts (8 reD × qDd/qDdi/qDdid; status=demo)
 └── ui_uploads/                    — archivos guardados por la UI (no commitear)
 ```
 
@@ -452,24 +473,49 @@ SESSION_PVT_CONFIG_PATH        = "pvt_config_ui_path"
 
 ### ✅ Sprint sesión 6 — COMPLETADO (2026-05-23)
 
+Commits: `cf1f89c`, `937240b`, `daf28a3`, `13b831d`, `b5e560e`, `65fccef`, `fc56bbb`, `32e4634`
+
+**P3 Blasingame — COMPLETADO (con variación respecto al plan):**
 - [x] BUG CRÍTICO M5: "preliminary" añadido a DataStatus (corrige crash Pydantic)
 - [x] BLASINGAME añadido al enum RTATypeCurveMethod
 - [x] Dispatch seguro en rta_transform_service (.get() + continue)
-- [x] generate_type_curves.py: genera blasingame_base.csv (24 curvas, 5203 pts)
-- [x] M4 tab "🔵 Blasingame" con curvas tipo composite (8 reD × qDd/qDdi/qDdid)
-- [x] 3 checkboxes independientes para curvas tipo Blasingame (display_curves filter)
-- [x] 3 checkboxes independientes para nube de puntos (P-B + Blasingame)
+- [x] generate_type_curves.py: genera blasingame_base.csv (24 curvas, 4237 pts, y=0.0 artefactos eliminados)
+- [x] Tab Blasingame unificado en "📊 Palacio-Blasingame" (no pestaña separada — simplifica UX)
+- [x] 3 checkboxes unificados qDd / qDdi / qDdid (controlan curvas tipo Y nube simultáneamente)
+- [x] Checkbox persistence fix: checkboxes se renderizan antes de st.columns() → sobreviven st.rerun()
 - [x] SNES AUTO action: dispara _find_best_bdf_stem desde botón físico
-- [x] SNES HTML: rango 270° (era 240°), labels ["MIN","1","2","3","4","5","MAX"]
-- [x] SNES HTML: botón AUTO (yellow) integrado
-- [x] 391 tests passed
+- [x] 391 tests passed; test_log_derivative excluye BLASINGAME explícitamente
 
-### 🟡 Próximo sprint — sesión 7 (backlog P1/P2/P5)
+**P4 SNES hotspots — PARCIALMENTE COMPLETADO:**
+- [x] SNES HTML: _imgH() con naturalWidth/naturalHeight — corrige inflación del iframe
+- [x] SNES HTML: rango aguja 270° (era 240°), labels ["MIN","1","2","3","4","5","MAX"]
+- [x] SNES HTML: botón AUTO (yellow) integrado y cableado
+- [x] assets/snes_controller.png nuevo PNG guardado y commiteado (32e4634)
+- [~] Alineación hotspots mejorada pero no al 100% — pendiente ajuste fino sesión 7
 
-- **P1** Validación cuantitativa vs Software Comercial: score global, export Excel/PDF, badge
-- **P2** M5 trazabilidad: badges per-parámetro (medido/estimado/calculado)
-- **P5** Semáforo hover info: tooltip con detalle en sidebar
-- SNES PNG nuevo (usuario debe guardar imagen del PDF a `assets/snes_controller.png`)
+**No completado de sesión 6 (del plan P1/P2/P5):**
+- [ ] P1: score global validación, export Excel/PDF, badge validación
+- [ ] P2: badges per-parámetro trazabilidad M5
+- [ ] P5: semáforo hover info
+
+### 🟡 Próximo sprint — sesión 7 (prioridades)
+
+**P1 — Validación cuantitativa vs Software Comercial** (clave para tesis):
+- Score global en `_tab_validacion`: N concordantes, N divergentes, % match+close → `st.metric()`
+- Export hoja "Validacion vs SW Comercial" en Excel existente (`m5_export_service.py`)
+- Badge "✅ VALIDADO" / "⚠️ VALIDACIÓN PARCIAL" en header del tab (condicionado a % concordancia)
+- Sección PDF "Validación vs Software Comercial" con tabla de comparación
+
+**P2 — M5 trazabilidad badges per-parámetro:**
+- Badges medido/estimado/calculado en tabs PVT/DCA/RTA de M5
+- `PVTSummary` campos: `pvt_source`, `kh_status`, `n_vol_status`
+- `_build_pvt_summary()`: calibrated_flag → status "measured" vs "estimated"
+
+**P4b — SNES hotspots ajuste fino:**
+- Ajustar coordenadas CSS de los 9 botones hasta coincidir al 100% con el PNG nuevo
+
+**P5 — Semáforo hover info:**
+- Tooltip `help="..."` en indicadores semáforo sidebar con detalle de qué archivo activa cada módulo
 
 ### 🟢 Prioridad baja / futuro
 
