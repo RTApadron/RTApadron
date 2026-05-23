@@ -62,6 +62,11 @@ class RTATransformPoint:
     blasingame_integral: float | None = field(default=None)
     blasingame_derivative: float | None = field(default=None)
 
+    # Log-log diagnostic derivative (all methods):
+    # log_derivative = -d(ln(q/Δp)) / d(ln(MBT))
+    # Slope interpretation: -1 → BDF, -0.5 → linear flow, -1/4 → bilinear flow
+    log_derivative: float | None = field(default=None)
+
     def to_overlay_point(self) -> RTAOverlayPoint:
         """Convert to an RTAOverlayPoint for use with the existing overlay engine."""
         return RTAOverlayPoint(
@@ -176,6 +181,9 @@ def _compute_base_columns(df: pd.DataFrame, pi_psia: float) -> pd.DataFrame:
     # Blasingame auxiliary functions (qDdi, qDdid)
     df = _compute_blasingame_functions(df)
 
+    # Log-log diagnostic derivative: -d(ln(q/Δp)) / d(ln(MBT))
+    df = _compute_log_derivative(df)
+
     return df
 
 
@@ -254,6 +262,59 @@ def _compute_blasingame_functions(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # ---------------------------------------------------------------------------
+# Log-log diagnostic derivative
+# ---------------------------------------------------------------------------
+
+def _compute_log_derivative(df: pd.DataFrame) -> pd.DataFrame:
+    """Compute the log-log diagnostic derivative of normalized rate.
+
+    log_derivative = -d(ln(q/Δp)) / d(ln(MBT))
+
+    Uses Bourdet centered finite differences in log space; one-sided at
+    end points.  Negative or non-finite values are set to NaN (noise).
+
+    Physical interpretation of the slope on a log-log plot:
+        slope ≈ -1    → boundary dominated flow (BDF)
+        slope ≈ -0.5  → linear flow
+        slope ≈ -0.25 → bilinear flow
+        slope ≈  0    → pseudo-steady-state / volumetric depletion
+    """
+    df = df.copy()
+    n = len(df)
+    mbt = df["material_balance_time"].to_numpy(dtype=float)
+    nr  = df["normalized_rate"].to_numpy(dtype=float)
+
+    valid = (mbt > 0) & (nr > 0)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        ln_mbt = np.where(valid, np.log(mbt), np.nan)
+        ln_nr  = np.where(valid, np.log(nr),  np.nan)
+
+    log_deriv = np.full(n, np.nan)
+    for i in range(n):
+        if not valid[i]:
+            continue
+        left  = i > 0 and valid[i - 1]
+        right = i < n - 1 and valid[i + 1]
+        if left and right:
+            d_lnm = ln_mbt[i + 1] - ln_mbt[i - 1]
+            if d_lnm > 0:
+                log_deriv[i] = -(ln_nr[i + 1] - ln_nr[i - 1]) / d_lnm
+        elif right:
+            d_lnm = ln_mbt[i + 1] - ln_mbt[i]
+            if d_lnm > 0:
+                log_deriv[i] = -(ln_nr[i + 1] - ln_nr[i]) / d_lnm
+        elif left:
+            d_lnm = ln_mbt[i] - ln_mbt[i - 1]
+            if d_lnm > 0:
+                log_deriv[i] = -(ln_nr[i] - ln_nr[i - 1]) / d_lnm
+
+    # Keep only positive values; negative = increasing rate = noise artifact
+    log_deriv = np.where(log_deriv > 0, log_deriv, np.nan)
+    df["log_derivative"] = log_deriv
+    return df
+
+
+# ---------------------------------------------------------------------------
 # Per-method transform functions
 # ---------------------------------------------------------------------------
 
@@ -272,6 +333,8 @@ def _transform_fetkovich(df: pd.DataFrame) -> list[RTATransformPoint]:
         mbt = float(row["material_balance_time"])
         nr = float(row["normalized_rate"])
         if mbt > 0 and nr > 0:
+            raw_ld = row.get("log_derivative")
+            ld = float(raw_ld) if (raw_ld is not None and pd.notna(raw_ld) and float(raw_ld) > 0) else None
             points.append(
                 RTATransformPoint(
                     well_id=str(row["well_id"]),
@@ -286,6 +349,7 @@ def _transform_fetkovich(df: pd.DataFrame) -> list[RTATransformPoint]:
                     delta_p_psia=float(row["delta_p_psia"]),
                     normalized_rate=nr,
                     material_balance_time=mbt,
+                    log_derivative=ld,
                 )
             )
     return points
@@ -316,8 +380,10 @@ def _transform_palacio_blasingame(df: pd.DataFrame) -> list[RTATransformPoint]:
         if mbt > 0 and nr > 0:
             raw_bi = row.get("blasingame_integral")
             raw_bd = row.get("blasingame_derivative")
+            raw_ld = row.get("log_derivative")
             bi = float(raw_bi) if (raw_bi is not None and pd.notna(raw_bi) and float(raw_bi) > 0) else None
             bd = float(raw_bd) if (raw_bd is not None and pd.notna(raw_bd) and float(raw_bd) > 0) else None
+            ld = float(raw_ld) if (raw_ld is not None and pd.notna(raw_ld) and float(raw_ld) > 0) else None
             points.append(
                 RTATransformPoint(
                     well_id=str(row["well_id"]),
@@ -334,6 +400,7 @@ def _transform_palacio_blasingame(df: pd.DataFrame) -> list[RTATransformPoint]:
                     material_balance_time=mbt,
                     blasingame_integral=bi,
                     blasingame_derivative=bd,
+                    log_derivative=ld,
                 )
             )
     return points
@@ -355,6 +422,8 @@ def _transform_agarwal_gardner(df: pd.DataFrame) -> list[RTATransformPoint]:
         mbt = float(row["material_balance_time"])
         nr = float(row["normalized_rate"])
         if mbt > 0 and nr > 0:
+            raw_ld = row.get("log_derivative")
+            ld = float(raw_ld) if (raw_ld is not None and pd.notna(raw_ld) and float(raw_ld) > 0) else None
             points.append(
                 RTATransformPoint(
                     well_id=str(row["well_id"]),
@@ -369,6 +438,7 @@ def _transform_agarwal_gardner(df: pd.DataFrame) -> list[RTATransformPoint]:
                     delta_p_psia=float(row["delta_p_psia"]),
                     normalized_rate=nr,
                     material_balance_time=mbt,
+                    log_derivative=ld,
                 )
             )
     return points
@@ -466,6 +536,7 @@ def rta_points_to_dataframe(points: list[RTATransformPoint]) -> pd.DataFrame:
                 "material_balance_time": p.material_balance_time,
                 "blasingame_integral": p.blasingame_integral,
                 "blasingame_derivative": p.blasingame_derivative,
+                "log_derivative": p.log_derivative,
             }
             for p in points
         ]
