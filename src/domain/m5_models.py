@@ -12,7 +12,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-DataStatus = Literal["measured", "estimated", "calculated", "demo", "missing"]
+DataStatus = Literal["measured", "estimated", "calculated", "demo", "preliminary", "missing"]
 
 
 class WellInfoSummary(BaseModel):

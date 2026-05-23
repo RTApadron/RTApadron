@@ -13,12 +13,16 @@ from __future__ import annotations
 
 import csv
 import math
+import sys
 from pathlib import Path
 
 import numpy as np
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 OUTPUT_DIR = PROJECT_ROOT / "data" / "type_curves"
+
+# Allow importing from src/
+sys.path.insert(0, str(PROJECT_ROOT))
 
 # Euler-Mascheroni constant: ln(γ) = 0.5772...  →  γ = e^0.5772 ≈ 1.7811
 _GAMMA_EM = math.exp(0.5772156649)
@@ -312,6 +316,64 @@ def generate_agarwal_gardner() -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
+# BLASINGAME composite (solver numérico implícito)
+# ---------------------------------------------------------------------------
+
+_BL_SOURCE = "blasingame.py implicit FD solver — radial constant-pressure (sin validación cuantitativa)"
+
+
+def generate_blasingame() -> list[dict]:
+    """Genera curvas tipo Blasingame compuestas (qDd, qDdi, qDdid vs tcDd).
+
+    Usa el solver numérico implícito en blasingame.py para 8 valores de reD.
+    Estado: demo — pendiente validación vs Software Comercial.
+    """
+    from src.rta_type_curves.blasingame import BlasingameCurveConfig, generate_blasingame_curves
+
+    cfg = BlasingameCurveConfig()
+    curve_set = generate_blasingame_curves(cfg)
+    df = curve_set.curves
+
+    rows: list[dict] = []
+    eps = cfg.eps
+
+    for re_d, grp in df.groupby("re_d", sort=True):
+        re_label = int(re_d) if re_d < 1e6 else int(re_d)
+        # Nombre compacto: 10, 20, 50, 100, 1e3, 1e4, 1e5, 1e6
+        re_str = (
+            f"{int(re_d)}"
+            if re_d < 1000
+            else f"{int(re_d / 10 ** int(math.log10(re_d)))}"
+                  + "e" + str(int(math.log10(re_d)))
+        )
+
+        for series, col, y_lbl in [
+            ("qDd",   "q_dd",   "qDd"),
+            ("qDdi",  "q_ddi",  "qDdi"),
+            ("qDdid", "q_ddid", "qDdid"),
+        ]:
+            cid = f"bl_reD_{int(re_d)}_{series}"
+            for _, pt in grp.iterrows():
+                x = float(pt["t_c_dd"])
+                y = float(pt[col])
+                if x > eps and y > eps:
+                    rows.append(dict(
+                        method="blasingame",
+                        curve_id=cid,
+                        curve_family="blasingame_composite",
+                        x=round(x, 10),
+                        y=round(y, 10),
+                        x_label="tcDd",
+                        y_label=y_lbl,
+                        source=_BL_SOURCE,
+                        status="demo",
+                        notes=f"reD={int(re_d)} series={series}",
+                    ))
+
+    return rows
+
+
+# ---------------------------------------------------------------------------
 # main
 # ---------------------------------------------------------------------------
 
@@ -330,10 +392,14 @@ def main() -> None:
     ag_rows = generate_agarwal_gardner()
     _write_csv(ag_rows, OUTPUT_DIR / "agarwal_gardner_base.csv")
 
-    total = len(fet_rows) + len(pb_rows) + len(ag_rows)
+    print("\nBlasingame composite (solver numérico)…")
+    bl_rows = generate_blasingame()
+    _write_csv(bl_rows, OUTPUT_DIR / "blasingame_base.csv")
+
+    total = len(fet_rows) + len(pb_rows) + len(ag_rows) + len(bl_rows)
     n_all = sum(
         len({r["curve_id"] for r in rows})
-        for rows in (fet_rows, pb_rows, ag_rows)
+        for rows in (fet_rows, pb_rows, ag_rows, bl_rows)
     )
     print(f"\nTotal: {n_all} curves, {total} points OK")
 

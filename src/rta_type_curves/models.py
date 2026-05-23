@@ -19,6 +19,7 @@ class RTATypeCurveMethod(StrEnum):
     FETKOVICH = "fetkovich"
     PALACIO_BLASINGAME = "palacio_blasingame"
     AGARWAL_GARDNER = "agarwal_gardner"
+    BLASINGAME = "blasingame"
 
 
 class CurveDataStatus(StrEnum):

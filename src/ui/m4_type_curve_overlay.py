@@ -1103,8 +1103,8 @@ def _run_m4_overlay(
         return
 
     # ---- Method tabs ----
-    _TAB_LABELS  = ["🔬 Fetkovich", "📊 Palacio-Blasingame", "📈 Agarwal-Gardner"]
-    _TAB_METHODS = [_RTAMethod.FETKOVICH, _RTAMethod.PALACIO_BLASINGAME, _RTAMethod.AGARWAL_GARDNER]
+    _TAB_LABELS  = ["🔬 Fetkovich", "📊 Palacio-Blasingame", "📈 Agarwal-Gardner", "🔵 Blasingame"]
+    _TAB_METHODS = [_RTAMethod.FETKOVICH, _RTAMethod.PALACIO_BLASINGAME, _RTAMethod.AGARWAL_GARDNER, _RTAMethod.BLASINGAME]
     _tabs = st.tabs(_TAB_LABELS)
 
     for _tab_idx, _tab in enumerate(_tabs):
@@ -1145,8 +1145,12 @@ def _run_m4_overlay(
                 st.error(f"Sin curvas para {_mval}.")
                 continue
 
-            _bdf_families = ("arps_bdf", "radial_bdf")
-            _bdf_curves   = [c for c in all_curves if c.curve_family in _bdf_families]
+            # Blasingame uses composite family; other methods use radial/arps BDF families
+            if method == _RTAMethod.BLASINGAME:
+                _bdf_curves = [c for c in all_curves if c.y_label == "qDd"]
+            else:
+                _bdf_families = ("arps_bdf", "radial_bdf")
+                _bdf_curves   = [c for c in all_curves if c.curve_family in _bdf_families]
             bdf_ids = [c.curve_id for c in _bdf_curves]
 
             # Build a tab10 color map for BDF stems (matches _generate_overlay_png color order)
@@ -1184,7 +1188,9 @@ def _run_m4_overlay(
                     key=f"ref_curve_{_mval}",
                 )
             with _auto_col:
-                _method_pts_auto = [p for p in rta_transform_points if p.method == method]
+                # Blasingame tab reuses PB transform points (same physics/variables)
+                _auto_method = _RTAMethod.PALACIO_BLASINGAME if method == _RTAMethod.BLASINGAME else method
+                _method_pts_auto = [p for p in rta_transform_points if p.method == _auto_method]
                 _rta_pts_auto = _transform_points_to_overlay(_method_pts_auto)
                 st.write("")  # alineación vertical con selectbox
                 if _rta_pts_auto and st.button(
@@ -1282,6 +1288,13 @@ def _run_m4_overlay(
                             _new_lbl = _SENSITIVITY_LABELS[_new_sidx]
                             st.session_state[_slk] = _new_lbl
                             st.session_state[_snk] = _SENSITIVITY_MAP[_new_lbl]
+                        elif _act == "auto":
+                            # SNES AUTO button — same logic as the 🎯 Auto button in UI
+                            _best_id = _find_best_bdf_stem(
+                                _bdf_curves, _rta_pts_auto, _x_eff, _y_eff
+                            )
+                            if _best_id and _best_id in bdf_ids:
+                                st.session_state[_auto_pending_key] = _best_id
                         elif _act == "save":
                             # Flag for processing AFTER _mp is computed
                             st.session_state[f"_pending_save_{_mval}"] = True
@@ -1315,7 +1328,9 @@ def _run_m4_overlay(
             # ---- Chart column ----
             with _chart_col:
                 # QC warnings — visible (no expander)
-                _method_pts = [p for p in rta_transform_points if p.method == method]
+                # Blasingame tab reuses PB transform points for QC and scatter overlay
+                _chart_method = _RTAMethod.PALACIO_BLASINGAME if method == _RTAMethod.BLASINGAME else method
+                _method_pts = [p for p in rta_transform_points if p.method == _chart_method]
                 if _method_pts:
                     _qc_results = run_rta_qc(
                         points=_method_pts,
@@ -1334,8 +1349,34 @@ def _run_m4_overlay(
 
                 st.subheader("Overlay log-log")
 
+                # ── Blasingame: independent type-curve series checkboxes ──────────
+                if method == _RTAMethod.BLASINGAME:
+                    _bl_col1, _bl_col2, _bl_col3 = st.columns(3)
+                    with _bl_col1:
+                        _bl_tc_qdd = st.checkbox(
+                            "Curvas qDd", value=True, key=f"bl_tc_qdd_{_mval}",
+                            help="Serie qDd de las curvas tipo Blasingame"
+                        )
+                    with _bl_col2:
+                        _bl_tc_qddi = st.checkbox(
+                            "Curvas qDdi", value=True, key=f"bl_tc_qddi_{_mval}",
+                            help="Serie qDdi de las curvas tipo Blasingame"
+                        )
+                    with _bl_col3:
+                        _bl_tc_qddid = st.checkbox(
+                            "Curvas qDdid", value=True, key=f"bl_tc_qddid_{_mval}",
+                            help="Serie qDdid de las curvas tipo Blasingame"
+                        )
+                    _sel_ylabels: list[str] = []
+                    if _bl_tc_qdd:   _sel_ylabels.append("qDd")
+                    if _bl_tc_qddi:  _sel_ylabels.append("qDdi")
+                    if _bl_tc_qddid: _sel_ylabels.append("qDdid")
+                    display_curves = [c for c in all_curves if c.y_label in _sel_ylabels] or all_curves
+                else:
+                    display_curves = all_curves
+
                 try:
-                    _method_pts_chart = [p for p in rta_transform_points if p.method == method]
+                    _method_pts_chart = [p for p in rta_transform_points if p.method == _chart_method]
                     if not _method_pts_chart:
                         st.warning(f"Sin puntos RTA para {_mval}.")
                     else:
@@ -1343,19 +1384,38 @@ def _run_m4_overlay(
 
                         _auxiliary: list[tuple[str, list[RTAOverlayPoint]]] = []
 
-                        # Blasingame auxiliary series (qDdi, qDdid) — opt-in checkbox
-                        if _mval == "palacio_blasingame":
-                            _show_pb_integrals = st.checkbox(
-                                "Mostrar series integrales (qDdi, qDdid)",
-                                value=False,
-                                key=f"show_pb_integrals_{_mval}",
-                                help="qDdi = integral normalizada · qDdid = derivada de la integral",
-                            )
-                            if _show_pb_integrals:
-                                _pb_pts = [
-                                    p for p in rta_transform_points
-                                    if p.method.value == "palacio_blasingame"
-                                ]
+                        # Scatter series — 3 independent checkboxes for P-B and Blasingame
+                        if _mval in ("palacio_blasingame", "blasingame"):
+                            _sc_col1, _sc_col2, _sc_col3 = st.columns(3)
+                            with _sc_col1:
+                                _show_sc_qdd = st.checkbox(
+                                    "Nube qDd",
+                                    value=True,
+                                    key=f"sc_qdd_{_mval}",
+                                    help="Tasa normalizada qDd = q/Δp",
+                                )
+                            with _sc_col2:
+                                _show_sc_qddi = st.checkbox(
+                                    "Nube qDdi",
+                                    value=True,
+                                    key=f"sc_qddi_{_mval}",
+                                    help="Integral normalizada de la tasa (qDdi)",
+                                )
+                            with _sc_col3:
+                                _show_sc_qddid = st.checkbox(
+                                    "Nube qDdid",
+                                    value=True,
+                                    key=f"sc_qddid_{_mval}",
+                                    help="Derivada de la integral normalizada (qDdid)",
+                                )
+
+                            # PB source points (Blasingame tab reuses PB transform)
+                            _pb_src = [
+                                p for p in rta_transform_points
+                                if p.method.value == "palacio_blasingame"
+                            ]
+
+                            if _show_sc_qddi:
                                 _int_pts = [
                                     RTAOverlayPoint(
                                         x=p.material_balance_time,
@@ -1363,8 +1423,12 @@ def _run_m4_overlay(
                                         label=p.well_id,
                                         date=p.date,
                                     )
-                                    for p in _pb_pts if p.blasingame_integral is not None
+                                    for p in _pb_src if p.blasingame_integral is not None
                                 ]
+                                if _int_pts:
+                                    _auxiliary.append(("qDdi (integral norm.)", _int_pts))
+
+                            if _show_sc_qddid:
                                 _drv_pts = [
                                     RTAOverlayPoint(
                                         x=p.material_balance_time,
@@ -1372,12 +1436,14 @@ def _run_m4_overlay(
                                         label=p.well_id,
                                         date=p.date,
                                     )
-                                    for p in _pb_pts if p.blasingame_derivative is not None
+                                    for p in _pb_src if p.blasingame_derivative is not None
                                 ]
-                                if _int_pts:
-                                    _auxiliary.append(("qDdi (integral norm.)", _int_pts))
                                 if _drv_pts:
                                     _auxiliary.append(("qDdid (deriv. integral)", _drv_pts))
+
+                            # qDd scatter: hide if unchecked
+                            if not _show_sc_qdd:
+                                _rta_pts = []
 
                         # Log-log diagnostic derivative — opt-in, all three methods
                         _show_log_deriv = st.checkbox(
@@ -1412,7 +1478,7 @@ def _run_m4_overlay(
 
                         # Interactive Plotly chart (zoom/pan/hover nativo)
                         _fig = _plot_all_curves_plotly(
-                            type_curves=all_curves,
+                            type_curves=display_curves,
                             raw_points=_rta_pts,
                             x_multiplier=_xm,
                             y_multiplier=_ym,
@@ -1426,7 +1492,7 @@ def _run_m4_overlay(
 
                         # PNG generado sólo para botones de descarga
                         _png = _generate_overlay_png(
-                            type_curves=all_curves,
+                            type_curves=display_curves,
                             raw_points=_rta_pts,
                             x_multiplier=_xm,
                             y_multiplier=_ym,
