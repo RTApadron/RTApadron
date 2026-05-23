@@ -4486,20 +4486,75 @@ def render_sidebar_nav() -> dict[str, Any]:
     st.sidebar.markdown("---")
     st.sidebar.markdown("##### 📋 Módulos")
 
-    _module_meta = [
-        ("M1",        "🗂 M1 — Pozo & Pwf",   "Historia, mecanismo, estimación Pwf"),
-        ("M2",        "🧪 M2 — PVT",           "Correlaciones PVT: Rs, Bo, μo, ρo"),
-        ("M3",        "📉 M3 — DCA",           "Declinación Arps: exp/hip/armónica"),
-        ("M4",        "🔬 M4 — RTA",           "Curvas tipo Fetkovich / Blasingame / AG"),
-        ("M5",        "📊 M5 — Resultados",    "Dashboard integrado, comparativo y exportación"),
-        ("Descargas", "⬇ Descargas",           "Todos los artefactos del workflow"),
-    ]
-
     _status_map = compute_module_status(well_id, OUTPUT_DIR) if well_id else {}
     _traffic = {"ok": "🟢", "warning": "🟡", "missing": "🔴"}
 
-    for _mod_key, _mod_label, _mod_help in _module_meta:
-        _light = _traffic.get(_status_map.get(_mod_key, "missing"), "🔴")
+    # Tooltips contextuales: describen qué archivo/acción activa cada módulo
+    def _module_help(mod_key: str, status: str) -> str:
+        if mod_key == "M1":
+            if status == "ok":
+                return "🟢 Historia enriquecida disponible en output/."
+            if status == "warning":
+                return "🟡 Historia disponible con advertencias QC. Revisa las advertencias en M1."
+            return (
+                "🔴 Módulo inactivo.\n"
+                "Para activar: carga una historia de producción CSV en M1 → "
+                "pestaña 📊 Historia, luego ejecuta ▶ Actualizar Historia."
+            )
+        if mod_key == "M2":
+            if status == "ok":
+                return "🟢 PVT confirmado — {safe}_pvt_config_ui.json disponible.".format(
+                    safe=well_id.strip() if well_id else "")
+            return (
+                "🟡 PVT usando valores por defecto.\n"
+                "Para activar 🟢: abre M2 → ajusta las correlaciones → "
+                "clic en '✅ Confirmar datos PVT'."
+            )
+        if mod_key == "M3":
+            if status == "ok":
+                return "🟢 DCA disponible en output/."
+            if status == "warning":
+                return "🟡 DCA disponible con advertencias (modelos con RMSE similar)."
+            return (
+                "🔴 Módulo inactivo.\n"
+                "Para activar: abre M3 → ejecuta el ajuste Arps → "
+                "clic en '💾 Guardar DCA para M5'."
+            )
+        if mod_key == "M4":
+            if status == "ok":
+                return "🟢 Match RTA guardado en output/."
+            if status == "warning":
+                return (
+                    "🟡 Diagnósticos RTA disponibles pero sin match guardado.\n"
+                    "Para activar 🟢: abre M4 → ajusta el overlay con el joystick → "
+                    "clic en '💾 SAVE' (botón verde del SNES)."
+                )
+            return (
+                "🔴 Módulo inactivo.\n"
+                "Para activar: ejecuta primero M1 (historia enriquecida), "
+                "luego abre M4 → carga la historia → ajusta el overlay → '💾 SAVE'."
+            )
+        if mod_key == "M5":
+            if status in ("ok", "warning"):
+                return "🟢 Al menos un módulo upstream tiene datos disponibles."
+            return (
+                "🔴 Sin datos upstream.\n"
+                "Ejecuta M1 (historia) y al menos M3 DCA o M4 RTA para ver resultados."
+            )
+        return "Artefactos del workflow para descarga."
+
+    _module_meta = [
+        ("M1",        "🗂 M1 — Pozo & Pwf"),
+        ("M2",        "🧪 M2 — PVT"),
+        ("M3",        "📉 M3 — DCA"),
+        ("M4",        "🔬 M4 — RTA"),
+        ("M5",        "📊 M5 — Resultados"),
+        ("Descargas", "⬇ Descargas"),
+    ]
+
+    for _mod_key, _mod_label in _module_meta:
+        _st = _status_map.get(_mod_key, "missing")
+        _light = _traffic.get(_st, "🔴")
         _btn_label = f"{_light} {_mod_label}"
         _is_active = _active == _mod_key
         # Use primary type for the active module to give visual emphasis
@@ -4508,7 +4563,7 @@ def render_sidebar_nav() -> dict[str, Any]:
             key=f"nav_{_mod_key}",
             use_container_width=True,
             type="primary" if _is_active else "secondary",
-            help=_mod_help,
+            help=_module_help(_mod_key, _st),
         ):
             st.session_state[SESSION_ACTIVE_MODULE] = _mod_key
             st.rerun()
