@@ -5362,6 +5362,37 @@ def render_artifacts(well_id: str, inputs: dict | None = None) -> None:
                             except Exception:
                                 pass
 
+                # ── Pre-seed sliders con best-fit al cambiar ventana ──────
+                _fit_window_key_m3 = f"{well_id}|{_fit_from_m3}|{_fit_to_m3}"
+                _bf_seed_st_key = "_m3_bf_seeded_key"
+                if (
+                    _bf_results
+                    and st.session_state.get(_bf_seed_st_key) != _fit_window_key_m3
+                ):
+                    if "exp" in _bf_results:
+                        _qs, _ds, _ = _bf_results["exp"]
+                        _ds_pct = (1.0 - _np_dca.exp(-_ds * 365.0)) * 100.0
+                        st.session_state["dca_qi_val"] = float(max(0.1, min(_qs, 99999.0)))
+                        st.session_state["dca_di_exp_pct"] = float(max(1.0, min(_ds_pct, 200.0)))
+                    if "hip" in _bf_results:
+                        _qsh, _dsh, _bsh = _bf_results["hip"]
+                        _dsh_pct = (
+                            (1.0 - (1.0 + _bsh * _dsh * 365.0) ** (-1.0 / _bsh)) * 100.0
+                            if _bsh > 1e-6
+                            else (1.0 - _np_dca.exp(-_dsh * 365.0)) * 100.0
+                        )
+                        if "exp" not in _bf_results:
+                            st.session_state["dca_qi_val"] = float(max(0.1, min(_qsh, 99999.0)))
+                        st.session_state["dca_di_hip_pct"] = float(max(1.0, min(_dsh_pct, 200.0)))
+                        st.session_state["dca_b_hip"] = float(max(0.05, min(_bsh, 2.0)))
+                    if "arm" in _bf_results:
+                        _qsa, _dsa, _ = _bf_results["arm"]
+                        _dsa_pct = _dsa * 365.0 / (1.0 + _dsa * 365.0) * 100.0
+                        if "exp" not in _bf_results and "hip" not in _bf_results:
+                            st.session_state["dca_qi_val"] = float(max(0.1, min(_qsa, 99999.0)))
+                        st.session_state["dca_di_arm_pct"] = float(max(1.0, min(_dsa_pct, 200.0)))
+                    st.session_state[_bf_seed_st_key] = _fit_window_key_m3
+
                 _col_ctrl_m3, _col_chart_m3 = st.columns([1, 2.5])
 
                 with _col_ctrl_m3:

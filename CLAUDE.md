@@ -45,11 +45,11 @@ producción en los Llanos Orientales."
 | M1 | Historia + Pwf v2 D-W + esquema mecánico + 9 QC checks + editor embebido en hub | ✅ Funcional | `test_well_mech_qc_service.py` (51) |
 | M2 | PVT: Rs/Bo/μo/ρo — Standing, VB, BR; botón "✅ Confirmar datos" semáforo verde | ✅ Funcional | `test_pvt_correlations.py` (46) |
 | M3 | DCA multi-método Arps; semilog + best-fit; semáforo verde funcional; qi=último Qo | ✅ Funcional | varios |
-| M4 | RTA 60 curvas; SNES controller (componente bidireccional); joystick 7 pasos; curvas tipo sin picos; Y-axis clamped [1e-4,200] | ✅ Funcional | varios |
+| M4 | RTA 60 curvas; Plotly zoom interactivo; botón 🎯 Auto stem; derivada log-log; SNES controller; joystick 7 pasos | ✅ Funcional | varios |
 | M5 | Resultados integrados, dashboard 7 pestañas, exportación, tabla comparativa | ✅ Funcional + integrado | varios |
 | Inicio | Tarjetas M1→M5 con logos PNG 140px; semáforo; botones nav; GPL-3 | ✅ Funcional | — |
 
-**Tests totales: 387 passed, 1 warning (Pydantic v1 @validator en `src/well_mod/models.py`)**
+**Tests totales: 391 passed, 1 warning (Pydantic v1 @validator en `src/well_mod/models.py`)**
 
 ---
 
@@ -57,7 +57,7 @@ producción en los Llanos Orientales."
 
 ### Sesión 3 fixes 2026-05-22 (commit — ver abajo)
 
-**`TBD` — fix(sesion3): SNES controller, curvas tipo sin picos, logos 140px, M2 Confirmar**
+**`501ff36` — fix(sesion3): SNES controller, curvas tipo sin picos, logos 140px, M2 Confirmar**
 - **M4 SNES controller:** componente Streamlit bidireccional (`declare_component`); imagen PNG
   real del SNES superpuesta con hotspots transparentes (D-pad, perilla sensibilidad ×2, RESET, SAVE);
   needle rotatoria −120°→+120°; protocolo `{action, seq}` con dedup por seq
@@ -372,27 +372,24 @@ SESSION_PVT_CONFIG_PATH        = "pvt_config_ui_path"
 - [x] M2 "Confirmar datos" semáforo
 - [x] Pantalla Inicio completa
 
-### 🟡 Próximo sprint — M4 sesión 4 (pendiente planificar)
+### ✅ Sprint M4 sesión 4 — COMPLETADO (2026-05-22, commits ab170e3 → 7bfb259)
 
-- **M4 SNES hotspots fine-tuning:** posiciones de botones no coinciden 100% con la imagen
-  (usuario dijo "es manejable" — baja urgencia). Ajustar `left/top/width/height` en `index.html`.
-- **M4 P-B qDdid V-shapes:** la serie derivada-integral (qDdid) aún muestra V-shapes en
-  ciertos stems. Usuario dijo "no importa" en sesión 3 — dejar para sesión 4 si afecta interpretación.
-  Causa: `np.gradient` en transición BDF→transient; posible fix: suavizado Savitzky-Golay o
-  condicional en el cálculo de `_compute_pb_integrals`.
-- **M4 auto-selección mejor stem:** algoritmo que proponga automáticamente la curva BDF más
-  cercana a los datos ajustados (distancia mínima en log-log).
-- **M4 zoom interactivo:** reemplazar `st.image(png)` por gráfica Plotly para zoom/pan nativo.
-- **M4 curvas derivada/beta-derivada:** agregar series de derivada logarítmica (diagnóstico de flujo).
-- **Semáforo hover info:** tooltip con detalle al pasar sobre cada semáforo en sidebar.
+- [x] M4 zoom interactivo: `st.image(png)` → Plotly (`_plot_all_curves_plotly`); PNG queda para descargas
+- [x] M4 auto-selección mejor stem: `_find_best_bdf_stem()` + botón 🎯 Auto (distancia log-log media)
+- [x] M4 derivada log-log: campo `log_derivative` en `RTATransformPoint`, checkbox opt-in en 3 tabs
+- [x] M1 paneles geometría unificados: sub-pestañas 🛢 Esquema / 📐 Survey + merge no-destructivo
+- [x] 4 tests nuevos (log_derivative) → 391 passed
 
-### 🟡 Prioridad media — otros módulos
+**Pendientes baja urgencia (dejar para sesión 5):**
+- M4 SNES hotspots fine-tuning (baja urgencia)
+- M4 P-B qDdid V-shapes (usuario dijo "no importa")
+- Semáforo hover info: tooltip con detalle en sidebar
 
-- **Unificar paneles geometría M1:** dos paneles de guardado en Geometría/Survey (editor embebido
-  + formulario simple) — ambos escriben `_well_geometry.json`. Decidir: eliminar uno O sub-pestañas.
+### 🟡 Próximo sprint — sesión 5
+
+- **M3 pre-cargar best-fit → sliders:** Di/b/qi del best-fit automático como valores iniciales de sliders
 - **Validar workflow end-to-end** con datos reales W001.
 - **Módulo Ayuda:** contenido (guía flujo M1→M5, tabla unidades, referencias correlaciones).
-- **M3 pre-cargar best-fit → sliders:** Di/b/qi del best-fit automático como valores iniciales.
 
 ### 🟢 Prioridad baja / futuro
 
