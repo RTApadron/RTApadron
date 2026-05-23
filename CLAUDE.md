@@ -372,12 +372,14 @@ SESSION_PVT_CONFIG_PATH        = "pvt_config_ui_path"
 - [x] M2 "Confirmar datos" semáforo
 - [x] Pantalla Inicio completa
 
-### ✅ Sprint M4 sesión 4 — COMPLETADO (2026-05-22, commits ab170e3 → 7bfb259)
+### ✅ Sprint sesión 4 — COMPLETADO (2026-05-22, commits ab170e3 → 4312892)
 
 - [x] M4 zoom interactivo: `st.image(png)` → Plotly (`_plot_all_curves_plotly`); PNG queda para descargas
 - [x] M4 auto-selección mejor stem: `_find_best_bdf_stem()` + botón 🎯 Auto (distancia log-log media)
 - [x] M4 derivada log-log: campo `log_derivative` en `RTATransformPoint`, checkbox opt-in en 3 tabs
 - [x] M1 paneles geometría unificados: sub-pestañas 🛢 Esquema / 📐 Survey + merge no-destructivo
+- [x] M3 pre-cargar best-fit en sliders: Di/b/qi seeded al cambiar ventana de ajuste
+- [x] Módulo Ayuda: 5 tabs (guía M1→M5, unidades, correlaciones, bibliografía, licencia)
 - [x] 4 tests nuevos (log_derivative) → 391 passed
 
 **Pendientes baja urgencia (dejar para sesión 5):**
@@ -387,9 +389,9 @@ SESSION_PVT_CONFIG_PATH        = "pvt_config_ui_path"
 
 ### 🟡 Próximo sprint — sesión 5
 
-- **M3 pre-cargar best-fit → sliders:** Di/b/qi del best-fit automático como valores iniciales de sliders
-- **Validar workflow end-to-end** con datos reales W001.
-- **Módulo Ayuda:** contenido (guía flujo M1→M5, tabla unidades, referencias correlaciones).
+- **Validar workflow end-to-end** con datos reales W001 (archivos disponibles en raíz del proyecto).
+- **M5 QC final y trazabilidad:** badges medido/estimado/calculado en dashboard.
+- **Push branch** `feature/m4-type-curve-overlay` al origin (16 commits adelante).
 
 ### 🟢 Prioridad baja / futuro
 
