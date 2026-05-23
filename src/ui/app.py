@@ -1731,7 +1731,16 @@ def render_m1_geometry_and_survey_panel(well_id: str) -> None:
             use_container_width=True,
         ):
             try:
-                write_json(artifacts.well_geometry_json, geometry_payload)
+                # Merge-write: preserve fields from the rich M1 editor (casing_strings,
+                # tubing_strings, esp_depth_md_ft, etc.) instead of overwriting them.
+                _existing_geo: dict = {}
+                if artifacts.well_geometry_json.exists():
+                    try:
+                        _existing_geo = read_json(artifacts.well_geometry_json)
+                    except Exception:
+                        pass
+                _merged_geo = {**_existing_geo, **geometry_payload}
+                write_json(artifacts.well_geometry_json, _merged_geo)
 
                 clean_survey_df = edited_survey_df.copy()
                 for column in ("md_ft", "tvd_ft", "inclination_deg", "azimuth_deg"):
@@ -5182,21 +5191,22 @@ def render_artifacts(well_id: str, inputs: dict | None = None) -> None:
                 )
 
         with m1_tabs[1]:
-            # ── Visual well schematic editor (M1 embedded) ────────────────
-            st.subheader("🛢 Esquema mecánico interactivo")
-            st.caption(
-                "Configura casing, tubing, ESP y perforaciones para generar el "
-                "esquema visual del pozo y activar el cálculo de Pwf."
-            )
-            try:
-                from src.ui.m1_well_editor import render_m1_editor_embedded
-                render_m1_editor_embedded(well_id)
-            except Exception as _m1e_exc:
-                st.error(f"Error al cargar el editor mecánico: {_m1e_exc}")
+            # ── Sub-pestañas: separar editor mecánico del survey ─────────
+            _geo_subtabs = st.tabs(["🛢 Esquema mecánico", "📐 Survey y profundidades"])
 
-            st.divider()
-            # ── Simple geometry form + survey table ───────────────────────
-            render_m1_geometry_and_survey_panel(well_id)
+            with _geo_subtabs[0]:
+                st.caption(
+                    "Configura casing, tubing, ESP y perforaciones para generar el "
+                    "esquema visual del pozo y activar el cálculo de Pwf."
+                )
+                try:
+                    from src.ui.m1_well_editor import render_m1_editor_embedded
+                    render_m1_editor_embedded(well_id)
+                except Exception as _m1e_exc:
+                    st.error(f"Error al cargar el editor mecánico: {_m1e_exc}")
+
+            with _geo_subtabs[1]:
+                render_m1_geometry_and_survey_panel(well_id)
 
         with m1_tabs[2]:
             if enriched_df is None:
