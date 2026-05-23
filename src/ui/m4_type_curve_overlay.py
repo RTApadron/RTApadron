@@ -703,6 +703,54 @@ def _clamp_multiplier(value: float) -> float:
     return min(max(float(value), MIN_MULTIPLIER), MAX_MULTIPLIER)
 
 
+def _find_best_bdf_stem(
+    bdf_curves: list[Any],
+    raw_points: list[RTAOverlayPoint],
+    x_multiplier: float,
+    y_multiplier: float,
+) -> str | None:
+    """Return the BDF curve_id whose shape is closest to the shifted data.
+
+    Uses mean of minimum log-log distances: for each shifted data point finds
+    the nearest point on the curve (in log10 space), then averages those
+    distances across all data points. The curve with the smallest average wins.
+    """
+    if not bdf_curves or not raw_points:
+        return None
+
+    shifted_log = [
+        (math.log10(p.x * x_multiplier), math.log10(p.y * y_multiplier))
+        for p in raw_points
+        if p.x > 0 and p.y > 0
+        and p.x * x_multiplier > 0 and p.y * y_multiplier > 0
+    ]
+    if not shifted_log:
+        return None
+
+    best_id: str | None = None
+    best_score = math.inf
+
+    for curve in bdf_curves:
+        curve_log = [
+            (math.log10(pt.x), math.log10(pt.y))
+            for pt in curve.points
+            if pt.x > 0 and pt.y > 0
+        ]
+        if not curve_log:
+            continue
+
+        total = sum(
+            min(math.hypot(cx - dx, cy - dy) for cx, cy in curve_log)
+            for dx, dy in shifted_log
+        )
+        score = total / len(shifted_log)
+        if score < best_score:
+            best_score = score
+            best_id = curve.curve_id
+
+    return best_id
+
+
 # 7 sensitivity steps: 1=MIN (finest) … 7=MAX (coarsest)
 # Each value is log10-decades per click → step_factor = 10^decades
 _SENSITIVITY_STEPS: list[tuple[str, float]] = [
@@ -971,11 +1019,37 @@ def _run_m4_overlay(
                 f"{len(all_curves)} curvas — {len(bdf_ids)} BDF + {_n_trans} transientes"
             )
 
-            ref_id = st.selectbox(
-                "Curva BDF de referencia (para kh/k)",
-                options=bdf_ids,
-                key=f"ref_curve_{_mval}",
-            )
+            # Read multipliers here so the Auto button can use them
+            _x_eff = _clamp_multiplier(st.session_state[_xk])
+            _y_eff = _clamp_multiplier(st.session_state[_yk])
+
+            # Selectbox + 🎯 Auto-selección del mejor stem
+            _sel_col, _auto_col = st.columns([3, 1])
+            with _sel_col:
+                ref_id = st.selectbox(
+                    "Curva BDF de referencia (para kh/k)",
+                    options=bdf_ids,
+                    key=f"ref_curve_{_mval}",
+                )
+            with _auto_col:
+                _method_pts_auto = [p for p in rta_transform_points if p.method == method]
+                _rta_pts_auto = _transform_points_to_overlay(_method_pts_auto)
+                st.write("")  # alineación vertical con selectbox
+                if _rta_pts_auto and st.button(
+                    "🎯 Auto",
+                    key=f"auto_stem_{_mval}",
+                    help=(
+                        "Selecciona automáticamente la curva BDF cuya forma "
+                        "minimiza la distancia log-log media a los datos ajustados."
+                    ),
+                    use_container_width=True,
+                ):
+                    _best_id = _find_best_bdf_stem(
+                        _bdf_curves, _rta_pts_auto, _x_eff, _y_eff
+                    )
+                    if _best_id and _best_id in bdf_ids:
+                        st.session_state[f"ref_curve_{_mval}"] = _best_id
+                        st.rerun()
 
             # Color legend for BDF stems — shows which color corresponds to each curve
             if _bdf_color_hex:
@@ -997,10 +1071,6 @@ def _run_m4_overlay(
 
             # 2-column layout: chart (wide) | joystick+results (narrow)
             _chart_col, _joy_col = st.columns([3, 1.2])
-
-            # Current multipliers (read once; updated by callbacks on next rerun)
-            _x_eff = _clamp_multiplier(st.session_state[_xk])
-            _y_eff = _clamp_multiplier(st.session_state[_yk])
 
             # ---- SNES Controller column ----
             with _joy_col:
