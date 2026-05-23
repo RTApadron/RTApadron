@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from src.domain.m5_models import WellResultsSummary
+from src.domain.m5_models import ComparisonRow, ExternalSoftwareResult, WellResultsSummary
 
 
 # ---------------------------------------------------------------------------
@@ -130,8 +130,16 @@ def export_json_bytes(summary: WellResultsSummary) -> bytes:
 # Excel (xlsxwriter)
 # ---------------------------------------------------------------------------
 
-def export_excel_bytes(summary: WellResultsSummary) -> bytes:
-    """Genera un Excel con una hoja por módulo usando xlsxwriter."""
+def export_excel_bytes(
+    summary: WellResultsSummary,
+    external: ExternalSoftwareResult | None = None,
+    comparison_rows: list[ComparisonRow] | None = None,
+) -> bytes:
+    """Genera un Excel con una hoja por módulo usando xlsxwriter.
+
+    Si se proporcionan `external` y `comparison_rows`, añade una hoja
+    "Validacion" con la tabla comparativa ecoRTA vs software comercial.
+    """
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine="xlsxwriter") as writer:
         wb = writer.book
@@ -290,16 +298,104 @@ def export_excel_bytes(summary: WellResultsSummary) -> bytes:
         ws_comp.set_column(1, 1, 28)
         ws_comp.set_column(2, 5, 16)
 
+        # ── Hoja Validacion vs SW Comercial (opcional) ───────────────────────
+        if external is not None and comparison_rows:
+            _write_validation_sheet(wb, writer, summary, external, comparison_rows,
+                                    fmt_title, fmt_header, fmt_num, fmt_int, fmt_cell, fmt_demo)
+
     buf.seek(0)
     return buf.read()
+
+
+def _write_validation_sheet(
+    wb: object,
+    writer: object,
+    summary: WellResultsSummary,
+    external: ExternalSoftwareResult,
+    rows: list[ComparisonRow],
+    fmt_title: object,
+    fmt_header: object,
+    fmt_num: object,
+    fmt_int: object,
+    fmt_cell: object,
+    fmt_demo: object,
+) -> None:
+    """Añade la hoja 'Validacion' con la tabla comparativa al workbook."""
+    _STATUS_ICONS_XL = {
+        "match": "✅",
+        "close": "🟡",
+        "diverge": "🔴",
+        "missing": "⬜",
+    }
+    ws_val = wb.add_worksheet("Validacion")
+    writer.sheets["Validacion"] = ws_val
+
+    label = external.software_label or "Software Comercial"
+    ws_val.write(0, 0, f"Validación ecoRTA vs {label} — Pozo {summary.well_id}", fmt_title)
+    ws_val.write(1, 0, f"Generado: {_now_str()}", fmt_cell)
+
+    cols_val = [
+        "Parámetro", "Unidades",
+        "ecoRTA", label,
+        "Δ absoluto", "Δ relativo (%)", "Concordancia", "Nota",
+    ]
+    header_row = 3
+    for c, label_col in enumerate(cols_val):
+        ws_val.write(header_row, c, label_col, fmt_header)
+
+    for i, r in enumerate(rows):
+        row = header_row + 1 + i
+        icon = _STATUS_ICONS_XL.get(r.status, "")
+        ws_val.write(row, 0, r.parameter, fmt_cell)
+        ws_val.write(row, 1, r.units, fmt_cell)
+        ws_val.write(row, 2, r.ecorta_value if r.ecorta_value is not None else "", fmt_num)
+        ws_val.write(row, 3, r.external_value if r.external_value is not None else "", fmt_num)
+        ws_val.write(row, 4, r.abs_diff if r.abs_diff is not None else "", fmt_num)
+        ws_val.write(row, 5, f"{r.rel_diff_pct:+.2f} %" if r.rel_diff_pct is not None else "—", fmt_cell)
+        ws_val.write(row, 6, f"{icon} {r.status}", fmt_cell)
+        ws_val.write(row, 7, r.note, fmt_demo if r.note else fmt_cell)
+
+    # Score summary
+    score_row = header_row + len(rows) + 2
+    counts = {"match": 0, "close": 0, "diverge": 0, "missing": 0}
+    for r in rows:
+        counts[r.status] = counts.get(r.status, 0) + 1
+    total_comp = counts["match"] + counts["close"] + counts["diverge"]
+    pct_ok = (counts["match"] + counts["close"]) / total_comp * 100 if total_comp > 0 else 0.0
+
+    fmt_score = wb.add_format({"bold": True, "border": 1, "bg_color": "#d5e8d4" if pct_ok >= 80 else "#fff2cc" if pct_ok >= 50 else "#f8cecc"})
+    ws_val.write(score_row, 0, "Score global", fmt_header)
+    ws_val.write(score_row, 1, f"{pct_ok:.0f}% concordancia (match+close)", fmt_score)
+    ws_val.write(score_row + 1, 0, "✅ Match", fmt_cell)
+    ws_val.write(score_row + 1, 1, counts["match"], fmt_int)
+    ws_val.write(score_row + 2, 0, "🟡 Close", fmt_cell)
+    ws_val.write(score_row + 2, 1, counts["close"], fmt_int)
+    ws_val.write(score_row + 3, 0, "🔴 Diverge", fmt_cell)
+    ws_val.write(score_row + 3, 1, counts["diverge"], fmt_int)
+    ws_val.write(score_row + 4, 0, "⬜ Missing", fmt_cell)
+    ws_val.write(score_row + 4, 1, counts["missing"], fmt_int)
+
+    ws_val.set_column(0, 0, 32)
+    ws_val.set_column(1, 1, 20)
+    ws_val.set_column(2, 5, 14)
+    ws_val.set_column(6, 6, 16)
+    ws_val.set_column(7, 7, 40)
 
 
 # ---------------------------------------------------------------------------
 # PDF (matplotlib PdfPages — sin dependencias extra)
 # ---------------------------------------------------------------------------
 
-def export_pdf_bytes(summary: WellResultsSummary) -> bytes:
-    """Genera un PDF multi-página con matplotlib PdfPages."""
+def export_pdf_bytes(
+    summary: WellResultsSummary,
+    external: ExternalSoftwareResult | None = None,
+    comparison_rows: list[ComparisonRow] | None = None,
+) -> bytes:
+    """Genera un PDF multi-página con matplotlib PdfPages.
+
+    Si se proporcionan `external` y `comparison_rows`, añade una página
+    con la tabla comparativa de validación.
+    """
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -395,6 +491,10 @@ def export_pdf_bytes(summary: WellResultsSummary) -> bytes:
             pdf.savefig(fig2)
             plt.close(fig2)
 
+        # ── Página 3: Validación vs software comercial (opcional) ──────────
+        if external is not None and comparison_rows:
+            _pdf_add_validation_page(pdf, summary, external, comparison_rows)
+
         # Metadata del PDF
         pdf.infodict()["Title"] = f"ecoRTA — Reporte {summary.well_id}"
         pdf.infodict()["Author"] = "ecoRTA M5"
@@ -404,15 +504,110 @@ def export_pdf_bytes(summary: WellResultsSummary) -> bytes:
     return buf.read()
 
 
+def _pdf_add_validation_page(
+    pdf: object,
+    summary: WellResultsSummary,
+    external: ExternalSoftwareResult,
+    rows: list[ComparisonRow],
+) -> None:
+    """Añade una página de validación al PdfPages."""
+    import matplotlib.pyplot as plt
+
+    _STATUS_COLORS_PDF = {
+        "match":   "#d5e8d4",
+        "close":   "#fff2cc",
+        "diverge": "#f8cecc",
+        "missing": "#f5f5f5",
+    }
+    _STATUS_ICONS_PDF = {"match": "✅", "close": "🟡", "diverge": "🔴", "missing": "⬜"}
+
+    fig, ax = plt.subplots(figsize=(11, 8.5))
+    ax.axis("off")
+
+    label = external.software_label or "Software Comercial"
+    ax.set_title(
+        f"Validación ecoRTA vs {label} — Pozo {summary.well_id}",
+        fontsize=13, fontweight="bold", pad=20, color="#1a1a2e",
+    )
+
+    # Calcular score
+    counts = {"match": 0, "close": 0, "diverge": 0, "missing": 0}
+    for r in rows:
+        counts[r.status] = counts.get(r.status, 0) + 1
+    total_comp = counts["match"] + counts["close"] + counts["diverge"]
+    pct_ok = (counts["match"] + counts["close"]) / total_comp * 100 if total_comp > 0 else 0.0
+    badge_color = "#27ae60" if pct_ok >= 80 else "#e67e22" if pct_ok >= 50 else "#e74c3c"
+    badge_text = "✅ VALIDADO" if pct_ok >= 80 else "⚠️ VALIDACIÓN PARCIAL" if pct_ok >= 50 else "🔴 DIVERGENCIA ALTA"
+
+    ax.text(0.5, 0.97, f"{badge_text}  —  {pct_ok:.0f}% concordancia",
+            transform=ax.transAxes, ha="center", va="top",
+            fontsize=11, fontweight="bold", color="white",
+            bbox=dict(facecolor=badge_color, boxstyle="round,pad=0.3", edgecolor="none"))
+
+    # Tabla matplotlib
+    col_labels = ["Parámetro", "Unidades", "ecoRTA", label, "Δ %", "Concordancia"]
+    table_data = []
+    cell_colors = []
+    for r in rows:
+        icon = _STATUS_ICONS_PDF.get(r.status, "")
+        table_data.append([
+            r.parameter,
+            r.units,
+            f"{r.ecorta_value:.4g}" if r.ecorta_value is not None else "—",
+            f"{r.external_value:.4g}" if r.external_value is not None else "—",
+            f"{r.rel_diff_pct:+.2f}%" if r.rel_diff_pct is not None else "—",
+            f"{icon} {r.status}",
+        ])
+        bg = _STATUS_COLORS_PDF.get(r.status, "#ffffff")
+        cell_colors.append([bg] * 6)
+
+    if table_data:
+        tbl = ax.table(
+            cellText=table_data,
+            colLabels=col_labels,
+            cellColours=cell_colors,
+            loc="center",
+            cellLoc="left",
+        )
+        tbl.auto_set_font_size(False)
+        tbl.set_fontsize(7.5)
+        tbl.scale(1, 1.4)
+        # Header style
+        for j in range(len(col_labels)):
+            tbl[(0, j)].set_facecolor("#2c3e50")
+            tbl[(0, j)].set_text_props(color="white", fontweight="bold")
+
+    ax.text(0.5, 0.02,
+            f"Score: ✅ {counts['match']} match  🟡 {counts['close']} close  "
+            f"🔴 {counts['diverge']} diverge  ⬜ {counts['missing']} missing  |  "
+            f"Generado: {_now_str()}",
+            transform=ax.transAxes, ha="center", va="bottom",
+            fontsize=7, color="#7f8c8d")
+
+    fig.tight_layout()
+    pdf.savefig(fig)
+    plt.close(fig)
+
+
 # ---------------------------------------------------------------------------
 # Guardar a disco (helper)
 # ---------------------------------------------------------------------------
 
 def save_all_exports(summary: WellResultsSummary, output_dir: Path | str) -> dict[str, Path]:
-    """Escribe CSV, JSON, Excel y PDF en output_dir. Devuelve rutas generadas."""
+    """Escribe CSV, JSON, Excel y PDF en output_dir. Devuelve rutas generadas.
+
+    Si existe `{well_id}_external_reference.json` en output_dir, lo carga
+    automáticamente para incluir la hoja/página de validación en Excel y PDF.
+    """
+    from src.services.m5_comparison_service import build_comparison_table, load_external_result
+
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
     wid = summary.well_id
+
+    # Cargar validación si existe
+    external = load_external_result(out, wid)
+    comparison_rows = build_comparison_table(summary, external) if external else None
 
     paths: dict[str, Path] = {}
 
@@ -425,11 +620,11 @@ def save_all_exports(summary: WellResultsSummary, output_dir: Path | str) -> dic
     paths["json"] = p_json
 
     p_xlsx = out / f"{wid}_m5_report.xlsx"
-    p_xlsx.write_bytes(export_excel_bytes(summary))
+    p_xlsx.write_bytes(export_excel_bytes(summary, external, comparison_rows))
     paths["xlsx"] = p_xlsx
 
     p_pdf = out / f"{wid}_m5_report.pdf"
-    p_pdf.write_bytes(export_pdf_bytes(summary))
+    p_pdf.write_bytes(export_pdf_bytes(summary, external, comparison_rows))
     paths["pdf"] = p_pdf
 
     return paths

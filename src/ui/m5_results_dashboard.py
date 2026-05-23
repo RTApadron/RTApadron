@@ -131,8 +131,11 @@ def _tab_pvt(summary: WellResultsSummary) -> None:
     c5.metric("Rs promedio (scf/STB)", _fmt_num(pvt.avg_rs_scf_stb, 0))
     c6.metric("μo promedio (cp)", _fmt_num(pvt.avg_mu_o_cp, 3))
 
+    # Badge de trazabilidad PVT
+    _src_labels = {"lab": "medido (laboratorio)", "correlation": "estimado (correlación)", "default": "valores por defecto"}
+    _src_label = _src_labels.get(pvt.pvt_source, pvt.pvt_source)
     st.markdown(
-        _badge("estimado", pvt.status),
+        _badge(_src_label, pvt.status),
         unsafe_allow_html=True,
     )
     st.caption("Valores representativos del intervalo de producción. Para análisis detallado ver UI M2.")
@@ -165,6 +168,11 @@ def _tab_dca(summary: WellResultsSummary) -> None:
 
     if dca.best_model:
         st.success(f"Mejor ajuste: **{dca.best_model.capitalize()}** (mayor R²)")
+
+    st.markdown(
+        _badge("calculado (ajuste Arps)", dca.status or "calculated"),
+        unsafe_allow_html=True,
+    )
 
     try:
         import plotly.graph_objects as go
@@ -222,6 +230,19 @@ def _tab_rta(summary: WellResultsSummary) -> None:
     c7, c8 = st.columns(2)
     c7.metric("Multiplicador X", _fmt_num(rta.x_multiplier, 4))
     c8.metric("Multiplicador Y", _fmt_num(rta.y_multiplier, 4))
+
+    # Badges de trazabilidad por parámetro
+    b1, b2, _ = st.columns([1, 1, 2])
+    with b1:
+        st.markdown(
+            _badge("kh · k — estimado (match)", rta.kh_status),
+            unsafe_allow_html=True,
+        )
+    with b2:
+        st.markdown(
+            _badge("OOIP — estimado (volumétrico)", rta.n_vol_status),
+            unsafe_allow_html=True,
+        )
 
     # Imagen overlay si existe
     overlay_png = OUTPUT_DIR / f"{summary.well_id}_rta_overlay.png"
@@ -349,6 +370,20 @@ def _tab_exportar(summary: WellResultsSummary) -> None:
     )
 
     well_id = summary.well_id
+
+    # Cargar validación si existe (para incluirla en Excel y PDF)
+    external = load_external_result(OUTPUT_DIR, well_id)
+    comparison_rows = (
+        build_comparison_table(summary, external)
+        if external is not None
+        else None
+    )
+    if external is not None:
+        st.info(
+            f"📎 Datos de validación cargados desde `output/{well_id}_external_reference.json` — "
+            "se incluirá hoja 'Validacion' en Excel y página adicional en PDF."
+        )
+
     col1, col2 = st.columns(2)
 
     with col1:
@@ -372,7 +407,7 @@ def _tab_exportar(summary: WellResultsSummary) -> None:
 
     with col2:
         if st.button("Preparar Excel (por módulo)"):
-            data = export_excel_bytes(summary)
+            data = export_excel_bytes(summary, external, comparison_rows)
             st.download_button(
                 "⬇ Descargar Excel",
                 data=data,
@@ -381,7 +416,7 @@ def _tab_exportar(summary: WellResultsSummary) -> None:
             )
 
         if st.button("Preparar PDF (reporte)"):
-            data = export_pdf_bytes(summary)
+            data = export_pdf_bytes(summary, external, comparison_rows)
             st.download_button(
                 "⬇ Descargar PDF",
                 data=data,
@@ -412,6 +447,34 @@ _STATUS_LABELS = {
     "diverge": "Divergencia        (|Δ| ≥ 20 %)",
     "missing": "Dato faltante",
 }
+
+
+def _validation_header_badge(rows: list) -> None:
+    """Muestra badge de validación global basado en el score de concordancia."""
+    if not rows:
+        return
+    counts = {"match": 0, "close": 0, "diverge": 0, "missing": 0}
+    for r in rows:
+        counts[r.status] = counts.get(r.status, 0) + 1
+    total_comp = counts["match"] + counts["close"] + counts["diverge"]
+    if total_comp == 0:
+        return
+    pct_ok = (counts["match"] + counts["close"]) / total_comp * 100
+    if pct_ok >= 80:
+        st.markdown(
+            _badge(f"✅ VALIDADO — {pct_ok:.0f}% concordancia (match + close)", "measured"),
+            unsafe_allow_html=True,
+        )
+    elif pct_ok >= 50:
+        st.markdown(
+            _badge(f"⚠️ VALIDACIÓN PARCIAL — {pct_ok:.0f}% concordancia", "preliminary"),
+            unsafe_allow_html=True,
+        )
+    else:
+        st.markdown(
+            _badge(f"🔴 DIVERGENCIA ALTA — solo {pct_ok:.0f}% concordancia", "demo"),
+            unsafe_allow_html=True,
+        )
 
 
 def _tab_validacion(summary: WellResultsSummary) -> None:
@@ -518,6 +581,9 @@ def _tab_validacion(summary: WellResultsSummary) -> None:
     st.subheader(f"Tabla comparativa: ecoRTA vs {software_label}")
 
     rows = build_comparison_table(summary, external, dca_model=dca_sel)
+
+    # Badge de validación global (visible en la parte superior del análisis)
+    _validation_header_badge(rows)
 
     import pandas as pd
 

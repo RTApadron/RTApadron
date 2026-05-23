@@ -135,13 +135,19 @@ def _build_pvt_summary(history_df: pd.DataFrame) -> PVTSummary | None:
     corr = str(history_df[corr_col].dropna().iloc[0]) if corr_col else None
     calibrated = bool(history_df[cal_col].dropna().any()) if cal_col else False
 
+    # Trazabilidad: si hay datos de laboratorio (calibrated) → "measured"; si no → "estimated"
+    pvt_source = "lab" if calibrated else "correlation"
+    pvt_status = "measured" if calibrated else "estimated"
+
     return PVTSummary(
         oil_corr=corr,
         calibrated=calibrated,
+        pvt_source=pvt_source,
         avg_bo_rb_stb=avg_bo,
         avg_rs_scf_stb=avg_rs,
         avg_mu_o_cp=avg_mu,
         pb_psia=pb,
+        status=pvt_status,
     )
 
 
