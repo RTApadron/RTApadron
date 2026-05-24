@@ -525,7 +525,7 @@ Commits: `cf1f89c`, `937240b`, `daf28a3`, `13b831d`, `b5e560e`, `65fccef`, `fc56
 
 ### ✅ Sprint sesión 7 — COMPLETADO (2026-05-23)
 
-Commits: `5252dc3` (P1+P2), `fbf4124` (P5)
+Commits: `5252dc3` (P1+P2), `fbf4124` (P5), `cd52871` (Blasingame fix)
 
 **P1 — Validación cuantitativa vs Software Comercial — COMPLETADO:**
 - [x] Badge "✅ VALIDADO" / "⚠️ VALIDACIÓN PARCIAL" / "🔴 DIVERGENCIA ALTA" en header del tab
@@ -550,6 +550,15 @@ Commits: `5252dc3` (P1+P2), `fbf4124` (P5)
   - 🟢 ok → confirma qué archivo está disponible
   - 🟡 warning → explica qué advertencia y cómo resolver
   - 🔴 missing → indica exactamente qué acción activa el módulo
+
+**Blasingame convergencia tardía — COMPLETADO (`cd52871`):**
+- [x] `generate_blasingame_curves()`: filtra `t_c_dd > cfg.t_c_dd_max` (200.0) después del transform
+  → tcDd acotado a ≤200; elimina divergencia 1e29 por q_D underflow
+- [x] `blasingame_base.csv` regenerado: 24 curvas, **6626 pts** (era 4237)
+- [x] QC convergencia: todos los 8 reD dan `ratio ∈ [0.3, 3.0]` → "OK"
+  - reD=10: ratio=1.008 (excelente) | reD=1e6: ratio=2.766 (aceptable)
+- [x] PNG validación visual: stems qDd convergen a referencia armónica 1/(1+tcDd) ✅
+- **405 tests passed** — sin regresiones
 
 ### 🟡 Próximo sprint — sesión 8 (backlog residual)
 
