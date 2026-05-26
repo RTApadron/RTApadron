@@ -6,9 +6,22 @@ The match is expressed as two multipliers from the M4 joystick overlay:
     effective_y_multiplier  =  qDd_MP  / (q/Dp)_MP     (days·psi/STB)
 
 Parameters derived here:
-    kh   [mD·ft]  — from the Y-multiplier via the Darcy flow equation
-    k    [mD]     — kh / h
-    N_vol [STB]   — volumetric OOIP from re or drainage area in RTAConfig
+    kh    [mD·ft]  — from the Y-multiplier via the Darcy flow equation
+    k     [mD]     — kh / h
+    N_vol [STB]    — volumetric OOIP from re or drainage area in RTAConfig
+    N_dyn [STB]    — dynamic OOIP from the match position (x AND y multipliers)
+
+N_dyn derivation (BDF time-normalization approach):
+    From Fetkovich tDd definition:
+        αD   = 0.5·(re/rw)²·[ln(re/rw) - 0.5]      (approx for re >> rw)
+        tDd  = 0.000264·k·MBT / (φ·μ·ct·rw²·αD)
+    At match: x_mult = tDd/MBT  →  αD = 0.000264·k / (φ·μ·ct·rw²·x_mult)
+    Since αD ≈ 0.5·(re/rw)²·ln_term and A = π·re²:
+        A_dyn = 2π·0.000264·k / (φ·μ·ct·x_mult·ln_term)
+        N_dyn = φ·h·A_dyn·(1-Swi) / (5.615·Bo)
+              = C·(1-Swi)·kh / (Bo·μ·ct·x_mult·ln_term)
+    where C = 2π·0.000264/5.615 ≈ 2.954e-4.
+    N_dyn changes with every joystick click (both x and y multipliers update it).
 
 STATUS: all outputs are marked DEMO until type curves are digitized and
 validated.  Do not use for final reservoir characterization.
@@ -58,6 +71,10 @@ class RTAMatchParams:
     effective_x_multiplier: float
     effective_y_multiplier: float
 
+    # Dynamic OOIP from the match position (updates with every joystick click)
+    # None until both x_mult and y_mult have been adjusted from 1.0
+    n_dyn_stb: float | None = None  # STB
+
     status: str = "demo"
     notes: str = (
         "DEMO — curvas tipo aún no digitalizadas/validadas. "
@@ -76,6 +93,7 @@ class RTAMatchParams:
             "kh_md_ft": self.kh_md_ft,
             "k_md": self.k_md,
             "n_vol_stb": self.n_vol_stb,
+            "n_dyn_stb": self.n_dyn_stb,
             "effective_x_multiplier": self.effective_x_multiplier,
             "effective_y_multiplier": self.effective_y_multiplier,
             "notes": self.notes,
@@ -89,6 +107,8 @@ class RTAMatchParams:
 
 _FT2_PER_ACRE = 43_560.0
 _BBL_PER_FT3 = 1.0 / 5.615
+# N_dyn constant: 2π × 0.000264 / 5.615  (field-units BDF time normalization)
+_C_N_DYN = 2.0 * math.pi * 0.000264 / 5.615
 
 
 def _resolve_drainage_geometry(
@@ -157,6 +177,36 @@ def _compute_n_vol(
     return pore_vol_bbl / Bo_rb_stb
 
 
+def _compute_n_dyn(
+    kh_md_ft: float,
+    Bo_rb_stb: float,
+    mu_o_cp: float,
+    ct_1psi: float,
+    effective_x_multiplier: float,
+    ln_term: float,
+    swi_frac: float,
+) -> float:
+    """Dynamic OOIP [STB] from the type-curve match position.
+
+    Derived from the BDF time-normalization of the Fetkovich/Blasingame type
+    curves (see module docstring for full derivation):
+
+        N_dyn = C · (1-Swi) · kh / (Bo · μ · ct · x_mult · ln_term)
+
+    where C = 2π · 0.000264 / 5.615 ≈ 2.954e-4.
+
+    Unlike N_vol, this value updates with every joystick click because it
+    depends on both effective_x_multiplier (time-axis scaling) and kh (which
+    comes from effective_y_multiplier).
+    """
+    return (
+        _C_N_DYN
+        * (1.0 - swi_frac)
+        * kh_md_ft
+        / (Bo_rb_stb * mu_o_cp * ct_1psi * effective_x_multiplier * ln_term)
+    )
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -199,6 +249,7 @@ def compute_match_params(
             kh_md_ft=None,
             k_md=None,
             n_vol_stb=None,
+            n_dyn_stb=None,
             effective_x_multiplier=effective_x_multiplier,
             effective_y_multiplier=effective_y_multiplier,
             warnings=warnings,
@@ -218,6 +269,7 @@ def compute_match_params(
             kh_md_ft=None,
             k_md=None,
             n_vol_stb=None,
+            n_dyn_stb=None,
             effective_x_multiplier=effective_x_multiplier,
             effective_y_multiplier=effective_y_multiplier,
             warnings=warnings,
@@ -261,6 +313,19 @@ def compute_match_params(
         swi_frac=swi,
     )
 
+    # --- Dynamic OOIP from match (requires kh AND x_mult adjusted from 1.0) ---
+    n_dyn: float | None = None
+    if kh is not None and effective_x_multiplier != 1.0 and ln_term > 0:
+        n_dyn = _compute_n_dyn(
+            kh_md_ft=kh,
+            Bo_rb_stb=config.Bo_rb_stb,
+            mu_o_cp=config.mu_o_cp,
+            ct_1psi=config.ct_1psi,
+            effective_x_multiplier=effective_x_multiplier,
+            ln_term=ln_term,
+            swi_frac=swi,
+        )
+
     return RTAMatchParams(
         well_id=config.well_id,
         method=method,
@@ -270,6 +335,7 @@ def compute_match_params(
         kh_md_ft=kh,
         k_md=k,
         n_vol_stb=n_vol,
+        n_dyn_stb=n_dyn,
         effective_x_multiplier=effective_x_multiplier,
         effective_y_multiplier=effective_y_multiplier,
         warnings=warnings,

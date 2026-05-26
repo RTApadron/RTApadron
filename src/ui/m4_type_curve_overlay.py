@@ -1567,26 +1567,42 @@ def _run_m4_overlay(
             if _mp_error:
                 st.error(f"Error calculando parámetros: {_mp_error}")
             elif _mp is not None:
-                _mc1, _mc2, _mc3, _mc4, _mc5 = st.columns(5)
+                _mc1, _mc2, _mc3, _mc4, _mc5, _mc6 = st.columns(6)
                 _mc1.metric("kh (mD·ft)", _fmt(_mp.kh_md_ft, 1))
                 _mc2.metric("k (mD)", _fmt(_mp.k_md, 3))
-                # N: show STB when value rounds to 0.000 MM STB
-                if _mp.n_vol_stb is not None and _mp.n_vol_stb > 0:
-                    _n_mm = _mp.n_vol_stb / 1e6
-                    _n_str = f"{_n_mm:.3f}" if _n_mm >= 0.0005 else f"~{_mp.n_vol_stb:.0f} STB"
-                else:
-                    _n_str = "—"
+
+                # N vol.: volumétrico fijo (φ, h, A, Swi, Bo)
+                def _n_str_fmt(n_stb: float | None) -> str:
+                    if n_stb is not None and n_stb > 0:
+                        _mm = n_stb / 1e6
+                        return f"{_mm:.3f}" if _mm >= 0.0005 else f"~{n_stb:.0f} STB"
+                    return "—"
+
                 _mc3.metric(
-                    "N (MM STB)",
-                    _n_str,
+                    "N vol. (MM STB)",
+                    _n_str_fmt(_mp.n_vol_stb),
                     help=(
+                        "OOIP volumétrico: φ·h·A·(1-Swi)/(5.615·Bo)\n"
                         f"φ={reservoir_config.phi_frac:.3f} · h={reservoir_config.h_ft:.1f} ft · "
                         f"A={_fmt(_mp.area_acres, 1)} acres · Swi={reservoir_config.swi_frac or 0:.2f} · "
-                        f"Bo={reservoir_config.Bo_rb_stb:.3f} RB/STB"
+                        f"Bo={reservoir_config.Bo_rb_stb:.3f} RB/STB\n"
+                        "Fijo — no cambia con el joystick."
                     ),
                 )
-                _mc4.metric("re (ft)", _fmt(_mp.re_ft, 0))
-                _mc5.metric("Área (acres)", _fmt(_mp.area_acres, 1))
+
+                # N match: dinámico desde posición del joystick (x_mult + y_mult)
+                _mc4.metric(
+                    "N match (MM STB)",
+                    _n_str_fmt(_mp.n_dyn_stb),
+                    help=(
+                        "OOIP dinámico del match: C·(1-Swi)·kh / (Bo·μ·ct·x_mult·ln_term)\n"
+                        "Actualiza con cada click del joystick.\n"
+                        "Cuando N match ≈ N vol. → match consistente con la geometría."
+                    ),
+                )
+
+                _mc5.metric("re (ft)", _fmt(_mp.re_ft, 0))
+                _mc6.metric("Área (acres)", _fmt(_mp.area_acres, 1))
                 if _mp.warnings:
                     for _w in _mp.warnings:
                         st.warning(_w, icon="⚠")

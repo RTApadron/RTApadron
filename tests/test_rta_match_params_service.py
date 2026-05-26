@@ -9,7 +9,9 @@ import pytest
 from src.rta.models import RTAConfig
 from src.services.rta_match_params_service import (
     RTAMatchParams,
+    _C_N_DYN,
     _compute_kh,
+    _compute_n_dyn,
     _compute_n_vol,
     _ln_re_rw_term,
     _resolve_drainage_geometry,
@@ -219,5 +221,93 @@ def test_as_dict_contains_expected_keys() -> None:
         effective_y_multiplier=3.0,
     )
     d = result.as_dict()
-    for key in ("well_id", "method", "kh_md_ft", "k_md", "n_vol_stb", "status", "warnings"):
+    for key in ("well_id", "method", "kh_md_ft", "k_md", "n_vol_stb", "n_dyn_stb", "status", "warnings"):
         assert key in d
+
+
+# ---------------------------------------------------------------------------
+# _compute_n_dyn — unit tests
+# ---------------------------------------------------------------------------
+# Synthetic reference: kh=100 mD·ft, re=1000 ft, rw=0.3 ft, φ=0.15, h=50 ft
+# Bo=1.2, μ=2 cP, ct=1e-5 1/psi, Swi=0.2
+# N_vol ≈ 2.80e6 STB
+# x_mult derived from Fetkovich tDd normalization → N_dyn ≈ N_vol within 2%
+
+_KH = 100.0
+_RE = 1000.0
+_RW = 0.3
+_BO = 1.2
+_MU = 2.0
+_CT = 1e-5
+_SWI = 0.2
+_PHI = 0.15
+_H = 50.0
+_LN_T = math.log(_RE / _RW) - 0.5                             # ≈ 7.612
+_ALPHA_D = 0.5 * (_RE / _RW) ** 2 * _LN_T
+_X_MULT = 0.000264 * (_KH / _H) / (_PHI * _MU * _CT * _RW**2 * _ALPHA_D)
+
+
+def test_n_dyn_matches_n_vol_within_2pct() -> None:
+    """N_dyn must reproduce the volumetric OOIP within 2% for the reference case."""
+    n_dyn = _compute_n_dyn(_KH, _BO, _MU, _CT, _X_MULT, _LN_T, _SWI)
+    n_vol = _compute_n_vol(_PHI, _H, math.pi * _RE**2, _BO, _SWI)
+    assert abs(n_dyn - n_vol) / n_vol < 0.02
+
+
+def test_n_dyn_scales_inversely_with_x_mult() -> None:
+    n1 = _compute_n_dyn(_KH, _BO, _MU, _CT, _X_MULT, _LN_T, _SWI)
+    n2 = _compute_n_dyn(_KH, _BO, _MU, _CT, _X_MULT * 2, _LN_T, _SWI)
+    assert n2 == pytest.approx(n1 / 2, rel=1e-9)
+
+
+def test_n_dyn_scales_linearly_with_kh() -> None:
+    n1 = _compute_n_dyn(_KH, _BO, _MU, _CT, _X_MULT, _LN_T, _SWI)
+    n2 = _compute_n_dyn(_KH * 2, _BO, _MU, _CT, _X_MULT, _LN_T, _SWI)
+    assert n2 == pytest.approx(2 * n1, rel=1e-9)
+
+
+def test_c_n_dyn_constant_value() -> None:
+    assert _C_N_DYN == pytest.approx(2.0 * math.pi * 0.000264 / 5.615, rel=1e-9)
+
+
+# ---------------------------------------------------------------------------
+# compute_match_params — N_dyn integration
+# ---------------------------------------------------------------------------
+
+def _cfg_for_ndyn() -> RTAConfig:
+    return RTAConfig(
+        well_id="W-TEST",
+        pi_psia=3500.0,
+        rw_ft=_RW,
+        re_ft=_RE,
+        h_ft=_H,
+        phi_frac=_PHI,
+        ct_1psi=_CT,
+        mu_o_cp=_MU,
+        Bo_rb_stb=_BO,
+        swi_frac=_SWI,
+        CA=31.62,
+    )
+
+
+def test_n_dyn_populated_when_both_multipliers_adjusted() -> None:
+    mp = compute_match_params(config=_cfg_for_ndyn(), effective_x_multiplier=_X_MULT, effective_y_multiplier=_LN_T * 141.2 * _MU * _BO / _KH)
+    assert mp.n_dyn_stb is not None and mp.n_dyn_stb > 0
+
+
+def test_n_dyn_none_when_x_mult_is_one() -> None:
+    mp = compute_match_params(config=_cfg_for_ndyn(), effective_x_multiplier=1.0, effective_y_multiplier=5.0)
+    assert mp.n_dyn_stb is None
+
+
+def test_n_dyn_none_when_y_mult_is_one() -> None:
+    mp = compute_match_params(config=_cfg_for_ndyn(), effective_x_multiplier=_X_MULT, effective_y_multiplier=1.0)
+    assert mp.n_dyn_stb is None
+
+
+def test_n_dyn_changes_when_x_mult_changes() -> None:
+    y = _LN_T * 141.2 * _MU * _BO / _KH
+    mp1 = compute_match_params(config=_cfg_for_ndyn(), effective_x_multiplier=_X_MULT, effective_y_multiplier=y)
+    mp2 = compute_match_params(config=_cfg_for_ndyn(), effective_x_multiplier=_X_MULT / 2, effective_y_multiplier=y)
+    assert mp1.n_dyn_stb is not None and mp2.n_dyn_stb is not None
+    assert mp2.n_dyn_stb == pytest.approx(2 * mp1.n_dyn_stb, rel=1e-6)
