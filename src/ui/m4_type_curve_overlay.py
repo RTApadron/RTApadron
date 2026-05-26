@@ -1017,6 +1017,19 @@ def _reset_match() -> None:
     st.session_state["target_curve_y"] = 1.0
 
 
+@st.cache_data
+def _load_history_cached(path_str: str) -> pd.DataFrame:
+    return pd.read_csv(path_str)
+
+
+@st.cache_data
+def _compute_rta_transforms_cached(
+    history_df: pd.DataFrame,
+    pi_psia: float,
+) -> list:
+    return compute_rta_transforms(dataframe=history_df, pi_psia=pi_psia)
+
+
 def _run_m4_overlay(
     *,
     well_id: str = "W-001",
@@ -1063,7 +1076,7 @@ def _run_m4_overlay(
         return
 
     try:
-        history_df = pd.read_csv(_auto_history_path)
+        history_df = _load_history_cached(str(_auto_history_path))
     except Exception as exc:
         st.error(f"Error leyendo historia enriquecida: {exc}")
         return
@@ -1090,9 +1103,9 @@ def _run_m4_overlay(
         return
 
     try:
-        rta_transform_points = compute_rta_transforms(
-            dataframe=history_df,
-            pi_psia=reservoir_config.pi_psia,
+        rta_transform_points = _compute_rta_transforms_cached(
+            history_df,
+            reservoir_config.pi_psia,
         )
     except Exception as exc:
         st.error(f"Error calculando variables RTA: {exc}")
