@@ -1593,7 +1593,7 @@ def _run_m4_overlay(
                 # N match: dinámico desde posición del joystick (x_mult + y_mult)
                 _mc4.metric(
                     "N match (MM STB)",
-                    _n_str_fmt(_mp.n_dyn_stb),
+                    _n_str_fmt(getattr(_mp, "n_dyn_stb", None)),
                     help=(
                         "OOIP dinámico del match: C·(1-Swi)·kh / (Bo·μ·ct·x_mult·ln_term)\n"
                         "Actualiza con cada click del joystick.\n"
