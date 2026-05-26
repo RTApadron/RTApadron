@@ -38,26 +38,54 @@ producción en los Llanos Orientales."
 
 ---
 
-## Estado de módulos (actualizado 2026-05-23 — post sesión 7)
+## Estado de módulos (actualizado 2026-05-26 — post sesión 8)
 
 | Módulo | Descripción | Estado | Tests |
 |--------|-------------|--------|-------|
 | M1 | Historia + Pwf v2 D-W + esquema mecánico + 9 QC checks + editor embebido en hub | ✅ Funcional | `test_well_mech_qc_service.py` (51) |
 | M2 | PVT: Rs/Bo/μo/ρo — Standing, VB, BR; botón "✅ Confirmar datos" semáforo verde | ✅ Funcional | `test_pvt_correlations.py` (46) |
 | M3 | DCA multi-método Arps; semilog + best-fit; semáforo verde; **botón "💾 Guardar DCA para M5"** | ✅ Funcional | varios |
-| M4 | RTA 60 curvas; Plotly zoom; 🎯 Auto stem; derivada log-log; SNES; **Bo/μo desde correlación a Pi** | ✅ Funcional | varios |
+| M4 | RTA 60 curvas; Plotly zoom; 🎯 Auto stem; derivada log-log; SNES; **caché CSV+transforms; N match dinámico** | ✅ Funcional | `test_rta_match_params_service.py` (27) |
 | M5 | Resultados integrados, dashboard 7 pestañas, exportación; **EUR DCA + badge PRELIMINAR** | ✅ Funcional + integrado | varios |
 | Inicio | Tarjetas M1→M5 con logos PNG 140px; semáforo; botones nav; GPL-3 | ✅ Funcional | — |
 
-**Tests totales: 405 passed, 1 warning (Pydantic v1 @validator en `src/well_mod/models.py`)**
+**Tests totales: 413 passed, 1 warning (Pydantic v1 @validator en `src/well_mod/models.py`)**
 
-> Sesión 7 añadió 14 tests en `test_m5_comparison_service.py` (score global, PVT trazabilidad,
-> RTA trazabilidad). Sesión 6 añadió BLASINGAME al enum — test `test_log_derivative_present_for_all_methods`
-> excluye explícitamente BLASINGAME (sin dispatch, reutiliza PB en M4).
+> Sesión 8 añadió 8 tests en `test_rta_match_params_service.py` (N_dyn unit + integración).
+> Sesión 7 añadió 14 tests en `test_m5_comparison_service.py`. Sesión 6 añadió BLASINGAME al enum —
+> test `test_log_derivative_present_for_all_methods` excluye explícitamente BLASINGAME.
 
 ---
 
 ## Historial de commits relevantes (más recientes primero)
+
+### Sesión 8 — 2026-05-26 (Latencia joystick + N match dinámico)
+
+**`711fe22` — fix(M4): getattr defensivo para n_dyn_stb + limpiar pyc stale**
+- `src/ui/m4_type_curve_overlay.py`: `getattr(_mp, "n_dyn_stb", None)` evita
+  `AttributeError` cuando Streamlit carga un objeto `RTAMatchParams` serializado
+  antes de que se agregara el campo. Requiere reinicio completo del servidor.
+
+**`91a4265` — feat(M4): N match dinámico desde posición del joystick**
+- `src/services/rta_match_params_service.py`:
+  - `_C_N_DYN = 2π·0.000264/5.615 ≈ 2.954e-4` (constante BDF field units)
+  - `_compute_n_dyn(kh, Bo, μ, ct, x_mult, ln_term, swi)` → OOIP dinámico
+  - `RTAMatchParams.n_dyn_stb: float | None = None` (campo opcional con default)
+  - Se computa cuando ambos multipliers están ajustados (x_mult ≠ 1.0 y y_mult ≠ 1.0)
+- `src/ui/m4_type_curve_overlay.py`: 6 columnas de métricas (añade "N match")
+  - "N vol." fijo → "N match" cambia con cada click del joystick
+  - Tooltip: "Cuando N match ≈ N vol. → match consistente con la geometría"
+- `tests/test_rta_match_params_service.py`: 8 tests nuevos verifican N_dyn
+  - Precisión ±2% vs N_vol analítico en caso sintético de referencia
+  - Escalado 1/x_mult, lineal con kh, None cuando x o y = 1.0
+
+**`61ea13c` — perf(M4): cache CSV read and RTA transforms (latencia joystick)**
+- `src/ui/m4_type_curve_overlay.py`:
+  - `_load_history_cached(path_str)` con `@st.cache_data` — evita `pd.read_csv` en cada rerun
+  - `_compute_rta_transforms_cached(history_df, pi_psia)` con `@st.cache_data`
+    — evita recomputar MBT/delta_p/qDdi/qDdid/log_derivative en cada click del joystick
+  - Cache miss automático cuando Pi cambia o el DataFrame cambia de contenido
+  - Latencia estimada: 200–900 ms → 80–250 ms por click
 
 ### Sesión 7 — 2026-05-23 (P1 Validación + P2 Trazabilidad + P5 Semáforo)
 
@@ -560,14 +588,23 @@ Commits: `5252dc3` (P1+P2), `fbf4124` (P5), `cd52871` (Blasingame fix)
 - [x] PNG validación visual: stems qDd convergen a referencia armónica 1/(1+tcDd) ✅
 - **405 tests passed** — sin regresiones
 
-### 🟡 Próximo sprint — sesión 8 (backlog residual)
+### ✅ Sprint sesión 8 — COMPLETADO (2026-05-26)
 
-**P4b — SNES hotspots ajuste fino (baja urgencia):**
-- Los botones mejoraron en sesión 6 pero no están al 100%
-- Requiere screenshots precisos del PNG para calibrar coordenadas CSS
+Commits: `61ea13c`, `91a4265`, `711fe22`
 
-**Pendientes adicionales:**
+- [x] **perf(M4):** `@st.cache_data` en lectura CSV y `compute_rta_transforms` → latencia joystick ~2–4× menor
+- [x] **feat(M4):** N match dinámico — OOIP del match (`_compute_n_dyn`) actualiza con cada click del joystick
+  - Fórmula derivada de normalización BDF Fetkovich: `N_dyn = C·(1-Swi)·kh/(Bo·μ·ct·x_mult·ln_term)`
+  - 6 métricas en M4: kh · k · N vol. · **N match** · re · Área
+  - Interpretación: N match ≈ N vol. → match consistente con geometría inputada
+- [x] **fix(M4):** `getattr` defensivo para `n_dyn_stb` — tolerante a objetos serializados pre-cambio
+- [x] 8 tests nuevos en `test_rta_match_params_service.py` → **413 passed**
+
+### 🟡 Próximo sprint — sesión 9 (backlog residual)
+
+**Pendientes:**
 - Validación cuantitativa con datos W001 vs Software Comercial (ingreso manual en M5 tab Validación)
+- P4b — SNES hotspots ajuste fino (baja urgencia)
 - Merge feature/m4-type-curve-overlay → main cuando tesis esté lista
 - Importar análisis (botón disabled en Inicio): formato .zip con JSONs + CSVs
 - Pydantic v1 warning en `src/well_mod/models.py` → migrar a `@field_validator`
