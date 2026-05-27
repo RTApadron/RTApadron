@@ -372,34 +372,65 @@ def _tab_comparativo(summary: WellResultsSummary) -> None:
 
     try:
         import plotly.graph_objects as go
-        from plotly.subplots import make_subplots
     except ImportError:
         st.warning("Instala plotly para ver el dashboard comparativo.")
         return
 
-    # Recolectar valores
+    import pandas as pd
+
+    # --- Coleccionar datos ---
     eur_exp = summary.dca.eur_exponential_stb if summary.dca else None
     eur_hyp = summary.dca.eur_hyperbolic_stb if summary.dca else None
     eur_har = summary.dca.eur_harmonic_stb if summary.dca else None
-    n_vol = summary.rta.n_vol_stb if summary.rta else None
+    n_vol   = summary.rta.n_vol_stb if summary.rta else None
 
-    all_values = {
-        "EUR Exponencial": eur_exp,
-        "EUR Hiperbólico": eur_hyp,
-        "EUR Armónico": eur_har,
-        "OOIP Volumétrico\n(M4 config)": n_vol,
+    # Todos los métodos RTA guardados desde M4
+    all_rta: dict = getattr(summary, "rta_all_methods", {}) or {}
+    if not all_rta and summary.rta and summary.rta.method:
+        all_rta = {summary.rta.method: summary.rta}
+
+    _METHOD_SHORT = {
+        "fetkovich":          "Fetkovich",
+        "palacio_blasingame": "P-Blasingame",
+        "agarwal_gardner":    "A-Gardner",
+        "blasingame":         "Blasingame",
     }
+    _METH_ORDER = ["fetkovich", "palacio_blasingame", "agarwal_gardner", "blasingame"]
+    _sorted_rta = sorted(
+        all_rta.items(),
+        key=lambda kv: _METH_ORDER.index(kv[0]) if kv[0] in _METH_ORDER else 99,
+    )
 
-    labels = [k for k, v in all_values.items() if v is not None]
-    values_mm = [(v or 0) / 1e6 for v in all_values.values() if v is not None]
+    # --- Gráfico de barras: EUR DCA + OOIP vol. + N match por método ---
+    bar_labels, bar_values, bar_colors = [], [], []
+    _DCA_COLORS   = ["#3498db", "#2ecc71", "#e67e22"]     # azul/verde/naranja DCA
+    _NVOL_COLOR   = "#8e44ad"                              # morado — OOIP estático
+    _MATCH_COLORS = ["#c39bd3", "#a569bd", "#7d3c98"]      # gradiente morado — N match
 
-    if not labels:
+    for color, lbl, val in zip(_DCA_COLORS, ["EUR Exp.", "EUR Hip.", "EUR Arm."],
+                                [eur_exp, eur_hyp, eur_har]):
+        if val is not None:
+            bar_labels.append(lbl); bar_values.append(val / 1e6); bar_colors.append(color)
+
+    if n_vol is not None:
+        bar_labels.append("OOIP Vol.\n(config)")
+        bar_values.append(n_vol / 1e6)
+        bar_colors.append(_NVOL_COLOR)
+
+    for i, (meth_key, rta_s) in enumerate(_sorted_rta):
+        n_match = rta_s.n_dyn_stb
+        if n_match is not None:
+            lbl = f"N match\n{_METHOD_SHORT.get(meth_key, meth_key)}"
+            bar_labels.append(lbl)
+            bar_values.append(n_match / 1e6)
+            bar_colors.append(_MATCH_COLORS[min(i, len(_MATCH_COLORS) - 1)])
+
+    if not bar_labels:
         st.info("No hay datos suficientes de DCA o RTA para el comparativo.")
         return
 
-    colors = ["#3498db", "#2ecc71", "#e67e22", "#8e44ad"]
     fig = go.Figure()
-    for label, val, color in zip(labels, values_mm, colors):
+    for label, val, color in zip(bar_labels, bar_values, bar_colors):
         fig.add_bar(
             name=label,
             x=[label],
@@ -408,19 +439,17 @@ def _tab_comparativo(summary: WellResultsSummary) -> None:
             text=[f"{val:.3f}"],
             textposition="outside",
         )
-
     fig.update_layout(
         title="Comparativo de volúmenes (MM STB)",
         yaxis_title="Volumen (MM STB)",
         showlegend=False,
-        height=450,
+        height=460,
         margin=dict(t=60, b=40),
     )
     st.plotly_chart(fig, use_container_width=True)
 
-    # Tabla resumen
+    # --- Tabla 1: Volúmenes DCA + OOIP RTA ---
     st.subheader("Tabla resumen integrada")
-    import pandas as pd
 
     rows = []
     if summary.dca and summary.dca.models:
@@ -442,7 +471,19 @@ def _tab_comparativo(summary: WellResultsSummary) -> None:
                     "R² / Confianza": round(m.r2, 4),
                 })
 
-    if summary.rta and summary.rta.n_vol_stb is not None:
+    # Una fila por método RTA (OOIP volumétrico estático)
+    _seen_nvol: set[float] = set()
+    for meth_key, rta_s in _sorted_rta:
+        if rta_s.n_vol_stb is not None:
+            rows.append({
+                "Fuente": f"RTA M4 — {_METHOD_SHORT.get(meth_key, meth_key)}",
+                "Método": "OOIP vol. (volumétrico)",
+                "Volumen (MM STB)": round(rta_s.n_vol_stb / 1e6, 4),
+                "Status": (rta_s.status or "demo").upper(),
+                "R² / Confianza": "—",
+            })
+    # Fallback: si no hay all_rta pero sí rta primario
+    if not _sorted_rta and summary.rta and summary.rta.n_vol_stb is not None:
         rows.append({
             "Fuente": "RTA M4",
             "Método": f"OOIP vol. ({(summary.rta.method or '').replace('_', ' ')})",
@@ -452,15 +493,52 @@ def _tab_comparativo(summary: WellResultsSummary) -> None:
         })
 
     if rows:
-        df = pd.DataFrame(rows)
-        st.dataframe(df, use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
-    # Relaciones de interés para tesis
+    # --- Tabla 2 (NUEVA): Parámetros de yacimiento por método RTA ---
+    if _sorted_rta:
+        st.subheader("Parámetros de yacimiento por método (RTA M4)")
+        def _fmt_num(v: "float | None", fmt: str, default: str = "—") -> str:
+            return f"{v:{fmt}}" if v is not None else default
+
+        param_rows = []
+        for meth_key, rta_s in _sorted_rta:
+            has_data = any(
+                v is not None for v in [rta_s.kh_md_ft, rta_s.k_md, rta_s.n_dyn_stb,
+                                        rta_s.re_dyn_ft, rta_s.a_dyn_acres]
+            )
+            if not has_data:
+                continue
+            param_rows.append({
+                "Método":             _METHOD_SHORT.get(meth_key, meth_key.replace("_", " ").title()),
+                "kh (mD·ft)":        _fmt_num(rta_s.kh_md_ft,   ",.1f"),
+                "k (mD)":            _fmt_num(rta_s.k_md,        ".4f"),
+                "N vol. (MM STB)":   _fmt_num(rta_s.n_vol_stb and rta_s.n_vol_stb / 1e6, ".4f"),
+                "N match (MM STB)":  _fmt_num(rta_s.n_dyn_stb and rta_s.n_dyn_stb / 1e6, ".4f"),
+                "re match (ft)":     _fmt_num(rta_s.re_dyn_ft,   ",.0f"),
+                "Área match (acres)":_fmt_num(rta_s.a_dyn_acres, ".2f"),
+                "Status":            (rta_s.status or "demo").upper(),
+            })
+
+        if param_rows:
+            st.dataframe(pd.DataFrame(param_rows), use_container_width=True, hide_index=True)
+            st.caption(
+                "kh/k estimados del match (curva tipo). "
+                "N match: OOIP dinámico consistente con la geometría del joystick. "
+                "**N match ≈ N vol. → match geométricamente consistente con el volumétrico.**"
+            )
+        else:
+            st.info(
+                "💡 Ajusta el joystick en M4 y presiona 💾 SAVE para ver los parámetros de yacimiento "
+                "aquí. Se requiere que ambos multiplicadores (X e Y) estén ajustados."
+            )
+
+    # --- Factor de recobro ---
     if eur_hyp and n_vol:
         ratio = eur_hyp / n_vol * 100
         st.info(
             f"**Factor de recobro aparente (EUR hiperbólico / OOIP vol.):** {ratio:.1f}%  \n"
-            "⚠️ El OOIP es preliminar (curvas DEMO). Usar solo como referencia de orden de magnitud."
+            "⚠️ El OOIP es preliminar (curvas analíticas). Usar solo como referencia de orden de magnitud."
         )
 
     if summary.rta and summary.rta.status not in ("preliminary", None):
