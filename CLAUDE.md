@@ -671,9 +671,17 @@ Para Pwf=const, el BDF siempre es exponencial (b=0) y el parámetro correcto es 
 **Resultado:** 7 curvas, 959 pts; tDA=[2.8e-7,60]; qD_max≈9; junction tDA≈0.164; monotónicamente dec.
 **Tests:** 413 passed sin regresiones. No se requirieron cambios en M4/M5/tests/loader.
 
+**Commit `2823e7b`** — feat(M5): tabla de parámetros de yacimiento por método en comparativo
+- `_tab_comparativo`: barras N match por método (gradiente morado) en bar chart
+- Tabla 1: OOIP vol. (estático) por método en lugar de una sola fila
+- Tabla 2 (nueva): kh · k · N vol. · N match · re match · Área match por método (from `rta_all_methods`)
+  — muestra hint si no hay parámetros de joystick guardados
+  — caption: "N match ≈ N vol. → match geométricamente consistente con el volumétrico"
+
 ### 🟡 Backlog sesiones siguientes
 
 - Validación cuantitativa con datos W001 vs Software Comercial (ingreso manual en M5 tab Validación)
+- ¿Curvas tipo de flujo lineal (pendiente -1/2)? Para Llanos-123 tight/fracturado puede ser relevante.
 - P4b — SNES hotspots ajuste fino (baja urgencia)
 - Merge feature/m4-type-curve-overlay → main cuando tesis esté lista
 - Importar análisis (botón disabled en Inicio): formato .zip con JSONs + CSVs
