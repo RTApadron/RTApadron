@@ -239,23 +239,28 @@ def _render_single_rta(rta: "RTASummary", overlay_png: "Path | None" = None) -> 
         help="Área de drene de la configuración del yacimiento (input fijo).",
     )
 
-    # Row 3: dynamic match values from joystick (only if available)
-    _has_dyn = rta.n_dyn_stb is not None or rta.re_dyn_ft is not None or rta.a_dyn_acres is not None
+    # Row 3: dynamic match values from joystick (only if available).
+    # Use getattr() defensively — old RTASummary objects in session_state may
+    # predate these fields and raise AttributeError via Pydantic's __getattr__.
+    _n_dyn   = getattr(rta, "n_dyn_stb",   None)
+    _re_dyn  = getattr(rta, "re_dyn_ft",   None)
+    _a_dyn   = getattr(rta, "a_dyn_acres", None)
+    _has_dyn = _n_dyn is not None or _re_dyn is not None or _a_dyn is not None
     if _has_dyn:
         c7, c8, c9 = st.columns(3)
         c7.metric(
             "N match (MM STB)",
-            _fmt_millions(rta.n_dyn_stb),
+            _fmt_millions(_n_dyn),
             help="OOIP dinámico calculado desde la posición del joystick. Cuando N match ≈ OOIP volumétrico, el match es consistente con la geometría configurada.",
         )
         c8.metric(
             "re match (ft)",
-            _fmt_num(rta.re_dyn_ft, 0),
+            _fmt_num(_re_dyn, 0),
             help="Radio de drene derivado del match joystick (dinámico).",
         )
         c9.metric(
             "Área match (acres)",
-            _fmt_num(rta.a_dyn_acres, 2),
+            _fmt_num(_a_dyn, 2),
             help="Área de drene derivada del match joystick (dinámica).",
         )
     else:
@@ -339,7 +344,7 @@ def _tab_rta(summary: WellResultsSummary) -> None:
                     "kh (mD·ft)": _fmt_num(_rs.kh_md_ft, 2),
                     "k (mD)": _fmt_num(_rs.k_md, 4),
                     "N vol. (MM STB)": _fmt_millions(_rs.n_vol_stb),
-                    "Área match (acres)": _fmt_num(_rs.a_dyn_acres, 2),
+                    "Área match (acres)": _fmt_num(getattr(_rs, "a_dyn_acres", None), 2),
                     "X": _fmt_num(_rs.x_multiplier, 4),
                     "Y": _fmt_num(_rs.y_multiplier, 4),
                     "Status": (_rs.status or "demo").upper(),
