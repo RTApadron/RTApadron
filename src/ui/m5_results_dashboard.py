@@ -303,15 +303,24 @@ def _tab_rta(summary: WellResultsSummary) -> None:
 
     st.subheader("Análisis de Transiente de Flujo — Match RTA (M4)")
 
+    _n_methods = len(getattr(summary, "rta_all_methods", {}) or {})
+
     def _png_for(method_key: str) -> "Path | None":
-        """Return the per-method overlay PNG path, falling back to legacy file."""
+        """Return the per-method overlay PNG path.
+
+        Falls back to the legacy single-file only when there is exactly ONE
+        method saved, so we never show a Blasingame chart on the Fetkovich tab.
+        """
         from pathlib import Path as _Path
         _per_method = OUTPUT_DIR / f"{summary.well_id}_rta_{method_key}_overlay.png"
         if _per_method.exists():
             return _per_method
-        # Legacy fallback: single file written before per-method support
-        _legacy = OUTPUT_DIR / f"{summary.well_id}_rta_overlay.png"
-        return _legacy if _legacy.exists() else None
+        # Legacy fallback only when unambiguous (single method)
+        if _n_methods <= 1:
+            _legacy = OUTPUT_DIR / f"{summary.well_id}_rta_overlay.png"
+            if _legacy.exists():
+                return _legacy
+        return None
 
     if all_rta:
         # Mostrar todos los métodos guardados como tabs
