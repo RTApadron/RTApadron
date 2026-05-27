@@ -49,13 +49,19 @@ def build_match_summary(
         "results": {
             "kh_md_ft": match_params.kh_md_ft,
             "k_md": match_params.k_md,
+            # Volumetric OOIP from config geometry (does not change with joystick)
             "n_vol_stb": match_params.n_vol_stb,
             "n_vol_mm_stb": (
                 round(match_params.n_vol_stb / 1e6, 4) if match_params.n_vol_stb else None
             ),
+            # Static drainage geometry from config (re_ft / area_acres)
             "re_ft": match_params.re_ft,
             "area_acres": match_params.area_acres,
             "ln_re_rw_term": match_params.ln_re_rw_term,
+            # Dynamic match values from joystick position (None if multipliers = 1.0)
+            "n_dyn_stb": getattr(match_params, "n_dyn_stb", None),
+            "re_dyn_ft": getattr(match_params, "re_dyn_ft", None),
+            "a_dyn_acres": getattr(match_params, "a_dyn_acres", None),
         },
         "config": json.loads(config.model_dump_json()),
         "warnings": match_params.warnings,
@@ -78,9 +84,24 @@ def save_match_summary(summary: dict, output_dir: Path) -> Path:
     return path
 
 
-def save_overlay_png(png_bytes: bytes, well_id: str, output_dir: Path) -> Path:
-    """Write <output_dir>/<well_id>_rta_overlay.png."""
+def save_overlay_png(
+    png_bytes: bytes,
+    well_id: str,
+    output_dir: Path,
+    method: str | None = None,
+) -> Path:
+    """Write the overlay PNG to disk.
+
+    When *method* is provided the file is named
+    ``<well_id>_rta_<method>_overlay.png`` so that Fetkovich and Blasingame
+    saves do not overwrite each other.  Without *method* the legacy name
+    ``<well_id>_rta_overlay.png`` is used (backward compat).
+    """
     output_dir.mkdir(parents=True, exist_ok=True)
-    path = output_dir / f"{well_id}_rta_overlay.png"
+    if method:
+        filename = f"{well_id}_rta_{method}_overlay.png"
+    else:
+        filename = f"{well_id}_rta_overlay.png"
+    path = output_dir / filename
     path.write_bytes(png_bytes)
     return path

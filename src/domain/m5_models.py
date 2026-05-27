@@ -85,9 +85,13 @@ class RTASummary(BaseModel):
     method: str | None = None  # fetkovich | palacio_blasingame | agarwal_gardner
     kh_md_ft: float | None = None
     k_md: float | None = None
-    n_vol_stb: float | None = None       # OOIP volumétrico desde configuración
-    re_ft: float | None = None
-    area_acres: float | None = None
+    n_vol_stb: float | None = None       # OOIP volumétrico desde configuración (estático)
+    re_ft: float | None = None           # radio de drene desde config (estático)
+    area_acres: float | None = None      # área de drene desde config (estático)
+    # Dynamic match values — populated only when both joystick axes were adjusted
+    n_dyn_stb: float | None = None       # OOIP dinámico del match
+    re_dyn_ft: float | None = None       # radio de drene dinámico del match
+    a_dyn_acres: float | None = None     # área de drene dinámica del match
     x_multiplier: float | None = None
     y_multiplier: float | None = None
     # Trazabilidad por parámetro

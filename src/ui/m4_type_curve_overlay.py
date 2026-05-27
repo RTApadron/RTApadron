@@ -1550,6 +1550,7 @@ def _run_m4_overlay(
                                         save_overlay_png(
                                             _png, reservoir_config.well_id,
                                             output_dir=output_dir,
+                                            method=_mval,
                                         )
                                         # Also persist the config so next session loads correct params
                                         save_rta_scenario(reservoir_config, output_dir=output_dir)
