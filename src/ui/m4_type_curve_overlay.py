@@ -1294,6 +1294,25 @@ def _run_m4_overlay(
                 _show_qdd = _show_qddi = _show_qddid = True
                 display_curves = all_curves
 
+            # QC warnings — fuera de las columnas para que joystick y gráfica queden alineados
+            _chart_method_qc = _RTAMethod.PALACIO_BLASINGAME if method == _RTAMethod.BLASINGAME else method
+            _method_pts_qc = [p for p in rta_transform_points if p.method == _chart_method_qc]
+            if _method_pts_qc:
+                _qc_results_pre = run_rta_qc(
+                    points=_method_pts_qc,
+                    effective_x_multiplier=_x_eff,
+                    effective_y_multiplier=_y_eff,
+                )
+                _qc_level_pre = qc_severity_level(_qc_results_pre)
+                if _qc_level_pre == "error":
+                    for _r in _qc_results_pre:
+                        if _r.severity == "error":
+                            st.error(f"**{_r.title}**  \n{_r.detail}", icon="🔴")
+                elif _qc_level_pre == "warning":
+                    for _r in _qc_results_pre:
+                        if _r.severity == "warning":
+                            st.warning(f"**{_r.title}**  \n{_r.detail}", icon="⚠️")
+
             # 2-column layout: chart (wide) | joystick (narrow)
             _chart_col, _joy_col = st.columns([3, 1.2])
 
@@ -1377,25 +1396,7 @@ def _run_m4_overlay(
 
             # ---- Chart column ----
             with _chart_col:
-                # QC warnings — visible (no expander)
-                # Blasingame tab reuses PB transform points for QC and scatter overlay
                 _chart_method = _RTAMethod.PALACIO_BLASINGAME if method == _RTAMethod.BLASINGAME else method
-                _method_pts = [p for p in rta_transform_points if p.method == _chart_method]
-                if _method_pts:
-                    _qc_results = run_rta_qc(
-                        points=_method_pts,
-                        effective_x_multiplier=_x_eff,
-                        effective_y_multiplier=_y_eff,
-                    )
-                    _qc_level = qc_severity_level(_qc_results)
-                    if _qc_level == "error":
-                        for _r in _qc_results:
-                            if _r.severity == "error":
-                                st.error(f"**{_r.title}**  \n{_r.detail}", icon="🔴")
-                    elif _qc_level == "warning":
-                        for _r in _qc_results:
-                            if _r.severity == "warning":
-                                st.warning(f"**{_r.title}**  \n{_r.detail}", icon="⚠️")
 
                 st.subheader("Overlay log-log")
 
@@ -1601,8 +1602,42 @@ def _run_m4_overlay(
                     ),
                 )
 
-                _mc5.metric("re (ft)", _fmt(_mp.re_ft, 0))
-                _mc6.metric("Área (acres)", _fmt(_mp.area_acres, 1))
+                # Compute dynamic area/re directly in UI from n_dyn_stb
+                # (avoids any stale-module issue with RTAMatchParams dataclass fields)
+                _n_dyn_val = getattr(_mp, "n_dyn_stb", None)
+                _re_dyn: float | None = None
+                _a_dyn: float | None = None
+                if _n_dyn_val is not None and _n_dyn_val > 0:
+                    _swi_ui = reservoir_config.swi_frac or 0.0
+                    _phi_ui = reservoir_config.phi_frac
+                    _h_ui   = reservoir_config.h_ft
+                    _bo_ui  = reservoir_config.Bo_rb_stb
+                    _denom_ui = _phi_ui * _h_ui * (1.0 - _swi_ui)
+                    if _denom_ui > 0 and _bo_ui > 0:
+                        _a_ft2_ui = _n_dyn_val * 5.615 * _bo_ui / _denom_ui
+                        if _a_ft2_ui > 0:
+                            _a_dyn  = _a_ft2_ui / _FT2_PER_ACRE
+                            _re_dyn = math.sqrt(_a_ft2_ui / math.pi)
+
+                _both_moved = (_x_eff != 1.0 and _y_eff != 1.0)
+                _mc5.metric(
+                    "re match (ft)",
+                    _fmt(_re_dyn, 0) if _re_dyn is not None else "—",
+                    help=(
+                        "Radio de drene dinámico del match.\n"
+                        "Actualiza cuando ambos ejes del joystick (X e Y) difieren de 1.0.\n"
+                        f"Estado: {'✅ listo' if _both_moved else '⏳ mueve X e Y para activar'}"
+                    ),
+                )
+                _mc6.metric(
+                    "Área match (acres)",
+                    _fmt(_a_dyn, 1) if _a_dyn is not None else "—",
+                    help=(
+                        "Área de drene dinámica del match.\n"
+                        "Actualiza cuando ambos ejes del joystick (X e Y) difieren de 1.0.\n"
+                        f"Estado: {'✅ listo' if _both_moved else '⏳ mueve X e Y para activar'}"
+                    ),
+                )
                 if _mp.warnings:
                     for _w in _mp.warnings:
                         st.warning(_w, icon="⚠")

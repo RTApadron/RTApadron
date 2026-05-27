@@ -63,10 +63,15 @@ def build_match_summary(
 
 
 def save_match_summary(summary: dict, output_dir: Path) -> Path:
-    """Write to <output_dir>/<well_id>_rta_match_summary.json."""
+    """Write to <output_dir>/<well_id>_rta_<method>_match_summary.json.
+
+    One file per method so Fetkovich and Blasingame saves don't overwrite each other.
+    M5 aggregator scans for all method files.
+    """
     well_id = str(summary.get("well_id", "unknown"))
+    method = str(summary.get("method", "unknown")).replace(" ", "_")
     output_dir.mkdir(parents=True, exist_ok=True)
-    path = output_dir / f"{well_id}_rta_match_summary.json"
+    path = output_dir / f"{well_id}_rta_{method}_match_summary.json"
     path.write_text(
         json.dumps(summary, indent=2, ensure_ascii=False), encoding="utf-8"
     )
