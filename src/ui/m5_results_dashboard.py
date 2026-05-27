@@ -203,18 +203,6 @@ def _render_single_rta(rta: "RTASummary", overlay_png: "Path | None" = None) -> 
     from pathlib import Path as _Path
 
     _rta_status = (rta.status or "demo")
-    if _rta_status == "preliminary":
-        st.markdown(
-            _badge("△ PRELIMINAR — curvas tipo analíticas validadas", "preliminary"),
-            unsafe_allow_html=True,
-        )
-        st.caption("Parámetros basados en curvas tipo analíticas. Pendiente validación vs software comercial.")
-    else:
-        st.markdown(
-            _badge("⚠️ DEMO — curvas tipo no validadas", "demo"),
-            unsafe_allow_html=True,
-        )
-        st.caption("Los parámetros siguientes son preliminares hasta que las curvas tipo sean digitalizadas y validadas.")
 
     c1, c2, c3 = st.columns(3)
     c1.metric("Método", (rta.method or "—").replace("_", " ").title())
@@ -537,14 +525,7 @@ def _tab_comparativo(summary: WellResultsSummary) -> None:
     if eur_hyp and n_vol:
         ratio = eur_hyp / n_vol * 100
         st.info(
-            f"**Factor de recobro aparente (EUR hiperbólico / OOIP vol.):** {ratio:.1f}%  \n"
-            "⚠️ El OOIP es preliminar (curvas analíticas). Usar solo como referencia de orden de magnitud."
-        )
-
-    if summary.rta and summary.rta.status not in ("preliminary", None):
-        st.markdown(
-            _badge("Resultados RTA — DEMO. No usar para toma de decisiones.", "demo"),
-            unsafe_allow_html=True,
+            f"**Factor de recobro aparente (EUR hiperbólico / OOIP vol.):** {ratio:.1f}%"
         )
 
 
@@ -848,17 +829,6 @@ def _tab_validacion(summary: WellResultsSummary) -> None:
             mime="text/csv",
         )
 
-    # ── Advertencia status DEMO ───────────────────────────────────────────────
-    if summary.rta and summary.rta.status not in ("preliminary", None):
-        st.divider()
-        st.markdown(
-            _badge(
-                "⚠️ Parámetros RTA son DEMO (curvas tipo no validadas) — "
-                "comparación con fines exploratorios únicamente.",
-                "demo",
-            ),
-            unsafe_allow_html=True,
-        )
 
 
 # ---------------------------------------------------------------------------
