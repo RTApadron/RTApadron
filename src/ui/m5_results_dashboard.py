@@ -195,8 +195,13 @@ def _tab_dca(summary: WellResultsSummary) -> None:
         st.caption("Instala plotly para ver el gráfico de EUR.")
 
 
-def _render_single_rta(rta: "RTASummary") -> None:
-    """Render metrics block for one RTASummary."""
+def _render_single_rta(rta: "RTASummary", overlay_png: "Path | None" = None) -> None:
+    """Render metrics block for one RTASummary.
+
+    *overlay_png*: path to the per-method PNG overlay (shown below metrics if present).
+    """
+    from pathlib import Path as _Path
+
     _rta_status = (rta.status or "demo")
     if _rta_status == "preliminary":
         st.markdown(
@@ -216,14 +221,51 @@ def _render_single_rta(rta: "RTASummary") -> None:
     c2.metric("kh (mD·ft)", _fmt_num(rta.kh_md_ft, 2))
     c3.metric("k (mD)", _fmt_num(rta.k_md, 4))
 
+    # Row 2: static volumetric OOIP + static config drainage geometry
     c4, c5, c6 = st.columns(3)
-    c4.metric("OOIP volumétrico", _fmt_millions(rta.n_vol_stb))
-    c5.metric("re (ft)", _fmt_num(rta.re_ft, 0))
-    c6.metric("Área drene (acres)", _fmt_num(rta.area_acres, 2))
+    c4.metric(
+        "OOIP volumétrico",
+        _fmt_millions(rta.n_vol_stb),
+        help="OOIP calculado de la geometría de drenaje ingresada en la configuración (no cambia con el joystick).",
+    )
+    c5.metric(
+        "re config (ft)",
+        _fmt_num(rta.re_ft, 0),
+        help="Radio de drene de la configuración del yacimiento (input fijo).",
+    )
+    c6.metric(
+        "Área config (acres)",
+        _fmt_num(rta.area_acres, 2),
+        help="Área de drene de la configuración del yacimiento (input fijo).",
+    )
 
-    c7, c8 = st.columns(2)
-    c7.metric("Multiplicador X", _fmt_num(rta.x_multiplier, 4))
-    c8.metric("Multiplicador Y", _fmt_num(rta.y_multiplier, 4))
+    # Row 3: dynamic match values from joystick (only if available)
+    _has_dyn = rta.n_dyn_stb is not None or rta.re_dyn_ft is not None or rta.a_dyn_acres is not None
+    if _has_dyn:
+        c7, c8, c9 = st.columns(3)
+        c7.metric(
+            "N match (MM STB)",
+            _fmt_millions(rta.n_dyn_stb),
+            help="OOIP dinámico calculado desde la posición del joystick. Cuando N match ≈ OOIP volumétrico, el match es consistente con la geometría configurada.",
+        )
+        c8.metric(
+            "re match (ft)",
+            _fmt_num(rta.re_dyn_ft, 0),
+            help="Radio de drene derivado del match joystick (dinámico).",
+        )
+        c9.metric(
+            "Área match (acres)",
+            _fmt_num(rta.a_dyn_acres, 2),
+            help="Área de drene derivada del match joystick (dinámica).",
+        )
+    else:
+        st.caption(
+            "⏳ Valores de match dinámico no disponibles — mueve los dos ejes del joystick en M4 y vuelve a guardar.",
+        )
+
+    c10, c11 = st.columns(2)
+    c10.metric("Multiplicador X", _fmt_num(rta.x_multiplier, 4))
+    c11.metric("Multiplicador Y", _fmt_num(rta.y_multiplier, 4))
 
     b1, b2, _ = st.columns([1, 1, 2])
     with b1:
@@ -242,6 +284,10 @@ def _render_single_rta(rta: "RTASummary") -> None:
             for w in rta.qc_warnings:
                 st.warning(w)
 
+    # Per-method overlay PNG
+    if overlay_png is not None and isinstance(overlay_png, _Path) and overlay_png.exists():
+        st.image(str(overlay_png), caption=f"Overlay curvas tipo M4 — {(rta.method or '').replace('_', ' ')}", use_container_width=True)
+
 
 def _tab_rta(summary: WellResultsSummary) -> None:
     all_rta = getattr(summary, "rta_all_methods", {})
@@ -251,6 +297,16 @@ def _tab_rta(summary: WellResultsSummary) -> None:
         return
 
     st.subheader("Análisis de Transiente de Flujo — Match RTA (M4)")
+
+    def _png_for(method_key: str) -> "Path | None":
+        """Return the per-method overlay PNG path, falling back to legacy file."""
+        from pathlib import Path as _Path
+        _per_method = OUTPUT_DIR / f"{summary.well_id}_rta_{method_key}_overlay.png"
+        if _per_method.exists():
+            return _per_method
+        # Legacy fallback: single file written before per-method support
+        _legacy = OUTPUT_DIR / f"{summary.well_id}_rta_overlay.png"
+        return _legacy if _legacy.exists() else None
 
     if all_rta:
         # Mostrar todos los métodos guardados como tabs
@@ -262,13 +318,14 @@ def _tab_rta(summary: WellResultsSummary) -> None:
         }
         _methods_available = list(all_rta.keys())
         if len(_methods_available) == 1:
-            _render_single_rta(all_rta[_methods_available[0]])
+            _mk = _methods_available[0]
+            _render_single_rta(all_rta[_mk], overlay_png=_png_for(_mk))
         else:
             _tab_names = [_method_labels.get(m, m.replace("_", " ").title()) for m in _methods_available]
             _method_tabs = st.tabs(_tab_names)
             for _mt, _mk in zip(_method_tabs, _methods_available):
                 with _mt:
-                    _render_single_rta(all_rta[_mk])
+                    _render_single_rta(all_rta[_mk], overlay_png=_png_for(_mk))
 
         # Tabla comparativa de métodos si hay más de uno
         if len(_methods_available) > 1:
@@ -282,7 +339,7 @@ def _tab_rta(summary: WellResultsSummary) -> None:
                     "kh (mD·ft)": _fmt_num(_rs.kh_md_ft, 2),
                     "k (mD)": _fmt_num(_rs.k_md, 4),
                     "N vol. (MM STB)": _fmt_millions(_rs.n_vol_stb),
-                    "Área (acres)": _fmt_num(_rs.area_acres, 2),
+                    "Área match (acres)": _fmt_num(_rs.a_dyn_acres, 2),
                     "X": _fmt_num(_rs.x_multiplier, 4),
                     "Y": _fmt_num(_rs.y_multiplier, 4),
                     "Status": (_rs.status or "demo").upper(),
@@ -290,12 +347,10 @@ def _tab_rta(summary: WellResultsSummary) -> None:
             st.dataframe(_pd_m5.DataFrame(_cmp), use_container_width=True, hide_index=True)
     else:
         # Backward compat: single rta object
-        _render_single_rta(summary.rta)
-
-    # Imagen overlay si existe
-    overlay_png = OUTPUT_DIR / f"{summary.well_id}_rta_overlay.png"
-    if overlay_png.exists():
-        st.image(str(overlay_png), caption="Overlay curvas tipo (M4)", use_container_width=True)
+        _render_single_rta(
+            summary.rta,
+            overlay_png=_png_for(summary.rta.method or ""),
+        )
 
 
 def _tab_comparativo(summary: WellResultsSummary) -> None:

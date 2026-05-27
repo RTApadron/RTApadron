@@ -223,6 +223,10 @@ def _build_rta_summary(match_summary: dict) -> RTASummary | None:
         n_vol_stb=_f("n_vol_stb"),
         re_ft=_f("re_ft"),
         area_acres=_f("area_acres"),
+        # Dynamic match values (None in older JSON files that predate these fields)
+        n_dyn_stb=_f("n_dyn_stb"),
+        re_dyn_ft=_f("re_dyn_ft"),
+        a_dyn_acres=_f("a_dyn_acres"),
         x_multiplier=_f_mult("x_multiplier"),
         y_multiplier=_f_mult("y_multiplier"),
         status=match_summary.get("status", "demo"),
