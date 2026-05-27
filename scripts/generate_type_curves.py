@@ -51,37 +51,34 @@ def _arps_qdd(tDd: np.ndarray, b: float) -> np.ndarray:
 # Fetkovich transient stem (radial flow, bounded circular reservoir)
 # ---------------------------------------------------------------------------
 
-def _fetkovich_transient_qD(tD: float, re_rw: float) -> float:
-    """Dimensionless rate qD during transient phase.
+def _fetkovich_transient_qD_raw(tD: float) -> float:
+    """Transient qD WITHOUT the BDF floor — two-approximation formula only.
 
-    Two complementary approximations:
-      - Log-line:   qD = 1 / [0.5 * ln(4*tD/γ)]   (valid for tD > γ/4 ≈ 0.445)
-      - Early-time: qD = 1 / √(π * tD)             (valid for small tD)
-
-    At the crossover the log-line formula diverges (→∞) while the early-time
-    formula stays finite.  Taking min(qD_log, qD_early) gives a continuously
-    decreasing curve with no spike at the transition.
-    Floored at qD_pss so the stem terminates smoothly at BDF onset.
+    Used during CSV generation to detect the exact BDF onset point so that
+    transient stems are clipped there rather than drawn flat past the junction.
     """
     if tD <= 0.0:
         return 1e6
-
-    qD_pss = 1.0 / (math.log(re_rw) - 0.5)
-
-    # Early-time line-source approximation (valid for all tD, especially small)
     qD_early = 1.0 / math.sqrt(math.pi * tD) if tD > 1e-14 else 1e6
-
-    # Log-line approximation (valid for tD > γ/4 ≈ 0.445)
     arg = 4.0 * tD / _GAMMA_EM
     if arg > 1.0:
         log_denom = 0.5 * math.log(arg)
         qD_log = 1.0 / log_denom
-        # min() prevents the spike: near the boundary log→∞ while early→finite
-        qD = min(qD_log, qD_early)
-    else:
-        qD = qD_early
+        return min(qD_log, qD_early)
+    return qD_early
 
-    return max(qD, qD_pss)
+
+def _fetkovich_transient_qD(tD: float, re_rw: float) -> float:
+    """Dimensionless rate qD during transient phase — floored at BDF onset.
+
+    Used at runtime (overlay rendering) where the floor prevents the curve from
+    dropping below qD_pss. For CSV generation use _fetkovich_transient_qD_raw
+    and filter points instead of clamping, to avoid a flat horizontal extension.
+    """
+    if tD <= 0.0:
+        return 1e6
+    qD_pss = 1.0 / (math.log(re_rw) - 0.5)
+    return max(_fetkovich_transient_qD_raw(tD), qD_pss)
 
 
 # ---------------------------------------------------------------------------
@@ -173,14 +170,21 @@ def generate_fetkovich() -> list[dict]:
                     notes=f"BDF Arps b={b}",
                 ))
 
-    # Transient stems — radial flow before boundary effects
-    tDd_trans = np.logspace(-5, 0, 80)
+    # Transient stems — radial flow before boundary effects.
+    # Stems are clipped at the BDF junction (qDd = 1.0) using the raw (unflored)
+    # formula so no flat horizontal extension is drawn past the junction.
+    # Start at 1e-8 so re/rw=1000 (junction near tDd≈4e-6) is still captured.
+    tDd_trans = np.logspace(-8, 0, 120)
     for re_rw in _RE_RW_LIST:
         cid = f"fetkovich_transient_rerw_{re_rw}"
         F_BDF = 0.5 * (re_rw**2 - 1) * (math.log(re_rw) - 0.5)
         norm = math.log(re_rw) - 0.5
+        qD_pss = 1.0 / (math.log(re_rw) - 0.5)
         for tDd in tDd_trans:
-            qDd = _fetkovich_transient_qD(float(tDd) * F_BDF, re_rw) * norm
+            qD_raw = _fetkovich_transient_qD_raw(float(tDd) * F_BDF)
+            if qD_raw <= qD_pss:
+                break  # reached BDF onset — stop stem here
+            qDd = qD_raw * norm
             if qDd > 1e-9:
                 rows.append(dict(
                     method="fetkovich", curve_id=cid,
@@ -228,16 +232,26 @@ def generate_palacio_blasingame() -> list[dict]:
                         notes=f"BDF b={b} series={series}",
                     ))
 
-    # Transient stems — 3 series per re/rw
-    tDd_trans = np.logspace(-5, 0, 100)
+    # Transient stems — 3 series per re/rw.
+    # Clip at BDF junction using raw (unflored) formula to avoid flat extension.
+    tDd_trans = np.logspace(-8, 0, 120)
     for re_rw in _RE_RW_LIST:
         F_BDF = 0.5 * (re_rw**2 - 1) * (math.log(re_rw) - 0.5)
         norm  = math.log(re_rw) - 0.5
-        qDd_arr = np.array([
-            _fetkovich_transient_qD(float(t) * F_BDF, re_rw) * norm
-            for t in tDd_trans
-        ])
-        qDdi_arr, qDdid_arr = _compute_pb_integrals(tDd_trans, qDd_arr)
+        qD_pss = 1.0 / (math.log(re_rw) - 0.5)
+        _tDd_list: list[float] = []
+        _qDd_list: list[float] = []
+        for t in tDd_trans:
+            qD_raw = _fetkovich_transient_qD_raw(float(t) * F_BDF)
+            if qD_raw <= qD_pss:
+                break
+            _tDd_list.append(float(t))
+            _qDd_list.append(qD_raw * norm)
+        if len(_tDd_list) < 2:
+            continue
+        tDd_stem = np.array(_tDd_list)
+        qDd_arr  = np.array(_qDd_list)
+        qDdi_arr, qDdid_arr = _compute_pb_integrals(tDd_stem, qDd_arr)
 
         for series, y_arr, y_lbl in [
             ("qDd",   qDd_arr,  "qDd"),
@@ -245,7 +259,7 @@ def generate_palacio_blasingame() -> list[dict]:
             ("qDdid", qDdid_arr,"qDdid"),
         ]:
             cid = f"pb_transient_rerw_{re_rw}_{series}"
-            for x, y in zip(tDd_trans, y_arr):
+            for x, y in zip(tDd_stem, y_arr):
                 if float(y) > 1e-9:
                     rows.append(dict(
                         method="palacio_blasingame", curve_id=cid,
@@ -293,20 +307,23 @@ def generate_agarwal_gardner() -> list[dict]:
                     notes=f"BDF Arps b={b} re/rw_ref={int(_AG_RE_RW_REF)}",
                 ))
 
-    # Transient stems in tDA/qD space
-    tDd_trans = np.logspace(-5, 0, 80)
+    # Transient stems in tDA/qD space — clipped at BDF onset.
+    tDd_trans = np.logspace(-8, 0, 120)
     for re_rw in _RE_RW_LIST:
         cid = f"ag_transient_rerw_{re_rw}"
         F_BDF = 0.5 * (re_rw**2 - 1) * (math.log(re_rw) - 0.5)
+        qD_pss = 1.0 / (math.log(re_rw) - 0.5)
         for tDd in tDd_trans:
             tD  = float(tDd) * F_BDF
+            qD_raw = _fetkovich_transient_qD_raw(tD)
+            if qD_raw <= qD_pss:
+                break
             tDA = tD / (re_rw**2)
-            qD  = _fetkovich_transient_qD(tD, re_rw)
-            if tDA > 1e-14 and qD > 1e-9:
+            if tDA > 1e-14 and qD_raw > 1e-9:
                 rows.append(dict(
                     method="agarwal_gardner", curve_id=cid,
                     curve_family="radial_transient",
-                    x=round(float(tDA), 12), y=round(float(qD), 10),
+                    x=round(float(tDA), 12), y=round(float(qD_raw), 10),
                     x_label="tDA", y_label="qD",
                     source=_AG_SOURCE, status="validated",
                     notes=f"Transient radial re/rw={re_rw}",

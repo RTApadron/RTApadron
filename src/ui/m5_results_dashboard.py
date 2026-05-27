@@ -195,15 +195,9 @@ def _tab_dca(summary: WellResultsSummary) -> None:
         st.caption("Instala plotly para ver el gráfico de EUR.")
 
 
-def _tab_rta(summary: WellResultsSummary) -> None:
-    if summary.rta is None:
-        st.info("M4 RTA no disponible — realiza el matching en la UI M4 primero.")
-        return
-
-    rta = summary.rta
-    st.subheader("Análisis de Transiente de Flujo — Match RTA (M4)")
-
-    _rta_status = (rta.status or "demo") if rta else "demo"
+def _render_single_rta(rta: "RTASummary") -> None:
+    """Render metrics block for one RTASummary."""
+    _rta_status = (rta.status or "demo")
     if _rta_status == "preliminary":
         st.markdown(
             _badge("△ PRELIMINAR — curvas tipo analíticas validadas", "preliminary"),
@@ -231,7 +225,6 @@ def _tab_rta(summary: WellResultsSummary) -> None:
     c7.metric("Multiplicador X", _fmt_num(rta.x_multiplier, 4))
     c8.metric("Multiplicador Y", _fmt_num(rta.y_multiplier, 4))
 
-    # Badges de trazabilidad por parámetro
     b1, b2, _ = st.columns([1, 1, 2])
     with b1:
         st.markdown(
@@ -244,15 +237,65 @@ def _tab_rta(summary: WellResultsSummary) -> None:
             unsafe_allow_html=True,
         )
 
-    # Imagen overlay si existe
-    overlay_png = OUTPUT_DIR / f"{summary.well_id}_rta_overlay.png"
-    if overlay_png.exists():
-        st.image(str(overlay_png), caption="Overlay curvas tipo (M4)", use_container_width=True)
-
     if rta.qc_warnings:
         with st.expander("⚠️ QC técnico M4"):
             for w in rta.qc_warnings:
                 st.warning(w)
+
+
+def _tab_rta(summary: WellResultsSummary) -> None:
+    all_rta = getattr(summary, "rta_all_methods", {})
+
+    if not all_rta and summary.rta is None:
+        st.info("M4 RTA no disponible — realiza el matching en la UI M4 primero.")
+        return
+
+    st.subheader("Análisis de Transiente de Flujo — Match RTA (M4)")
+
+    if all_rta:
+        # Mostrar todos los métodos guardados como tabs
+        _method_labels = {
+            "fetkovich": "🔬 Fetkovich",
+            "blasingame": "📊 Blasingame",
+            "palacio_blasingame": "📊 Palacio-Blasingame",
+            "agarwal_gardner": "📈 Agarwal-Gardner",
+        }
+        _methods_available = list(all_rta.keys())
+        if len(_methods_available) == 1:
+            _render_single_rta(all_rta[_methods_available[0]])
+        else:
+            _tab_names = [_method_labels.get(m, m.replace("_", " ").title()) for m in _methods_available]
+            _method_tabs = st.tabs(_tab_names)
+            for _mt, _mk in zip(_method_tabs, _methods_available):
+                with _mt:
+                    _render_single_rta(all_rta[_mk])
+
+        # Tabla comparativa de métodos si hay más de uno
+        if len(_methods_available) > 1:
+            st.divider()
+            st.caption("Comparativa de métodos — convergencia de kh indica consistencia del match.")
+            import pandas as _pd_m5
+            _cmp = []
+            for _mk, _rs in all_rta.items():
+                _cmp.append({
+                    "Método": _mk.replace("_", " ").title(),
+                    "kh (mD·ft)": _fmt_num(_rs.kh_md_ft, 2),
+                    "k (mD)": _fmt_num(_rs.k_md, 4),
+                    "N vol. (MM STB)": _fmt_millions(_rs.n_vol_stb),
+                    "Área (acres)": _fmt_num(_rs.area_acres, 2),
+                    "X": _fmt_num(_rs.x_multiplier, 4),
+                    "Y": _fmt_num(_rs.y_multiplier, 4),
+                    "Status": (_rs.status or "demo").upper(),
+                })
+            st.dataframe(_pd_m5.DataFrame(_cmp), use_container_width=True, hide_index=True)
+    else:
+        # Backward compat: single rta object
+        _render_single_rta(summary.rta)
+
+    # Imagen overlay si existe
+    overlay_png = OUTPUT_DIR / f"{summary.well_id}_rta_overlay.png"
+    if overlay_png.exists():
+        st.image(str(overlay_png), caption="Overlay curvas tipo (M4)", use_container_width=True)
 
 
 def _tab_comparativo(summary: WellResultsSummary) -> None:

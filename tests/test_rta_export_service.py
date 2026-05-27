@@ -91,7 +91,7 @@ def test_save_match_summary_roundtrip(tmp_path, config, match_params):
     )
     path = save_match_summary(summary, output_dir=tmp_path)
     assert path.exists()
-    assert path.name == "W-TEST_rta_match_summary.json"
+    assert path.name == "W-TEST_rta_fetkovich_match_summary.json"
     loaded = json.loads(path.read_text(encoding="utf-8"))
     assert loaded["well_id"] == "W-TEST"
     assert loaded["results"]["kh_md_ft"] == pytest.approx(45.2)

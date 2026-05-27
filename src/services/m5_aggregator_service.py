@@ -280,16 +280,47 @@ def build_well_results(
         dca_df = pd.DataFrame()
         warnings.append(f"M3: {dca_summary_path.name} no encontrado — sin resultados DCA.")
 
-    # M4: match summary RTA
-    rta_path = out / f"{well_id}_rta_match_summary.json"
-    rta_data = _load_json(rta_path)
-    if not rta_data:
-        warnings.append(f"M4: {rta_path.name} no encontrado — sin resultados RTA.")
+    # M4: match summary RTA — scan per-method files + legacy single file
+    _RTA_METHODS = ["fetkovich", "blasingame", "palacio_blasingame", "agarwal_gardner"]
+    rta_all_methods: dict[str, "RTASummary"] = {}
+    for _meth in _RTA_METHODS:
+        _mp = out / f"{well_id}_rta_{_meth}_match_summary.json"
+        _d = _load_json(_mp)
+        if _d:
+            _rs = _build_rta_summary(_d)
+            if _rs is not None:
+                rta_all_methods[_meth] = _rs
+
+    # Backward compat: legacy single-file (may be Blasingame from last session)
+    _legacy_path = out / f"{well_id}_rta_match_summary.json"
+    _legacy_data = _load_json(_legacy_path)
+    if _legacy_data:
+        _legacy_rs = _build_rta_summary(_legacy_data)
+        if _legacy_rs is not None:
+            _legacy_meth = str(_legacy_data.get("method", "legacy"))
+            if _legacy_meth not in rta_all_methods:
+                rta_all_methods[_legacy_meth] = _legacy_rs
+
+    if not rta_all_methods:
+        warnings.append(f"M4: {well_id}_rta_match_summary no encontrado — usa '💾 Guardar para M5' en M4.")
+
+    # Primary rta: prefer preliminary over demo; within same status prefer fetkovich order
+    _priority = ["fetkovich", "palacio_blasingame", "blasingame", "agarwal_gardner"]
+    rta = None
+    for _pm in ["preliminary", "demo"]:
+        for _pk in _priority:
+            _candidate = rta_all_methods.get(_pk)
+            if _candidate and _candidate.status == _pm:
+                rta = _candidate
+                break
+        if rta:
+            break
+    if rta is None and rta_all_methods:
+        rta = next(iter(rta_all_methods.values()))
 
     well_info = _build_well_info(history_df, qc_report, well_id)
     pvt = _build_pvt_summary(history_df)
     dca = _build_dca_summary(dca_df)
-    rta = _build_rta_summary(rta_data)
 
     return WellResultsSummary(
         well_id=well_id,
@@ -297,5 +328,6 @@ def build_well_results(
         pvt=pvt,
         dca=dca,
         rta=rta,
+        rta_all_methods=rta_all_methods,
         consolidated_warnings=warnings,
     )

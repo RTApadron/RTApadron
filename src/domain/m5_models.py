@@ -154,6 +154,9 @@ class WellResultsSummary(BaseModel):
     dca: DCASummary | None = None
     rta: RTASummary | None = None
 
+    # All RTA method matches saved from M4 (key = method string, e.g. "fetkovich")
+    rta_all_methods: dict[str, RTASummary] = Field(default_factory=dict)
+
     consolidated_warnings: list[str] = Field(default_factory=list)
 
     def completeness_flags(self) -> dict[str, bool]:

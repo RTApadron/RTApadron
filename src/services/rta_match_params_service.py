@@ -75,6 +75,10 @@ class RTAMatchParams:
     # None until both x_mult and y_mult have been adjusted from 1.0
     n_dyn_stb: float | None = None  # STB
 
+    # Dynamic drainage geometry derived from n_dyn (also updates with joystick)
+    a_dyn_acres: float | None = None   # acres
+    re_dyn_ft: float | None = None     # ft
+
     status: str = "demo"
     notes: str = (
         "DEMO — curvas tipo aún no digitalizadas/validadas. "
@@ -313,8 +317,12 @@ def compute_match_params(
         swi_frac=swi,
     )
 
-    # --- Dynamic OOIP from match (requires kh AND x_mult adjusted from 1.0) ---
+    # --- Dynamic OOIP and drainage geometry from match position ---
+    # n_dyn requires BOTH multipliers != 1.0 (time + rate scaling).
+    # a_dyn/re_dyn are derived from n_dyn and also require BOTH.
     n_dyn: float | None = None
+    a_dyn_acres: float | None = None
+    re_dyn_ft: float | None = None
     if kh is not None and effective_x_multiplier != 1.0 and ln_term > 0:
         n_dyn = _compute_n_dyn(
             kh_md_ft=kh,
@@ -325,6 +333,13 @@ def compute_match_params(
             ln_term=ln_term,
             swi_frac=swi,
         )
+        # Back-compute dynamic drainage area from N_dyn = φ·h·A·(1−Swi)/(5.615·Bo)
+        _denom = config.phi_frac * config.h_ft * (1.0 - swi)
+        if _denom > 0:
+            _a_dyn_ft2 = n_dyn * 5.615 * config.Bo_rb_stb / _denom
+            if _a_dyn_ft2 > 0:
+                a_dyn_acres = _a_dyn_ft2 / _FT2_PER_ACRE
+                re_dyn_ft = math.sqrt(_a_dyn_ft2 / math.pi)
 
     return RTAMatchParams(
         well_id=config.well_id,
@@ -336,6 +351,8 @@ def compute_match_params(
         k_md=k,
         n_vol_stb=n_vol,
         n_dyn_stb=n_dyn,
+        a_dyn_acres=a_dyn_acres,
+        re_dyn_ft=re_dyn_ft,
         effective_x_multiplier=effective_x_multiplier,
         effective_y_multiplier=effective_y_multiplier,
         warnings=warnings,

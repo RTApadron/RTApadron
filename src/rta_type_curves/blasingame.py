@@ -47,11 +47,11 @@ class BlasingameCurveConfig:
     """
 
     re_d_values: tuple[float, ...] = (10, 20, 50, 100, 1_000, 10_000, 100_000, 1_000_000)
-    n_time: int = 360
+    n_time: int = 480
     n_radius: int = 240
     t_d_min: float = 1.0e-7
-    t_d_max_multiplier: float = 50.0   # moderate: reaches BDF without q_D underflow
-    t_c_dd_max: float = 200.0          # cut output beyond this tcDd (no additional info)
+    t_d_max_multiplier: float = 200.0  # extended BDF range; q_D filtered if near eps
+    t_c_dd_max: float = 2000.0         # matches Fetkovich plate extent (~1e3)
     eps: float = 1.0e-30
 
 
