@@ -277,56 +277,150 @@ def generate_palacio_blasingame() -> list[dict]:
 # AGARWAL-GARDNER (SPE-49222)
 # ---------------------------------------------------------------------------
 
-_AG_SOURCE  = "Agarwal-Gardner SPE-49222 1998 Eq.3"
-_AG_RE_RW_REF = 100.0   # reference geometry for BDF x-axis normalization
+_AG_SOURCE = "Agarwal-Gardner SPE-49222 1998 Eq.3"
+
+
+def _e1(x: float) -> float:
+    """E1(x) = integral_x^inf exp(-t)/t dt for x > 0 (exponential integral).
+
+    Series for x <= 1; asymptotic expansion for x > 1.
+    """
+    _EULER = 0.5772156649015328
+    if x <= 0:
+        raise ValueError("E1 requires x > 0")
+    if x <= 1.0:
+        s = 0.0
+        term = -x
+        for n in range(1, 60):
+            s += term / n
+            term *= -x / (n + 1)
+            if abs(term) < 1e-16 * max(abs(s), 1e-30):
+                break
+        return -_EULER - math.log(x) - s
+    s = 1.0
+    term = 1.0
+    for n in range(1, 40):
+        term *= -n / x
+        if abs(term) < 1e-13:
+            break
+        s += term
+    return math.exp(-x) / x * s
+
+
+def _ag_transient_qD(tD: float) -> float:
+    """Exact line-source transient qD = 1 / (0.5 * E1(1/(4*tD))).
+
+    Unlike _fetkovich_transient_qD_raw (which uses min(qD_log, qD_early)),
+    this gives the correct BDF junction at tDA = gamma/(4*e) ≈ 0.164.
+    Used only for Agarwal-Gardner curve generation.
+    """
+    if tD <= 1e-15:
+        return 1e6
+    e1_val = _e1(1.0 / (4.0 * tD))
+    return 1.0 / (0.5 * e1_val) if e1_val > 0 else 1e6
+
+
+def _find_tDA_junction(reD: float) -> float:
+    """Find tDA where exact transient qD = qD_PSS by bisection (no scipy).
+
+    The junction is universal at tDA ≈ gamma/(4*e) ≈ 0.164, confirmed
+    by the exact E1-based formula for each re/rw.
+    """
+    qD_pss = 1.0 / (math.log(reD) - 0.5)
+    reD2 = reD * reD
+
+    def f(tDA: float) -> float:
+        return _ag_transient_qD(tDA * reD2) - qD_pss
+
+    lo, hi = 1e-14, 1.0
+    while f(hi) > 0:
+        hi *= 10.0
+    for _ in range(64):
+        mid = 0.5 * (lo + hi)
+        if f(mid) > 0:
+            lo = mid
+        else:
+            hi = mid
+    return 0.5 * (lo + hi)
 
 
 def generate_agarwal_gardner() -> list[dict]:
-    """A-G uses tDA = tD / re_rw² and qD (not normalized by ln(re/rw)-0.5)."""
+    """One complete A-G curve per re/rw: radial transient → exponential BDF (b=0).
+
+    Each curve is continuous and parametric in re/rw (not in Arps b).
+    The BDF is always exponential (b=0) because Pwf=const gives PSS decline.
+
+    Axes:
+        x = tDA = tD / reD²  (Agarwal-Gardner dimensionless time over drainage area)
+        y = qD               (dimensionless rate, not normalised by ln(re/rw)−0.5)
+
+    curve_family = 'radial_bdf' for all points → rendered as selectable BDF curve in M4.
+    curve_id     = ag_rerw_10 … ag_rerw_1000
+    """
     rows: list[dict] = []
 
-    # BDF — same Arps shapes, relabelled to tDA/qD axes
-    F_BDF_ref = 0.5 * (_AG_RE_RW_REF**2 - 1) * (math.log(_AG_RE_RW_REF) - 0.5)
-    qD_pss_ref = 1.0 / (math.log(_AG_RE_RW_REF) - 0.5)
+    for re_rw in _RE_RW_LIST:
+        reD = float(re_rw)
+        reD2 = reD * reD
+        F_BDF = 0.5 * (reD2 - 1.0) * (math.log(reD) - 0.5)
+        qD_pss = 1.0 / (math.log(reD) - 0.5)
+        tDA_j = _find_tDA_junction(reD)
+        cid = f"ag_rerw_{re_rw}"
 
-    tDd_bdf = np.logspace(-4, 3, 100)
-    for b in _B_VALUES:
-        b_str = str(b).replace(".", "_")
-        cid = f"ag_bdf_b_{b_str}"
-        qDd = _arps_qdd(tDd_bdf, b)
-        tDA = tDd_bdf * F_BDF_ref / (_AG_RE_RW_REF**2)
-        qD  = qDd * qD_pss_ref
-        for x, y in zip(tDA, qD):
-            if float(x) > 1e-14 and float(y) > 1e-9:
+        # --- Transient part: infinite-acting radial flow ---
+        # Cap at qD=200 — very early time (tDA << 1e-4) gives unphysically large
+        # values that are outside the useful matching range of the A-G chart.
+        tDd_trans = np.logspace(-8, 0, 120)
+        for tDd in tDd_trans:
+            tD = float(tDd) * F_BDF
+            qD_raw = _ag_transient_qD(tD)
+            if qD_raw <= qD_pss:
+                break
+            if qD_raw > 200.0:
+                continue  # skip very early time outside display range
+            tDA = tD / reD2
+            x = round(float(tDA), 12)
+            y = round(float(qD_raw), 10)
+            if x > 0 and y > 0:
                 rows.append(dict(
                     method="agarwal_gardner", curve_id=cid,
                     curve_family="radial_bdf",
-                    x=round(float(x), 12), y=round(float(y), 10),
+                    x=x, y=y,
                     x_label="tDA", y_label="qD",
                     source=_AG_SOURCE, status="validated",
-                    notes=f"BDF Arps b={b} re/rw_ref={int(_AG_RE_RW_REF)}",
+                    notes=f"Transient re/rw={re_rw}",
                 ))
 
-    # Transient stems in tDA/qD space — clipped at BDF onset.
-    tDd_trans = np.logspace(-8, 0, 120)
-    for re_rw in _RE_RW_LIST:
-        cid = f"ag_transient_rerw_{re_rw}"
-        F_BDF = 0.5 * (re_rw**2 - 1) * (math.log(re_rw) - 0.5)
-        qD_pss = 1.0 / (math.log(re_rw) - 0.5)
-        for tDd in tDd_trans:
-            tD  = float(tDd) * F_BDF
-            qD_raw = _fetkovich_transient_qD_raw(tD)
-            if qD_raw <= qD_pss:
+        # Explicit junction point for a smooth transition
+        rows.append(dict(
+            method="agarwal_gardner", curve_id=cid,
+            curve_family="radial_bdf",
+            x=round(float(tDA_j), 12), y=round(float(qD_pss), 10),
+            x_label="tDA", y_label="qD",
+            source=_AG_SOURCE, status="validated",
+            notes=f"Junction re/rw={re_rw}",
+        ))
+
+        # --- BDF part: exponential decline (b=0, Pwf=const) ---
+        # Extend until qD < 1e-9
+        delta_tDA_max = -math.log(1e-9 / qD_pss) * F_BDF / reD2
+        tDA_end = tDA_j + delta_tDA_max
+        tDA_bdf = np.logspace(math.log10(tDA_j * 1.001), math.log10(tDA_end), 80)
+        for tDA in tDA_bdf:
+            delta = float(tDA) - tDA_j
+            qD = qD_pss * math.exp(-reD2 * delta / F_BDF)
+            if qD < 1e-9:
                 break
-            tDA = tD / (re_rw**2)
-            if tDA > 1e-14 and qD_raw > 1e-9:
+            x = round(float(tDA), 12)
+            y = round(float(qD), 10)
+            if x > 0 and y > 0:
                 rows.append(dict(
                     method="agarwal_gardner", curve_id=cid,
-                    curve_family="radial_transient",
-                    x=round(float(tDA), 12), y=round(float(qD_raw), 10),
+                    curve_family="radial_bdf",
+                    x=x, y=y,
                     x_label="tDA", y_label="qD",
                     source=_AG_SOURCE, status="validated",
-                    notes=f"Transient radial re/rw={re_rw}",
+                    notes=f"BDF exp b=0 re/rw={re_rw}",
                 ))
 
     return rows

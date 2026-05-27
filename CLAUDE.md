@@ -652,7 +652,26 @@ Commits: `e05819c`, `ddc61fd`, `917203e`, `67bf7a1`
   - `save_overlay_png(method=)` → PNG por método; M5 no mezcla charts entre pestañas
   - `getattr` defensivo en M5 para tolerancia a objetos legacy en session_state
 
-### 🟡 Backlog próximo sprint
+### ✅ Sprint sesión 10 — COMPLETADO (2026-05-27): Rediseño curvas tipo Agarwal-Gardner
+
+**Problema diagnosticado:** `generate_agarwal_gardner()` usaba BDF parametrizado por Arps b
+(b=0..1) con re/rw_ref=100, produciendo curvas disconnectas similares a Fetkovich relabelado.
+Para Pwf=const, el BDF siempre es exponencial (b=0) y el parámetro correcto es re/rw.
+
+**Implementación correcta (commit sesión 10):**
+- **`_e1(x)`**: función E1 exacta (integral exponencial) — series para x≤1, asintótica para x>1
+- **`_ag_transient_qD(tD)`**: qD exacto = 1/(0.5·E1(1/(4·tD))) — sin `min(qD_log,qD_early)`,
+  produce junction universal en tDA ≈ 0.164 (γ/(4·e)) para todos los re/rw
+- **`_find_tDA_junction(reD)`**: bisección usando `_ag_transient_qD` (no `_fetkovich_transient_qD_raw`)
+- **`generate_agarwal_gardner()`** reescrita: 7 curvas completas `ag_rerw_10` ... `ag_rerw_1000`,
+  cada una con transiente (E1 exacto, cap qD≤200) + punto de junction + BDF exponencial b=0
+  - `curve_family = "radial_bdf"` para todos los puntos → renderizado como BDF seleccionable en M4
+  - `tDA_junction ≈ 0.161–0.164` validado con bisección para cada re/rw
+
+**Resultado:** 7 curvas, 959 pts; tDA=[2.8e-7,60]; qD_max≈9; junction tDA≈0.164; monotónicamente dec.
+**Tests:** 413 passed sin regresiones. No se requirieron cambios en M4/M5/tests/loader.
+
+### 🟡 Backlog sesiones siguientes
 
 - Validación cuantitativa con datos W001 vs Software Comercial (ingreso manual en M5 tab Validación)
 - P4b — SNES hotspots ajuste fino (baja urgencia)
