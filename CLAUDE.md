@@ -38,26 +38,62 @@ producción en los Llanos Orientales."
 
 ---
 
-## Estado de módulos (actualizado 2026-05-26 — post sesión 8)
+## Estado de módulos (actualizado 2026-05-26 — post sesión 9)
 
 | Módulo | Descripción | Estado | Tests |
 |--------|-------------|--------|-------|
 | M1 | Historia + Pwf v2 D-W + esquema mecánico + 9 QC checks + editor embebido en hub | ✅ Funcional | `test_well_mech_qc_service.py` (51) |
 | M2 | PVT: Rs/Bo/μo/ρo — Standing, VB, BR; botón "✅ Confirmar datos" semáforo verde | ✅ Funcional | `test_pvt_correlations.py` (46) |
 | M3 | DCA multi-método Arps; semilog + best-fit; semáforo verde; **botón "💾 Guardar DCA para M5"** | ✅ Funcional | varios |
-| M4 | RTA 60 curvas; Plotly zoom; 🎯 Auto stem; derivada log-log; SNES; **caché CSV+transforms; N match dinámico** | ✅ Funcional | `test_rta_match_params_service.py` (27) |
-| M5 | Resultados integrados, dashboard 7 pestañas, exportación; **EUR DCA + badge PRELIMINAR** | ✅ Funcional + integrado | varios |
+| M4 | RTA 84 curvas; Plotly zoom; 🎯 Auto stem; derivada log-log; SNES; **caché CSV+transforms; N/re/Área match dinámico; stems sin extensión antinatural** | ✅ Funcional | `test_rta_match_params_service.py` (27) |
+| M5 | Resultados integrados, dashboard 7 pestañas, exportación; **multi-método sub-tabs; re/Área match dinámico; PNG por método** | ✅ Funcional + integrado | varios |
 | Inicio | Tarjetas M1→M5 con logos PNG 140px; semáforo; botones nav; GPL-3 | ✅ Funcional | — |
 
 **Tests totales: 413 passed, 1 warning (Pydantic v1 @validator en `src/well_mod/models.py`)**
 
+> Sesión 9 corrigió 5 bugs (4 de sesión anterior + extensión antinatural Fetkovich) y añadió
+> campos dinámicos en M4→M5 (re_dyn_ft / a_dyn_acres / n_dyn_stb propagados al JSON y M5).
 > Sesión 8 añadió 8 tests en `test_rta_match_params_service.py` (N_dyn unit + integración).
-> Sesión 7 añadió 14 tests en `test_m5_comparison_service.py`. Sesión 6 añadió BLASINGAME al enum —
-> test `test_log_derivative_present_for_all_methods` excluye explícitamente BLASINGAME.
 
 ---
 
 ## Historial de commits relevantes (más recientes primero)
+
+### Sesión 9 — 2026-05-26 (5 bugs + M5 dinámico + curvas tipo)
+
+**`67bf7a1` — fix(M5): no usar legacy PNG cuando hay múltiples métodos guardados**
+- `_png_for(method_key)` solo hace fallback al archivo legacy `{well_id}_rta_overlay.png`
+  cuando hay exactamente 1 método disponible; con múltiples métodos retorna `None` para
+  evitar mostrar el chart de Blasingame en la pestaña de Fetkovich.
+
+**`917203e` — fix(M5): getattr defensivo para n_dyn_stb/re_dyn_ft/a_dyn_acres**
+- `_render_single_rta()` usa `getattr(rta, field, None)` para los tres campos dinámicos.
+  Evita `AttributeError` de Pydantic cuando `RTASummary` en session_state fue creado
+  con el modelo anterior (sin esos campos). Requiere "🔄 Cargar / actualizar M5" para
+  ver los nuevos valores.
+
+**`ddc61fd` — fix(M5): dynamic match area/re + per-method overlay PNG**
+- `rta_export_service.build_match_summary()`: agrega `n_dyn_stb` / `re_dyn_ft` / `a_dyn_acres`
+  al bloque `results` del JSON exportado.
+- `rta_export_service.save_overlay_png(method=)`: nuevo param opcional → guarda
+  `{well_id}_rta_{method}_overlay.png` por método; sin `method` → nombre legacy.
+- `m4_type_curve_overlay`: pasa `method=_mval` a `save_overlay_png()`.
+- `m5_models.RTASummary`: añade `n_dyn_stb`, `re_dyn_ft`, `a_dyn_acres`.
+- `m5_aggregator_service._build_rta_summary()`: lee los tres nuevos campos del JSON.
+- `m5_results_dashboard._render_single_rta(overlay_png=)`: nuevo param PNG;
+  muestra fila "N match / re match / Área match" cuando hay valores dinámicos;
+  aviso si no (JSON viejo). PNG por método se muestra dentro de cada sub-tab.
+- Tabla comparativa: renombra columna a "Área match (acres)".
+
+**`e05819c` — fix(sesion9): 4 bugs M4/M5 + curvas tipo sin extensión antinatural**
+- **Bug1** (M4 área fija): `RTAMatchParams` incluye `a_dyn_acres` y `re_dyn_ft`.
+- **Bug2** (joystick desalineado): QC warnings ANTES de `st.columns()`.
+- **Bug3** (Blasingame truncado tcDd>175): `t_c_dd_max` 200→2000; 8600 pts, max≈1950.
+- **Bug4** (M5 solo último match): `save_match_summary` → per-method JSON;
+  M5 agrega todos en `rta_all_methods`; sub-tabs en `_tab_rta` + tabla comparativa.
+- **Extensión antinatural Fetkovich**: `_fetkovich_transient_qD_raw()` sin floor BDF;
+  stems clipean en qDd=1.0 con `break`; grid 1e-8→1 para re/rw=1000.
+  84 curvas, 14 791 pts totales.
 
 ### Sesión 8 — 2026-05-26 (Latencia joystick + N match dinámico)
 
@@ -378,10 +414,10 @@ scripts/
 
 data/
 ├── type_curves/                   — 84 curvas (60 validated + 24 demo); regenerar con generate_type_curves.py
-│   ├── fetkovich_base.csv         — 12 curvas, ~1036 pts (status=validated)
-│   ├── palacio_blasingame_base.csv — 36 curvas, ~5040 pts (qDd/qDdi/qDdid; status=validated)
-│   ├── agarwal_gardner_base.csv   — 12 curvas, ~1035 pts (status=validated)
-│   └── blasingame_base.csv        — 24 curvas, ~4237 pts (8 reD × qDd/qDdi/qDdid; status=demo)
+│   ├── fetkovich_base.csv         — 12 curvas, 936 pts (status=validated; stems sin extensión antinatural)
+│   ├── palacio_blasingame_base.csv — 36 curvas, 4320 pts (qDd/qDdi/qDdid; status=validated)
+│   ├── agarwal_gardner_base.csv   — 12 curvas, 935 pts (status=validated)
+│   └── blasingame_base.csv        — 24 curvas, 8600 pts (8 reD × qDd/qDdi/qDdid; max tcDd≈1950; status=demo)
 └── ui_uploads/                    — archivos guardados por la UI (no commitear)
 ```
 
@@ -600,9 +636,24 @@ Commits: `61ea13c`, `91a4265`, `711fe22`
 - [x] **fix(M4):** `getattr` defensivo para `n_dyn_stb` — tolerante a objetos serializados pre-cambio
 - [x] 8 tests nuevos en `test_rta_match_params_service.py` → **413 passed**
 
-### 🟡 Próximo sprint — sesión 9 (backlog residual)
+### ✅ Sprint sesión 9 — COMPLETADO (2026-05-26)
 
-**Pendientes:**
+Commits: `e05819c`, `ddc61fd`, `917203e`, `67bf7a1`
+
+- [x] **fix(M4):** extensión antinatural en stems transientes Fetkovich eliminada
+  - `_fetkovich_transient_qD_raw()` sin floor BDF; grid extendido a 1e-8 para re/rw=1000
+  - 84 curvas / 14 791 pts; P-B y A-G también corregidos
+- [x] **fix(M4 Bug1):** `RTAMatchParams` incluye `a_dyn_acres` y `re_dyn_ft`; métricas M4 dinámicas
+- [x] **fix(M4 Bug2):** QC warnings ANTES de `st.columns()` → joystick alineado verticalmente
+- [x] **fix(M4 Bug3):** Blasingame curvas hasta tcDd≈1950 (era ≈175)
+- [x] **fix(M4/M5 Bug4):** per-method JSON → M5 muestra Fetkovich + Blasingame en sub-tabs
+- [x] **feat(M5):** `n_dyn_stb` / `re_dyn_ft` / `a_dyn_acres` en JSON exportado y en M5
+  - Fila "N match / re match / Área match" en M5 `_render_single_rta()`
+  - `save_overlay_png(method=)` → PNG por método; M5 no mezcla charts entre pestañas
+  - `getattr` defensivo en M5 para tolerancia a objetos legacy en session_state
+
+### 🟡 Backlog próximo sprint
+
 - Validación cuantitativa con datos W001 vs Software Comercial (ingreso manual en M5 tab Validación)
 - P4b — SNES hotspots ajuste fino (baja urgencia)
 - Merge feature/m4-type-curve-overlay → main cuando tesis esté lista
